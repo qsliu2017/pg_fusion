@@ -8,6 +8,11 @@ SELECT avg(four) AS avg_1 FROM onek;
 -- compare: multiset
 SELECT avg(a) AS avg_32 FROM aggtest WHERE a < 100;
 
+-- id: aggregates_11_select_avg_b_numeric_10_3_as_avg_107_943_from_aggtest_eeb75f37
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:30
+-- compare: multiset
+SELECT avg(b)::numeric(10,3) AS avg_107_943 FROM aggtest;
+
 -- id: aggregates_13_select_sum_four_as_sum_1500_from_onek_9440d3f5
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:37
 -- compare: multiset

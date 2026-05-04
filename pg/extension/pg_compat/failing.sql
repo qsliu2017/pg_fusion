@@ -22,12 +22,6 @@ SELECT any_value(v) FROM (VALUES (NULL), (1), (2)) AS v (v);
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'any_value'.\nDid you mean 'last_value'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 SELECT any_value(v) FROM (VALUES (array['hello', 'world'])) AS v (v);
 
--- id: aggregates_11_select_avg_b_numeric_10_3_as_avg_107_943_from_aggtest_eeb75f37
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:30
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type Decimal128(10, 3)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT avg(b)::numeric(10,3) AS avg_107_943 FROM aggtest;
-
 -- id: aggregates_12_select_avg_gpa_as_avg_3_4_from_only_student_c48c8cb5
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:35
 -- compare: multiset
@@ -9937,7 +9931,7 @@ SELECT i,AVG(v::smallint) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDE
 -- id: window_340_select_i_avg_v_numeric_over_order_by_i_rows_between_current_row_and_unbo_e2759460
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1768
 -- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type Decimal128(38, 19)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: query failed with pg_fusion.enable=on
 SELECT i,AVG(v::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
   FROM (VALUES(1,1.5),(2,2.5),(3,NULL),(4,NULL)) t(i,v);
 
@@ -10014,7 +10008,7 @@ SELECT i,SUM(v::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED
 -- id: window_351_select_sum_n_numeric_over_order_by_i_rows_between_current_row_and_unboun_5dc8403d
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1825
 -- compare: ordered
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type Decimal128(38, 10)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: result mismatch: vanilla_rows=3, fusion_rows=3
 SELECT SUM(n::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
   FROM (VALUES(1,1.01),(2,2),(3,3)) v(i,n);
 

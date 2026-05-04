@@ -30,6 +30,10 @@ importance: 0.95
   `TypeTag::Decimal128` only records the 16-byte fixed-width layout, so
   import/projection code must preserve precision/scale from the Arrow schema
   rather than reconstructing it from the page tag.
+- PostgreSQL-compatible `avg(numeric)` currently covers finite Arrow
+  `Decimal128` values only. PostgreSQL `numeric` `NaN`/`Infinity` cannot be
+  represented in Arrow decimal arrays and must stay bypassed or explicitly
+  guarded before execution reaches worker-side Decimal128 aggregation.
 
 4. PostgreSQL owns physical table access.
 
