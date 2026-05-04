@@ -446,6 +446,76 @@ pub(crate) fn heap_avg_full_scan_smoke() {
     assert_eq!(exact_avg, "9007199254740992.5000000000000000");
 }
 
+pub(crate) fn heap_avg_window_sliding_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_heap_avg_window_sliding_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {table_name} (
+                i integer,
+                bigint_value bigint
+            );
+            INSERT INTO {table_name} VALUES
+                (1, 1),
+                (2, 2),
+                (3, NULL),
+                (4, NULL)
+            "
+        ),
+    );
+
+    let bigint_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT i::text || ':' || COALESCE(
+                avg(bigint_value) OVER (
+                    ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+                )::text,
+                'NULL'
+            )
+            FROM {table_name}
+            ORDER BY i
+            "
+        ),
+    );
+    assert_eq!(
+        bigint_rows,
+        vec![
+            "1:1.5000000000000000",
+            "2:2.0000000000000000",
+            "3:NULL",
+            "4:NULL"
+        ]
+    );
+
+    let numeric_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        "\
+            SELECT i::text || ':' || COALESCE(
+                avg(v::numeric) OVER (
+                    ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+                )::text,
+                'NULL'
+            )
+            FROM (VALUES (1, 1.5), (2, 2.5), (3, NULL), (4, NULL)) AS t(i, v)
+            ORDER BY i
+        ",
+    );
+    assert_eq!(
+        numeric_rows,
+        vec![
+            "1:2.0000000000000000",
+            "2:2.5000000000000000",
+            "3:NULL",
+            "4:NULL"
+        ]
+    );
+}
+
 pub(crate) fn heap_varlena_full_scan_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);

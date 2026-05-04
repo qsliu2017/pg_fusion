@@ -46,7 +46,8 @@ page-backed Arrow batches.
   by both backend planning and worker/codec decoding. Its `avg` UDAF keeps
   integer and finite Decimal128 averages as Arrow `Decimal128(38, 16)` so
   PostgreSQL sees `numeric` instead of DataFusion's default `float8`/decimal
-  behavior.
+  behavior, and implements inverse transitions so bounded/sliding window frames
+  can retract rows during DataFusion window execution.
 - `pg/statistics`: PostgreSQL planner/catalog statistics bridge. It is
   PostgreSQL-specific but independent of DataFusion and `join_order`;
   `plan_builder` uses it to turn pushed-down scan SQL, `pg_class`,

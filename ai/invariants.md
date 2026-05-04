@@ -35,6 +35,10 @@ importance: 0.95
   represented in Arrow decimal arrays; known special numeric constants and
   literal numeric casts must fail with a controlled pg_fusion error before
   worker-side Decimal128 aggregation.
+- `pg/df_functions` aggregate overrides that can appear in DataFusion window
+  frames must keep `update_batch` and `retract_batch` symmetric. Sliding frames
+  such as `ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING` move their start
+  bound and DataFusion will call the inverse transition.
 
 4. PostgreSQL owns physical table access.
 

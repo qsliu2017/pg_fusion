@@ -9907,34 +9907,6 @@ WINDOW fwd AS (
 	ORDER BY vs.i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
 );
 
--- id: window_337_select_i_avg_v_bigint_over_order_by_i_rows_between_current_row_and_unbou_158cce69
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1754
--- compare: ordered
--- reason: result mismatch: vanilla_rows=4, fusion_rows=4
-SELECT i,AVG(v::bigint) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
-
--- id: window_338_select_i_avg_v_int_over_order_by_i_rows_between_current_row_and_unbounde_32a66afa
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1762
--- compare: ordered
--- reason: result mismatch: vanilla_rows=4, fusion_rows=4
-SELECT i,AVG(v::int) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
-
--- id: window_339_select_i_avg_v_smallint_over_order_by_i_rows_between_current_row_and_unb_3da4b12c
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1765
--- compare: ordered
--- reason: result mismatch: vanilla_rows=4, fusion_rows=4
-SELECT i,AVG(v::smallint) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
-
--- id: window_340_select_i_avg_v_numeric_over_order_by_i_rows_between_current_row_and_unbo_e2759460
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1768
--- compare: ordered
--- reason: query failed with pg_fusion.enable=on
-SELECT i,AVG(v::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,1.5),(2,2.5),(3,NULL),(4,NULL)) t(i,v);
-
 -- id: window_341_select_i_avg_v_interval_over_order_by_i_rows_between_current_row_and_unb_c9d4644f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1771
 -- compare: ordered

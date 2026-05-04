@@ -172,6 +172,22 @@ impl IntegerAvgAccumulator {
         Ok(())
     }
 
+    fn retract_i256(&mut self, value: i256) -> Result<()> {
+        let next_sum = self.sum.checked_sub(value).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg integer retraction sum overflowed i256".to_owned(),
+            )
+        })?;
+        let next_count = self.count.checked_sub(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg integer retraction count underflowed u64".to_owned(),
+            )
+        })?;
+        self.sum = next_sum;
+        self.count = next_count;
+        Ok(())
+    }
+
     fn merge_state(&mut self, count: u64, sum: i256) -> Result<()> {
         self.sum = self.sum.checked_add(sum).ok_or_else(|| {
             datafusion_common::DataFusionError::Execution(
@@ -213,6 +229,37 @@ impl Accumulator for IntegerAvgAccumulator {
         }
 
         Ok(())
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+
+        match values.data_type() {
+            DataType::Int16 => {
+                for value in values.as_primitive::<Int16Type>().iter().flatten() {
+                    self.retract_i256(i256::from_i128(i128::from(value)))?;
+                }
+            }
+            DataType::Int32 => {
+                for value in values.as_primitive::<Int32Type>().iter().flatten() {
+                    self.retract_i256(i256::from_i128(i128::from(value)))?;
+                }
+            }
+            DataType::Int64 => {
+                for value in values.as_primitive::<Int64Type>().iter().flatten() {
+                    self.retract_i256(i256::from_i128(i128::from(value)))?;
+                }
+            }
+            other => return exec_err!("avg integer accumulator got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        true
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -393,6 +440,30 @@ impl DecimalAvgAccumulator {
         Ok(())
     }
 
+    fn retract_decimal128(&mut self, value: i128) -> Result<()> {
+        let scale_delta = (self.state_scale - self.input_scale) as u32;
+        let scaled = i256::from_i128(value)
+            .checked_mul(ten_pow_i256(scale_delta)?)
+            .ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg decimal retraction scaling overflowed i256".to_owned(),
+                )
+            })?;
+        let next_sum = self.sum.checked_sub(scaled).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg decimal retraction sum overflowed i256".to_owned(),
+            )
+        })?;
+        let next_count = self.count.checked_sub(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg decimal retraction count underflowed u64".to_owned(),
+            )
+        })?;
+        self.sum = next_sum;
+        self.count = next_count;
+        Ok(())
+    }
+
     fn merge_state(&mut self, count: u64, sum: i256) -> Result<()> {
         self.sum = self.sum.checked_add(sum).ok_or_else(|| {
             datafusion_common::DataFusionError::Execution(
@@ -426,6 +497,29 @@ impl Accumulator for DecimalAvgAccumulator {
         }
 
         Ok(())
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+
+        match values.data_type() {
+            DataType::Decimal128(precision, scale)
+                if *precision == self.input_precision && *scale == self.input_scale =>
+            {
+                for value in values.as_primitive::<Decimal128Type>().iter().flatten() {
+                    self.retract_decimal128(value)?;
+                }
+            }
+            other => return exec_err!("avg decimal accumulator got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        true
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -501,6 +595,32 @@ impl Accumulator for FloatAvgAccumulator {
             })?;
         }
         Ok(())
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+        let values = values.as_primitive::<Float64Type>();
+        for value in values.iter().flatten() {
+            let next_count = self.count.checked_sub(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float retraction count underflowed u64".to_owned(),
+                )
+            })?;
+            let sum = self.sum.ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float retraction sum underflowed".to_owned(),
+                )
+            })?;
+            self.count = next_count;
+            self.sum = (next_count > 0).then_some(sum - value);
+        }
+        Ok(())
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        true
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -621,12 +741,54 @@ mod tests {
     }
 
     #[test]
+    fn integer_avg_retracts_rows_for_sliding_windows() {
+        let mut acc = IntegerAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(Int64Array::from(vec![Some(1), Some(2), None]))])
+            .unwrap();
+        acc.retract_batch(&[Arc::new(Int64Array::from(vec![Some(1), None]))])
+            .unwrap();
+
+        assert!(acc.supports_retract_batch());
+        assert_eq!(
+            decimal128_value(acc.evaluate().unwrap()),
+            2 * INT_AVG_SCALE_FACTOR
+        );
+
+        acc.retract_batch(&[Arc::new(Int64Array::from(vec![Some(2)]))])
+            .unwrap();
+        assert_eq!(
+            acc.evaluate().unwrap(),
+            ScalarValue::Decimal128(None, NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE)
+        );
+    }
+
+    #[test]
     fn float_avg_stays_float64() {
         let mut acc = FloatAvgAccumulator::default();
         acc.update_batch(&[Arc::new(Float64Array::from(vec![Some(1.0), Some(2.0)]))])
             .unwrap();
 
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::Float64(Some(1.5)));
+    }
+
+    #[test]
+    fn float_avg_retracts_rows_for_sliding_windows() {
+        let mut acc = FloatAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(Float64Array::from(vec![
+            Some(1.0),
+            Some(2.0),
+            None,
+        ]))])
+        .unwrap();
+        acc.retract_batch(&[Arc::new(Float64Array::from(vec![Some(1.0), None]))])
+            .unwrap();
+
+        assert!(acc.supports_retract_batch());
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Float64(Some(2.0)));
+
+        acc.retract_batch(&[Arc::new(Float64Array::from(vec![Some(2.0)]))])
+            .unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Float64(None));
     }
 
     #[test]
@@ -647,6 +809,28 @@ mod tests {
         acc.update_batch(&[decimal128_array(vec![None, None], 10, 2)])
             .unwrap();
 
+        assert_eq!(
+            acc.evaluate().unwrap(),
+            ScalarValue::Decimal128(None, NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE)
+        );
+    }
+
+    #[test]
+    fn decimal_avg_retracts_rows_for_sliding_windows() {
+        let mut acc = DecimalAvgAccumulator::try_new(10, 1).unwrap();
+        acc.update_batch(&[decimal128_array(vec![Some(15), Some(25), None], 10, 1)])
+            .unwrap();
+        acc.retract_batch(&[decimal128_array(vec![Some(15), None], 10, 1)])
+            .unwrap();
+
+        assert!(acc.supports_retract_batch());
+        assert_eq!(
+            decimal128_value(acc.evaluate().unwrap()),
+            25 * (INT_AVG_SCALE_FACTOR / 10)
+        );
+
+        acc.retract_batch(&[decimal128_array(vec![Some(25)], 10, 1)])
+            .unwrap();
         assert_eq!(
             acc.evaluate().unwrap(),
             ScalarValue::Decimal128(None, NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE)
