@@ -83,8 +83,9 @@ page-backed Arrow batches.
    overrides are registered before SQL planning, logical optimization, plan
    codec decoding, worker physical planning, and EXPLAIN physical planning; in
    particular integer and finite Decimal128 `avg` are planned as
-   `numeric`-compatible Decimal128 aggregates end to end. Scan leaves are then
-   lowered to
+   `numeric`-compatible Decimal128 aggregates end to end. PostgreSQL `numeric`
+   `NaN`/`Infinity` constants and literal numeric casts are rejected before they
+   can enter Arrow Decimal128 execution. Scan leaves are then lowered to
    `PgScanNode`/`scan_sql` descriptors. Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single
    lowered CTE producer so worker execution materializes the CTE once and

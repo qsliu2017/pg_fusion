@@ -145,6 +145,29 @@ pub(crate) fn simple_select_smoke() {
     assert_eq!(one, 1);
 }
 
+pub(crate) fn numeric_special_value_error_smoke() {
+    let mut client = smoke_client();
+    for sql in [
+        "SELECT avg('NaN'::numeric)",
+        "SELECT avg(CAST('Infinity' AS numeric))",
+        "SELECT avg(CAST('-Infinity' AS decimal(38, 10)))",
+        "SELECT avg(x::numeric) FROM (VALUES ('1'), ('Infinity')) AS v(x)",
+    ] {
+        let mut tx = smoke_transaction(&mut client);
+        let err = tx
+            .simple_query(sql)
+            .expect_err("special numeric query must fail with pg_fusion enabled");
+        let message = err
+            .as_db_error()
+            .map(|db_error| db_error.message().to_owned())
+            .unwrap_or_else(|| err.to_string());
+        assert!(
+            message.contains("numeric NaN/Infinity"),
+            "unexpected error for {sql}: {message}"
+        );
+    }
+}
+
 pub(crate) fn explain_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);

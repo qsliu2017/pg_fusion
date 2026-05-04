@@ -54,6 +54,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_numeric_special_value_error_smoke() {
+        super::smoke_tests::numeric_special_value_error_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_explain_smoke() {
         super::smoke_tests::explain_smoke();
     }

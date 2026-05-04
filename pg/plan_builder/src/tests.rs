@@ -168,6 +168,22 @@ fn build_err(sql: &str) -> PlanBuildError {
         .unwrap_err()
 }
 
+#[test]
+fn rejects_special_numeric_literal_casts() {
+    for sql in [
+        "SELECT avg('NaN'::numeric)",
+        "SELECT avg(CAST('Infinity' AS NUMERIC))",
+        "SELECT avg(CAST('-Infinity' AS DECIMAL(38, 10)))",
+        "SELECT avg(x::numeric) FROM (VALUES ('1'), ('Infinity')) AS v(x)",
+    ] {
+        let error = build_err(sql).to_string();
+        assert!(
+            error.contains("numeric NaN/Infinity"),
+            "unexpected error for {sql}: {error}"
+        );
+    }
+}
+
 fn contains_table_scan(plan: &LogicalPlan) -> bool {
     let mut found = false;
     plan.apply(|node| {

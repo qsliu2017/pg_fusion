@@ -32,8 +32,9 @@ importance: 0.95
   rather than reconstructing it from the page tag.
 - PostgreSQL-compatible `avg(numeric)` currently covers finite Arrow
   `Decimal128` values only. PostgreSQL `numeric` `NaN`/`Infinity` cannot be
-  represented in Arrow decimal arrays and must stay bypassed or explicitly
-  guarded before execution reaches worker-side Decimal128 aggregation.
+  represented in Arrow decimal arrays; known special numeric constants and
+  literal numeric casts must fail with a controlled pg_fusion error before
+  worker-side Decimal128 aggregation.
 
 4. PostgreSQL owns physical table access.
 

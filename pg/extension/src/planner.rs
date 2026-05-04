@@ -8,8 +8,8 @@ use datafusion::logical_expr::LogicalPlan;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
     list_append_unique_ptr, list_make1_impl, palloc0, planner_hook, planner_hook_type,
-    standard_planner, CommonTableExpr, CustomScan, List, ListCell, NodeTag, Oid, ParamListInfo,
-    Plan, PlannedStmt, Query, RangeTblEntry,
+    standard_planner, CommonTableExpr, Const, CustomScan, List, ListCell, Node, NodeTag, Oid,
+    ParamListInfo, Plan, PlannedStmt, Query, RangeTblEntry,
 };
 use pgrx::prelude::*;
 
@@ -18,6 +18,9 @@ use crate::guc::ENABLE;
 use crate::utility_hook::skip_planner;
 
 static mut PREV_PLANNER_HOOK: planner_hook_type = None;
+
+const SPECIAL_NUMERIC_ERROR: &str =
+    "pg_fusion does not support PostgreSQL numeric NaN/Infinity values because Arrow Decimal128 cannot represent them";
 
 pub fn register_hooks() {
     unsafe {
@@ -152,6 +155,9 @@ unsafe extern "C-unwind" fn build_planned_custom_scan(
             "pg_fusion v1 does not support bind parameters yet; see planner.rs TODO for ParamListInfo -> ScalarValue bridging"
         );
     }
+    if query_contains_special_numeric_const(parse) {
+        error!("{SPECIAL_NUMERIC_ERROR}");
+    }
 
     let sql = select_sql_from_query(parse, query_string);
     let config = crate::host_config().unwrap_or_else(|err| error!("pg_fusion config error: {err}"));
@@ -197,6 +203,65 @@ unsafe extern "C-unwind" fn build_planned_custom_scan(
     };
     std::ptr::write(stmt_ptr, statement);
     stmt_ptr
+}
+
+unsafe fn query_contains_special_numeric_const(parse: *mut Query) -> bool {
+    if parse.is_null() {
+        return false;
+    }
+
+    let mut found = false;
+    pgrx::pg_sys::query_tree_walker(
+        parse,
+        Some(special_numeric_const_walker),
+        (&mut found as *mut bool).cast::<c_void>(),
+        0,
+    );
+    found
+}
+
+unsafe extern "C-unwind" fn special_numeric_const_walker(
+    node: *mut Node,
+    context: *mut c_void,
+) -> bool {
+    if node.is_null() {
+        return false;
+    }
+
+    match (*node).type_ {
+        NodeTag::T_Query => pgrx::pg_sys::query_tree_walker(
+            node.cast::<Query>(),
+            Some(special_numeric_const_walker),
+            context,
+            0,
+        ),
+        NodeTag::T_Const => {
+            let constant = node.cast::<Const>();
+            if !(*constant).constisnull
+                && (*constant).consttype == pgrx::pg_sys::NUMERICOID
+                && numeric_datum_is_special((*constant).constvalue)
+            {
+                *context.cast::<bool>() = true;
+                return true;
+            }
+            pgrx::pg_sys::expression_tree_walker(node, Some(special_numeric_const_walker), context)
+        }
+        _ => {
+            pgrx::pg_sys::expression_tree_walker(node, Some(special_numeric_const_walker), context)
+        }
+    }
+}
+
+unsafe fn numeric_datum_is_special(datum: pgrx::pg_sys::Datum) -> bool {
+    let original = datum.cast_mut_ptr::<pgrx::pg_sys::varlena>();
+    let detoasted = pgrx::pg_sys::pg_detoast_datum(original);
+    let is_copy = !std::ptr::eq(detoasted, original);
+    let numeric = detoasted.cast::<pgrx::pg_sys::NumericData>();
+    let is_special = pgrx::pg_sys::numeric_is_nan(numeric) || pgrx::pg_sys::numeric_is_inf(numeric);
+    if is_copy {
+        pgrx::pg_sys::pfree(detoasted.cast());
+    }
+    is_special
 }
 
 unsafe fn select_sql_from_query(parse: *mut Query, query_string: *const c_char) -> String {

@@ -20,12 +20,12 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, SchemaRef};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::SessionStateDefaults;
 use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion_common::TableReference;
+use datafusion_common::{Column, TableReference};
 use datafusion_common::{DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::logical_plan::{Filter, LogicalPlan, Projection, TableScan};
 use datafusion_expr::planner::{ContextProvider, ExprPlanner};
@@ -52,6 +52,9 @@ use thiserror::Error;
 mod join_reorder;
 
 pub use join_reorder::{JoinStatsProvider, LiveJoinStatsProvider};
+
+const SPECIAL_NUMERIC_ERROR: &str =
+    "pg_fusion does not support PostgreSQL numeric NaN/Infinity values because Arrow Decimal128 cannot represent them";
 
 static BUILTINS: Lazy<Arc<Builtins>> = Lazy::new(|| Arc::new(Builtins::new()));
 
@@ -206,7 +209,9 @@ where
         let planner = SqlToRel::new(&context);
         let plan = planner.statement_to_plan(statement)?;
         let plan = plan.with_param_values(input.params)?;
+        validate_no_special_numeric_literals(&plan)?;
         let optimized = optimize_logical_plan(plan, self.config.target_partitions)?;
+        validate_no_special_numeric_literals(&optimized)?;
         validate_supported_plan_shape(&optimized)?;
         let optimized = if self.config.join_reordering_enabled {
             join_reorder::rewrite_join_order(optimized, self.config, &self.stats_provider)?
@@ -256,6 +261,168 @@ fn optimize_logical_plan(
 
 fn pg_identifier_max_bytes() -> usize {
     (pg_sys::NAMEDATALEN as usize).saturating_sub(1)
+}
+
+fn validate_no_special_numeric_literals(plan: &LogicalPlan) -> Result<(), PlanBuildError> {
+    let special_string_columns = special_numeric_string_columns(plan);
+    let mut found = false;
+    plan.apply_with_subqueries(|node| {
+        if found {
+            return Ok(TreeNodeRecursion::Stop);
+        }
+
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                if casts_special_numeric_literal(expr)
+                    || casts_special_numeric_column(expr, &special_string_columns)
+                {
+                    found = true;
+                    Ok(TreeNodeRecursion::Stop)
+                } else {
+                    Ok(TreeNodeRecursion::Continue)
+                }
+            })
+        })?;
+
+        if found {
+            Ok(TreeNodeRecursion::Stop)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    })?;
+
+    if found {
+        Err(PlanBuildError::Plan(SPECIAL_NUMERIC_ERROR.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+fn special_numeric_string_columns(plan: &LogicalPlan) -> HashSet<Column> {
+    match plan {
+        LogicalPlan::Values(values) => {
+            let mut columns = HashSet::new();
+            for (column_index, field) in values.schema.fields().iter().enumerate() {
+                if values.values.iter().any(|row| {
+                    row.get(column_index)
+                        .is_some_and(string_literal_is_special_numeric)
+                }) {
+                    columns.insert(Column::new_unqualified(field.name().as_str()));
+                }
+            }
+            columns
+        }
+        LogicalPlan::Projection(projection) => {
+            let input_columns = special_numeric_string_columns(&projection.input);
+            projection
+                .expr
+                .iter()
+                .zip(projection.schema.fields())
+                .filter(|(expr, _field)| {
+                    expr_contains_special_numeric_string_column(expr, &input_columns)
+                })
+                .map(|(_expr, field)| Column::new_unqualified(field.name().as_str()))
+                .collect()
+        }
+        LogicalPlan::SubqueryAlias(alias) => special_numeric_string_columns(&alias.input)
+            .into_iter()
+            .map(|column| Column::new(Some(alias.alias.clone()), column.name))
+            .collect(),
+        LogicalPlan::Filter(filter) => special_numeric_string_columns(&filter.input),
+        LogicalPlan::Repartition(repartition) => special_numeric_string_columns(&repartition.input),
+        LogicalPlan::Sort(sort) => special_numeric_string_columns(&sort.input),
+        LogicalPlan::Limit(limit) => special_numeric_string_columns(&limit.input),
+        LogicalPlan::Join(join) => {
+            let mut columns = special_numeric_string_columns(&join.left);
+            columns.extend(special_numeric_string_columns(&join.right));
+            columns
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .flat_map(|input| special_numeric_string_columns(input))
+            .collect(),
+        _ => plan
+            .inputs()
+            .into_iter()
+            .flat_map(special_numeric_string_columns)
+            .collect(),
+    }
+}
+
+fn casts_special_numeric_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Cast(cast) => {
+            is_decimal_type(&cast.data_type) && string_literal_is_special_numeric(&cast.expr)
+        }
+        Expr::TryCast(cast) => {
+            is_decimal_type(&cast.data_type) && string_literal_is_special_numeric(&cast.expr)
+        }
+        _ => false,
+    }
+}
+
+fn casts_special_numeric_column(expr: &Expr, special_string_columns: &HashSet<Column>) -> bool {
+    match expr {
+        Expr::Cast(cast) => {
+            is_decimal_type(&cast.data_type)
+                && expr_contains_special_numeric_string_column(&cast.expr, special_string_columns)
+        }
+        Expr::TryCast(cast) => {
+            is_decimal_type(&cast.data_type)
+                && expr_contains_special_numeric_string_column(&cast.expr, special_string_columns)
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_special_numeric_string_column(
+    expr: &Expr,
+    special_string_columns: &HashSet<Column>,
+) -> bool {
+    let mut found = false;
+    let _ = expr.apply(|expr| {
+        if string_literal_is_special_numeric(expr) {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        if let Expr::Column(column) = expr {
+            if column_matches_special_numeric_string(column, special_string_columns) {
+                found = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+fn column_matches_special_numeric_string(
+    column: &Column,
+    special_string_columns: &HashSet<Column>,
+) -> bool {
+    special_string_columns.contains(column)
+        || special_string_columns.contains(&Column::new_unqualified(&column.name))
+}
+
+fn is_decimal_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Decimal128(_, _) | DataType::Decimal256(_, _)
+    )
+}
+
+fn string_literal_is_special_numeric(expr: &Expr) -> bool {
+    let value = match expr {
+        Expr::Literal(ScalarValue::Utf8(Some(value)))
+        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)))
+        | Expr::Literal(ScalarValue::Utf8View(Some(value))) => value,
+        _ => return false,
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity"
+    )
 }
 
 #[derive(Debug, Error)]
