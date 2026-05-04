@@ -33,6 +33,7 @@ pub(crate) fn validate_pg_layout_type(
         TypeTag::Float32 => oid == pg_sys::FLOAT4OID,
         TypeTag::Float64 => oid == pg_sys::FLOAT8OID,
         TypeTag::Uuid => oid == pg_sys::UUIDOID,
+        TypeTag::Decimal128 => false,
         TypeTag::Utf8View => {
             oid == pg_sys::TEXTOID
                 || oid == pg_sys::VARCHAROID

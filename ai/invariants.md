@@ -3,7 +3,7 @@ id: inv-project-0001
 type: invariant
 scope: project
 tags: ["safety", "pgrx", "ipc", "datafusion", "shared-memory", "arrow"]
-updated_at: "2026-04-24"
+updated_at: "2026-05-04"
 importance: 0.95
 ---
 
@@ -26,6 +26,10 @@ importance: 0.95
 - `slot_encoder`, `page/import`, and `slot_import` must agree on
   `arrow_layout` block shape, type tags, validity layout, and view payload
   ownership.
+- Decimal result pages carry Arrow precision/scale in the schema. The raw
+  `TypeTag::Decimal128` only records the 16-byte fixed-width layout, so
+  import/projection code must preserve precision/scale from the Arrow schema
+  rather than reconstructing it from the page tag.
 
 4. PostgreSQL owns physical table access.
 

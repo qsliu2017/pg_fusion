@@ -14,6 +14,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_common::{DataFusionError, Result as DFResult};
+use datafusion_expr::registry::FunctionRegistry;
 use futures::executor::block_on;
 use plan_builder::{PlanBuildInput, PlanBuilder};
 use scan_node::{insert_page_materializers, PgScanExecFactory, PgScanExtensionPlanner, PgScanSpec};
@@ -99,10 +100,12 @@ fn render_pg_leaf_explains(
 fn build_explain_session_state() -> SessionState {
     let mut options = ConfigOptions::default();
     options.execution.target_partitions = 1;
-    SessionStateBuilder::new()
+    let mut state = SessionStateBuilder::new()
         .with_config(options.into())
         .with_default_features()
-        .build()
+        .build();
+    let _ = state.register_udaf(df_functions::pg_avg_udaf());
+    state
 }
 
 #[derive(Debug)]

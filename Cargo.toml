@@ -18,6 +18,7 @@ members = [
   "page/plan_flow",
   "page/scan_flow",
   "pg/df_catalog",
+  "pg/df_functions",
   "pg/backend_service",
   "pg/plan_builder",
   "pg/statistics",

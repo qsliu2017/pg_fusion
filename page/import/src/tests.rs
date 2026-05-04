@@ -1,8 +1,8 @@
 use super::{ArrowPageDecoder, ConfigError, ImportError, ARROW_LAYOUT_BATCH_KIND};
 use arrow_array::{
-    Array, ArrayRef, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, RecordBatchOptions,
-    StringViewArray,
+    Array, ArrayRef, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch,
+    RecordBatchOptions, StringViewArray,
 };
 use arrow_layout::{init_block, BlockMut, BlockRef, ByteView, LayoutPlan, ViewWriteStatus};
 use arrow_schema::{DataType, Field, Schema};
@@ -329,6 +329,15 @@ fn encode_layout_payload(batch: &RecordBatch, block_size: usize) -> Vec<u8> {
                             .to_ne_bytes();
                         block.write_fixed(col, row, &value).expect("write fixed");
                     }
+                    arrow_layout::TypeTag::Decimal128 => {
+                        let value = array
+                            .as_any()
+                            .downcast_ref::<Decimal128Array>()
+                            .expect("decimal128")
+                            .value(row as usize)
+                            .to_ne_bytes();
+                        block.write_fixed(col, row, &value).expect("write fixed");
+                    }
                     arrow_layout::TypeTag::Uuid => {
                         let value = array
                             .as_any()
@@ -389,6 +398,37 @@ fn imports_mixed_batch_zero_copy() {
     assert_eq!(pool.snapshot().leased_pages, 1);
     drop(column);
     assert_eq!(pool.snapshot().leased_pages, 0);
+}
+
+#[test]
+fn imports_decimal128_column() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "n",
+        DataType::Decimal128(38, 16),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(
+            Decimal128Array::from(vec![Some(123456789012345678_i128), None])
+                .with_precision_and_scale(38, 16)
+                .expect("decimal scale"),
+        ) as ArrayRef],
+    )
+    .expect("batch");
+    let payload = encode_layout_payload(&batch, 1024);
+
+    let (_region, pool) = init_pool(cfg(2048, 1));
+    let page = send_page(pool, ARROW_LAYOUT_BATCH_KIND, 0, &payload);
+    let decoder = ArrowPageDecoder::new(schema).expect("decoder");
+    let imported = decoder.import(page).expect("import");
+    let column = imported
+        .column(0)
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .expect("decimal128");
+    assert_eq!(column.value(0), 123456789012345678_i128);
+    assert!(column.is_null(1));
 }
 
 #[test]

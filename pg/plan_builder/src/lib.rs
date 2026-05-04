@@ -29,6 +29,7 @@ use datafusion_common::TableReference;
 use datafusion_common::{DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::logical_plan::{Filter, LogicalPlan, Projection, TableScan};
 use datafusion_expr::planner::{ContextProvider, ExprPlanner};
+use datafusion_expr::registry::FunctionRegistry;
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
     AggregateUDF, Expr, ScalarUDF, TableProviderFilterPushDown, TableSource, WindowUDF,
@@ -246,9 +247,10 @@ fn optimize_logical_plan(
 ) -> Result<LogicalPlan, DataFusionError> {
     let mut options = ConfigOptions::default();
     options.execution.target_partitions = target_partitions;
-    let state = SessionStateBuilder::new()
+    let mut state = SessionStateBuilder::new()
         .with_config(options.into())
         .build();
+    let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state.optimize(&plan)
 }
 
@@ -745,6 +747,7 @@ impl Builtins {
         for function in SessionStateDefaults::default_aggregate_functions() {
             register_aggregate_udf(&mut agg_udf, function);
         }
+        register_aggregate_udf(&mut agg_udf, df_functions::pg_avg_udaf());
 
         let mut scalar_udf = HashMap::new();
         for function in SessionStateDefaults::default_scalar_functions() {

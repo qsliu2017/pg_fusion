@@ -31,6 +31,7 @@ use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
 use datafusion::prelude::SessionContext;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, TableReference};
 use datafusion_expr::logical_plan::{Extension, LogicalPlan};
+use datafusion_expr::registry::FunctionRegistry;
 use datafusion_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion_proto::logical_plan::from_proto::parse_expr;
 use datafusion_proto::logical_plan::to_proto::serialize_expr;
@@ -458,8 +459,10 @@ pub struct PlanDecodeSession {
 impl PlanDecodeSession {
     /// Create a new streaming decoder.
     pub fn new() -> Self {
+        let mut ctx = SessionContext::new();
+        let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
         Self {
-            ctx: SessionContext::new(),
+            ctx,
             machine: fsm::decode_flow::StateMachine::new(),
             control_buf: BytesMut::new(),
             scan_specs_remaining: None,
@@ -1013,7 +1016,10 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udaf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+    fn try_decode_udaf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+        if name.eq_ignore_ascii_case("avg") {
+            return Ok(df_functions::pg_avg_udaf());
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom aggregate UDF definitions".into(),
         ))
@@ -1099,7 +1105,10 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udaf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+    fn try_decode_udaf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+        if name.eq_ignore_ascii_case("avg") {
+            return Ok(df_functions::pg_avg_udaf());
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom aggregate UDF definitions".into(),
         ))

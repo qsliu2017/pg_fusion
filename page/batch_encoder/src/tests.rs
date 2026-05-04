@@ -1,7 +1,8 @@
 use super::{AppendResult, BatchPageEncoder, ConfigError, EncodeError};
 use arrow_array::{
-    ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
+    ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    StringViewArray,
 };
 use arrow_layout::constants::VIEW_INLINE_LEN;
 use arrow_layout::{init_block, BlockRef, ColumnSpec, LayoutPlan, TypeTag};
@@ -333,6 +334,44 @@ fn append_batch_accepts_view_inputs() {
         .expect("bin1")
         .is_inline()
         .expect("bin1 inline"));
+}
+
+#[test]
+fn append_batch_writes_decimal128_column() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "n",
+        DataType::Decimal128(38, 16),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(
+            Decimal128Array::from(vec![Some(123456789012345678_i128), None])
+                .with_precision_and_scale(38, 16)
+                .expect("decimal scale"),
+        ) as ArrayRef],
+    )
+    .expect("batch");
+    let plan =
+        LayoutPlan::new(&[ColumnSpec::new(TypeTag::Decimal128, true)], 2, 256).expect("plan");
+    let mut payload = init_payload(&plan);
+    let mut encoder = BatchPageEncoder::new(schema.as_ref(), &plan, &mut payload).expect("encoder");
+
+    let appended = encoder.append_batch(&batch, 0).expect("append");
+    assert_eq!(appended.rows_written, 2);
+    assert!(!appended.full);
+    encoder.finish().expect("finish");
+
+    let block = BlockRef::open(&payload).expect("block");
+    assert_eq!(
+        i128::from_ne_bytes(
+            block.fixed_value(0, 0).expect("decimal")[..16]
+                .try_into()
+                .unwrap()
+        ),
+        123456789012345678_i128
+    );
+    assert!(!block.validity(0, 1).expect("decimal null"));
 }
 
 #[test]

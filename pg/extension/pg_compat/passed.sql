@@ -1,3 +1,13 @@
+-- id: aggregates_5_select_avg_four_as_avg_1_from_onek_a38cdb1e
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:20
+-- compare: multiset
+SELECT avg(four) AS avg_1 FROM onek;
+
+-- id: aggregates_6_select_avg_a_as_avg_32_from_aggtest_where_a_100_6adf2685
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:23
+-- compare: multiset
+SELECT avg(a) AS avg_32 FROM aggtest WHERE a < 100;
+
 -- id: aggregates_13_select_sum_four_as_sum_1500_from_onek_9440d3f5
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:37
 -- compare: multiset

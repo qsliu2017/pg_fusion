@@ -109,6 +109,8 @@ pub enum TypeTag {
     Utf8View = 8,
     /// 16-byte [`crate::ByteView`] slots for binary views.
     BinaryView = 9,
+    /// Native-endian 128-bit decimal values.
+    Decimal128 = 10,
 }
 
 impl TypeTag {
@@ -124,6 +126,7 @@ impl TypeTag {
             7 => Ok(Self::Uuid),
             8 => Ok(Self::Utf8View),
             9 => Ok(Self::BinaryView),
+            10 => Ok(Self::Decimal128),
             _ => Err(LayoutError::InvalidTypeTag { raw }),
         }
     }
@@ -145,7 +148,7 @@ impl TypeTag {
             Self::Int16 => Some(2),
             Self::Int32 | Self::Float32 => Some(4),
             Self::Int64 | Self::Float64 => Some(8),
-            Self::Uuid | Self::Utf8View | Self::BinaryView => Some(16),
+            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => Some(16),
         }
     }
 
@@ -157,7 +160,9 @@ impl TypeTag {
             Self::Int16 => aligned_mul(max_rows, 2),
             Self::Int32 | Self::Float32 => aligned_mul(max_rows, 4),
             Self::Int64 | Self::Float64 => aligned_mul(max_rows, 8),
-            Self::Uuid | Self::Utf8View | Self::BinaryView => aligned_mul(max_rows, 16),
+            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => {
+                aligned_mul(max_rows, 16)
+            }
         }
     }
 
@@ -184,7 +189,7 @@ impl TypeTag {
                     .checked_mul(8)
                     .ok_or(LayoutError::SizeOverflow)?,
             ),
-            Self::Uuid | Self::Utf8View | Self::BinaryView => checked_u32(
+            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => checked_u32(
                 usize::try_from(row_count)
                     .map_err(|_| LayoutError::SizeOverflow)?
                     .checked_mul(16)
@@ -205,6 +210,7 @@ impl TypeTag {
             DataType::FixedSizeBinary(width) if *width == UUID_WIDTH_BYTES as i32 => Ok(Self::Uuid),
             DataType::Utf8View => Ok(Self::Utf8View),
             DataType::BinaryView => Ok(Self::BinaryView),
+            DataType::Decimal128(_, _) => Ok(Self::Decimal128),
             other => Err(LayoutError::UnsupportedArrowType {
                 index,
                 data_type: other.to_string(),

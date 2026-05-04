@@ -405,15 +405,22 @@ pub(crate) fn heap_avg_full_scan_smoke() {
         ),
     );
 
-    let avg: f64 =
-        simple_query_first_column_tx(&mut tx, &format!("SELECT avg(a) FROM {table_name}"))
-            .expect("heap avg full scan must return one row")
-            .parse()
-            .expect("heap avg full scan must return a numeric value");
-    assert!(
-        (avg - 25000.5).abs() < 0.001,
-        "heap avg full scan returned {avg}, expected 25000.5"
+    let avg =
+        simple_query_first_column_tx(&mut tx, &format!("SELECT avg(a)::text FROM {table_name}"))
+            .expect("heap avg full scan must return one row");
+    assert_eq!(avg, "25000.5000000000000000");
+
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "TRUNCATE {table_name}; \
+             INSERT INTO {table_name} VALUES (9007199254740992), (9007199254740993)"
+        ),
     );
+    let exact_avg =
+        simple_query_first_column_tx(&mut tx, &format!("SELECT avg(a)::text FROM {table_name}"))
+            .expect("heap avg exactness check must return one row");
+    assert_eq!(exact_avg, "9007199254740992.5000000000000000");
 }
 
 pub(crate) fn heap_varlena_full_scan_smoke() {

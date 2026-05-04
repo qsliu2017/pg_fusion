@@ -28,6 +28,7 @@ pub enum CellType {
     Float32,
     Float64,
     Uuid,
+    Decimal128,
     Utf8,
     Binary,
 }
@@ -42,6 +43,7 @@ pub enum CellRef<'a> {
     Float32(f32),
     Float64(f64),
     Uuid(&'a [u8]),
+    Decimal128(i128),
     Utf8(&'a [u8]),
     Binary(&'a [u8]),
 }
@@ -57,6 +59,7 @@ impl CellRef<'_> {
             Self::Float32(_) => CellType::Float32,
             Self::Float64(_) => CellType::Float64,
             Self::Uuid(_) => CellType::Uuid,
+            Self::Decimal128(_) => CellType::Decimal128,
             Self::Utf8(_) => CellType::Utf8,
             Self::Binary(_) => CellType::Binary,
         }
@@ -71,6 +74,7 @@ pub enum FixedWidthCell {
     Int64(i64),
     Float32(f32),
     Float64(f64),
+    Decimal128(i128),
 }
 
 impl FixedWidthCell {
@@ -82,6 +86,7 @@ impl FixedWidthCell {
             Self::Int64(_) => CellType::Int64,
             Self::Float32(_) => CellType::Float32,
             Self::Float64(_) => CellType::Float64,
+            Self::Decimal128(_) => CellType::Decimal128,
         }
     }
 }
@@ -239,6 +244,7 @@ impl<'payload> PageRowEncoder<'payload> {
                 | TypeTag::Int64
                 | TypeTag::Float32
                 | TypeTag::Float64
+                | TypeTag::Decimal128
         ) {
             return Ok(None);
         }
@@ -273,6 +279,10 @@ impl<'payload> PageRowEncoder<'payload> {
                 (TypeTag::Float64, CellRef::Float64(value)) => {
                     self.write_validity(row_idx, desc, true);
                     self.write_fixed_bytes(row_idx, desc, &value.to_bits().to_ne_bytes())?;
+                }
+                (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
+                    self.write_validity(row_idx, desc, true);
+                    self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
                 }
                 (expected, actual) => {
                     return Err(RowEncodeError::TypeMismatch {
@@ -333,6 +343,9 @@ impl<'payload> PageRowEncoder<'payload> {
             (TypeTag::Float64, CellRef::Float64(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_bits().to_ne_bytes())
             }
+            (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())
+            }
             (TypeTag::Uuid, CellRef::Uuid(bytes)) => {
                 if bytes.len() != UUID_WIDTH_BYTES as usize {
                     return Err(RowEncodeError::InvalidUuidWidth {
@@ -387,6 +400,10 @@ impl<'payload> PageRowEncoder<'payload> {
             }
             (TypeTag::Float64, FixedWidthCell::Float64(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_bits().to_ne_bytes())?;
+                Ok(())
+            }
+            (TypeTag::Decimal128, FixedWidthCell::Decimal128(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
                 Ok(())
             }
             (expected, actual) => Err(RowEncodeError::TypeMismatch {
@@ -479,7 +496,8 @@ impl<'payload> PageRowEncoder<'payload> {
             }
             raw if raw == TypeTag::Uuid.to_raw()
                 || raw == TypeTag::Utf8View.to_raw()
-                || raw == TypeTag::BinaryView.to_raw() =>
+                || raw == TypeTag::BinaryView.to_raw()
+                || raw == TypeTag::Decimal128.to_raw() =>
             {
                 self.zero_value_slot(row_idx, desc, 16)
             }
@@ -590,7 +608,7 @@ impl<'payload> PageRowEncoder<'payload> {
             raw if raw == TypeTag::Int16.to_raw() => 2usize,
             raw if raw == TypeTag::Int32.to_raw() || raw == TypeTag::Float32.to_raw() => 4usize,
             raw if raw == TypeTag::Int64.to_raw() || raw == TypeTag::Float64.to_raw() => 8usize,
-            raw if raw == TypeTag::Uuid.to_raw() => 16usize,
+            raw if raw == TypeTag::Uuid.to_raw() || raw == TypeTag::Decimal128.to_raw() => 16usize,
             raw => return Err(arrow_layout::LayoutError::InvalidTypeTag { raw }.into()),
         };
         if bytes.len() != width {

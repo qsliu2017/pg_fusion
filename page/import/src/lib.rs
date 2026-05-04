@@ -20,7 +20,7 @@ mod error;
 mod tests;
 
 use arrow_array::types::{
-    ArrowPrimitiveType, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
+    ArrowPrimitiveType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
 };
 use arrow_array::{
     ArrayRef, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, PrimitiveArray, RecordBatch,
@@ -31,7 +31,7 @@ use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow_layout::bitmap::bitmap_bytes;
 use arrow_layout::constants::UUID_WIDTH_BYTES;
 use arrow_layout::{BlockRef, ColumnLayout, LayoutError, TypeTag};
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, SchemaRef};
 pub use error::{ConfigError, ImportError};
 use std::ptr::NonNull;
 use std::slice;
@@ -181,6 +181,17 @@ impl ArrowPageDecoder {
                 TypeTag::Float64 => Arc::new(
                     self.import_primitive::<Float64Type>(&owner, &layout, row_count, nulls)?,
                 ),
+                TypeTag::Decimal128 => {
+                    let DataType::Decimal128(precision, scale) =
+                        self.schema.field(index).data_type()
+                    else {
+                        unreachable!("ArrowPageDecoder already validated Decimal128 schema")
+                    };
+                    Arc::new(
+                        self.import_primitive::<Decimal128Type>(&owner, &layout, row_count, nulls)?
+                            .with_precision_and_scale(*precision, *scale)?,
+                    )
+                }
                 TypeTag::Uuid => Arc::new(self.import_uuid(&owner, &layout, row_count, nulls)?),
                 TypeTag::Utf8View => Arc::new(self.import_utf8_view(
                     &owner,

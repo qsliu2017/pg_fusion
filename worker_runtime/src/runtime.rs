@@ -11,6 +11,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_expr::logical_plan::LogicalPlan;
+use datafusion_expr::registry::FunctionRegistry;
 use issuance::{decode_issued_frame, IssuedOwnedFrame, IssuedRx};
 use plan_flow::{FlowId as PlanFlowId, PlanOpen, WorkerPlanRole, WorkerStep as WorkerPlanStep};
 use runtime_filter::RuntimeFilterPool;
@@ -751,10 +752,12 @@ fn build_worker_planning_session_state() -> SessionState {
     // a repartitioned or multi-partition physical pipeline.
     let mut options = ConfigOptions::default();
     options.execution.target_partitions = 1;
-    SessionStateBuilder::new()
+    let mut state = SessionStateBuilder::new()
         .with_config(options.into())
         .with_default_features()
-        .build()
+        .build();
+    let _ = state.register_udaf(df_functions::pg_avg_udaf());
+    state
 }
 
 /// Thin worker-side attachment to `control_transport`.

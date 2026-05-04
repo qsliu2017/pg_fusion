@@ -20,6 +20,7 @@ datafusion-common = { workspace = true }
 datafusion-execution = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-physical-expr = { workspace = true }
+df_functions = { path = "../pg/df_functions", version = "25.0" }
 futures = "0.3"
 import = { path = "../page/import", version = "25.0" }
 issuance = { path = "../page/issuance", version = "25.0" }

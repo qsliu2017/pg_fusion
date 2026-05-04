@@ -1,8 +1,8 @@
 use crate::{ConfigError, EncodeError};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    BinaryType, BinaryViewType, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
-    StringViewType, Utf8Type,
+    BinaryType, BinaryViewType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, StringViewType, Utf8Type,
 };
 use arrow_array::{
     Array, BooleanArray, FixedSizeBinaryArray, GenericByteArray, GenericByteViewArray,
@@ -211,6 +211,16 @@ impl<'schema, 'payload> BatchPageEncoder<'schema, 'payload> {
                         index,
                         layout,
                         batch.column(index).as_primitive::<Float64Type>(),
+                        start_row,
+                        dest_start,
+                        rows_to_write,
+                    )?;
+                }
+                DataType::Decimal128(_, _) => {
+                    self.write_primitive_column::<Decimal128Type>(
+                        index,
+                        layout,
+                        batch.column(index).as_primitive::<Decimal128Type>(),
                         start_row,
                         dest_start,
                         rows_to_write,
@@ -620,6 +630,7 @@ fn validate_schema_column(
         DataType::Int64 => layout.type_tag == TypeTag::Int64,
         DataType::Float32 => layout.type_tag == TypeTag::Float32,
         DataType::Float64 => layout.type_tag == TypeTag::Float64,
+        DataType::Decimal128(_, _) => layout.type_tag == TypeTag::Decimal128,
         DataType::FixedSizeBinary(width) if *width == UUID_WIDTH_BYTES as i32 => {
             layout.type_tag == TypeTag::Uuid
         }

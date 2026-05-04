@@ -3,7 +3,7 @@ id: arch-overview-0001
 type: fact
 scope: repo
 tags: ["architecture", "datafusion", "pgrx", "shared-memory", "ipc", "slot_scan", "statistics"]
-updated_at: "2026-05-02"
+updated_at: "2026-05-04"
 importance: 0.8
 ---
 
@@ -42,6 +42,10 @@ page-backed Arrow batches.
 - `pg/df_catalog`, `pg/plan_builder`, `pg/scan_node`, `pg/scan_sql`,
   `pg/slot_scan`: backend-side DataFusion planning and trusted PostgreSQL scan
   SQL execution.
+- `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
+  by both backend planning and worker/codec decoding. Its `avg` UDAF keeps
+  integer averages as Arrow `Decimal128(38, 16)` so PostgreSQL sees `numeric`
+  instead of DataFusion's default `float8` behavior.
 - `pg/statistics`: PostgreSQL planner/catalog statistics bridge. It is
   PostgreSQL-specific but independent of DataFusion and `join_order`;
   `plan_builder` uses it to turn pushed-down scan SQL, `pg_class`,
@@ -74,7 +78,11 @@ page-backed Arrow batches.
    each binary join; `plan_builder` emits that side as the DataFusion left
    child because `CollectLeft` hash joins build the left input, then restores
    the original visible output order with a projection when needed. Ineligible
-   join shapes keep their DataFusion order. Scan leaves are then lowered to
+   join shapes keep their DataFusion order. PostgreSQL-compatible function
+   overrides are registered before SQL planning, logical optimization, plan
+   codec decoding, worker physical planning, and EXPLAIN physical planning; in
+   particular integer `avg` is planned as a `numeric`-compatible Decimal128
+   aggregate end to end. Scan leaves are then lowered to
    `PgScanNode`/`scan_sql` descriptors. Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single
    lowered CTE producer so worker execution materializes the CTE once and
@@ -115,7 +123,10 @@ page-backed Arrow batches.
    Tokio only drives DataFusion planning, multi-partition root collection, and
    result-stream polling.
 6. Backend imports result pages with `slot_import` and projects rows into
-   PostgreSQL tuple slots.
+   PostgreSQL tuple slots. Result transport supports Decimal128 fixed-width
+   pages for PostgreSQL `numeric` outputs produced by worker-side expressions;
+   backend heap scans still do not encode arbitrary PostgreSQL `numeric`
+   columns through `slot_encoder`.
 
 Page-backed scan batches stay zero-copy through streaming DataFusion operators.
 After physical planning, `scan_node` inserts `PageMaterializeExec` only before

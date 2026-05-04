@@ -316,6 +316,7 @@ fn type_to_oid(data_type: &DataType) -> Option<Oid> {
         DataType::Int64 => Some(pgrx::pg_sys::INT8OID),
         DataType::Float32 => Some(pgrx::pg_sys::FLOAT4OID),
         DataType::Float64 => Some(pgrx::pg_sys::FLOAT8OID),
+        DataType::Decimal128(_, _) => Some(pgrx::pg_sys::NUMERICOID),
         DataType::Utf8 | DataType::Utf8View => Some(pgrx::pg_sys::TEXTOID),
         DataType::Binary | DataType::BinaryView => Some(pgrx::pg_sys::BYTEAOID),
         DataType::FixedSizeBinary(16) => Some(pgrx::pg_sys::UUIDOID),

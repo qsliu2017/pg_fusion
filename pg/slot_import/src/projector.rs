@@ -1,17 +1,18 @@
 use crate::{ConfigError, ProjectError};
 use arrow_array::{
-    Array, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, StringViewArray,
+    Array, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, StringViewArray,
 };
 use arrow_layout::TypeTag;
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, SchemaRef};
 use import::{ArrowPageDecoder, OwnedPage};
 use pgrx::fcinfo::direct_function_call_as_datum;
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::varlena::{rust_byte_slice_to_bytea, rust_str_to_text_p};
-use pgrx::{PgMemoryContexts, PgTryBuilder};
+use pgrx::{IntoDatum, PgMemoryContexts, PgTryBuilder};
 use std::convert::TryFrom;
+use std::ffi::CString;
 use std::panic::AssertUnwindSafe;
 use std::{ptr, slice};
 use transfer::ReceivedPage;
@@ -61,6 +62,7 @@ enum ColumnProjector {
     Float32,
     Float64,
     Uuid,
+    Numeric { scale: i8 },
     TextLike(TextLikeProjector),
     Bytea,
 }
@@ -92,6 +94,7 @@ enum PageColumnView {
     Float32(Float32Array),
     Float64(Float64Array),
     Uuid(FixedSizeBinaryArray),
+    Decimal128(Decimal128Array),
     Utf8View(StringViewArray),
     BinaryView(BinaryViewArray),
 }
@@ -147,7 +150,13 @@ impl ArrowSlotProjector {
                 Err(_) => unreachable!("ArrowPageDecoder already validated the schema"),
             };
 
-            let projector = projector_for_attr(index, attr.atttypid, attr.atttypmod, type_tag)?;
+            let projector = projector_for_attr(
+                index,
+                attr.atttypid,
+                attr.atttypmod,
+                type_tag,
+                field.data_type(),
+            )?;
             if !checked_utf8_encoding && matches!(projector, ColumnProjector::TextLike(_)) {
                 let encoding = database_encoding();
                 if encoding != pg_sys::pg_enc::PG_UTF8 as i32 {
@@ -289,6 +298,16 @@ impl ArrowSlotProjector {
                             expected: "FixedSizeBinaryArray(16)",
                         })?,
                 ),
+                ColumnProjector::Numeric { .. } => PageColumnView::Decimal128(
+                    array
+                        .as_any()
+                        .downcast_ref::<Decimal128Array>()
+                        .cloned()
+                        .ok_or(ProjectError::ImportedArrayTypeMismatch {
+                            index,
+                            expected: "Decimal128Array",
+                        })?,
+                ),
                 ColumnProjector::TextLike(_) => PageColumnView::Utf8View(
                     array
                         .as_any()
@@ -351,6 +370,9 @@ impl ArrowSlotProjector {
                 }
                 (ColumnProjector::Uuid, PageColumnView::Uuid(array)) => {
                     values[index] = pg_sys::Datum::from(array.value(row).as_ptr() as *mut u8);
+                }
+                (ColumnProjector::Numeric { scale }, PageColumnView::Decimal128(array)) => {
+                    values[index] = numeric_datum(array.value(row), *scale)?;
                 }
                 (ColumnProjector::TextLike(projector), PageColumnView::Utf8View(array)) => {
                     values[index] = text_datum(*projector, array.value(row), index)?;
@@ -447,6 +469,7 @@ impl PageColumnView {
             Self::Float32(array) => array.is_null(row),
             Self::Float64(array) => array.is_null(row),
             Self::Uuid(array) => array.is_null(row),
+            Self::Decimal128(array) => array.is_null(row),
             Self::Utf8View(array) => array.is_null(row),
             Self::BinaryView(array) => array.is_null(row),
         }
@@ -458,6 +481,7 @@ fn projector_for_attr(
     oid: pg_sys::Oid,
     atttypmod: i32,
     type_tag: TypeTag,
+    data_type: &DataType,
 ) -> Result<ColumnProjector, ConfigError> {
     let projector = match (type_tag, oid) {
         (TypeTag::Boolean, oid) if oid == pg_sys::BOOLOID => ColumnProjector::Boolean,
@@ -467,6 +491,16 @@ fn projector_for_attr(
         (TypeTag::Float32, oid) if oid == pg_sys::FLOAT4OID => ColumnProjector::Float32,
         (TypeTag::Float64, oid) if oid == pg_sys::FLOAT8OID => ColumnProjector::Float64,
         (TypeTag::Uuid, oid) if oid == pg_sys::UUIDOID => ColumnProjector::Uuid,
+        (TypeTag::Decimal128, oid) if oid == pg_sys::NUMERICOID => {
+            let DataType::Decimal128(_, scale) = data_type else {
+                return Err(ConfigError::PgLayoutTypeMismatch {
+                    index,
+                    oid: oid.to_u32(),
+                    type_tag,
+                });
+            };
+            ColumnProjector::Numeric { scale: *scale }
+        }
         (TypeTag::Utf8View, oid) if oid == pg_sys::TEXTOID => {
             ColumnProjector::TextLike(TextLikeProjector {
                 kind: TextLikeKind::Text,
@@ -575,6 +609,61 @@ fn text_datum(
     }
 }
 
+fn numeric_datum(value: i128, scale: i8) -> Result<pg_sys::Datum, ProjectError> {
+    let rendered = format_decimal128(value, scale);
+    let cstring = CString::new(rendered)
+        .map_err(|_| ProjectError::Postgres("numeric text contained NUL byte".to_owned()))?;
+    PgTryBuilder::new(AssertUnwindSafe(|| unsafe {
+        direct_function_call_as_datum(
+            pg_sys::numeric_in,
+            &[
+                cstring.as_c_str().into_datum(),
+                pg_sys::InvalidOid.into_datum(),
+                (-1_i32).into_datum(),
+            ],
+        )
+        .ok_or_else(|| ProjectError::Postgres("numeric_in returned null datum".to_owned()))
+    }))
+    .catch_others(|error| Err(project_error_from_caught_error(error)))
+    .execute()
+}
+
+fn format_decimal128(value: i128, scale: i8) -> String {
+    let negative = value.is_negative();
+    let mut digits = value.unsigned_abs().to_string();
+    match scale.cmp(&0) {
+        std::cmp::Ordering::Equal => {}
+        std::cmp::Ordering::Less => {
+            let extra_zeros = usize::from(scale.unsigned_abs());
+            digits.extend(std::iter::repeat_n('0', extra_zeros));
+        }
+        std::cmp::Ordering::Greater => {
+            let scale = scale as usize;
+            if digits.len() <= scale {
+                let mut rendered = String::with_capacity(2 + scale + usize::from(negative));
+                if negative {
+                    rendered.push('-');
+                }
+                rendered.push_str("0.");
+                rendered.extend(std::iter::repeat_n('0', scale - digits.len()));
+                rendered.push_str(&digits);
+                return rendered;
+            }
+            let split = digits.len() - scale;
+            digits.insert(split, '.');
+        }
+    }
+
+    if negative {
+        let mut rendered = String::with_capacity(digits.len() + 1);
+        rendered.push('-');
+        rendered.push_str(&digits);
+        rendered
+    } else {
+        digits
+    }
+}
+
 fn apply_text_typmod(
     func: unsafe fn(pg_sys::FunctionCallInfo) -> pg_sys::Datum,
     label: &'static str,
@@ -624,4 +713,17 @@ fn database_encoding() -> i32 {
 #[cfg(test)]
 pub(crate) fn set_test_database_encoding(encoding: i32) -> i32 {
     TEST_DATABASE_ENCODING.swap(encoding, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_decimal128;
+
+    #[test]
+    fn format_decimal128_renders_scaled_values_for_numeric_in() {
+        assert_eq!(format_decimal128(123456789, 4), "12345.6789");
+        assert_eq!(format_decimal128(-50, 2), "-0.50");
+        assert_eq!(format_decimal128(42, 0), "42");
+        assert_eq!(format_decimal128(42, -2), "4200");
+    }
 }

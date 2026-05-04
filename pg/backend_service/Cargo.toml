@@ -22,6 +22,7 @@ control_transport = { path = "../../control_transport", version = "25.0" }
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
+df_functions = { path = "../df_functions", version = "25.0" }
 futures = "0.3"
 import = { path = "../../page/import", version = "25.0" }
 issuance = { path = "../../page/issuance", version = "25.0" }

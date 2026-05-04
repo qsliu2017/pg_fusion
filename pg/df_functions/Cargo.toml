@@ -1,0 +1,18 @@
+[package]
+name = "df_functions"
+version = "25.0.0"
+edition = "2021"
+description = "PostgreSQL-compatible DataFusion functions for pg_fusion"
+readme = "README.md"
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+thiserror = "2.0"

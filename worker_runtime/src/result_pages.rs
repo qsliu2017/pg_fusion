@@ -351,7 +351,8 @@ fn normalize_field(index: usize, field: &Field) -> Result<Field, WorkerRuntimeEr
         | DataType::Int32
         | DataType::Int64
         | DataType::Float32
-        | DataType::Float64 => field.data_type().clone(),
+        | DataType::Float64
+        | DataType::Decimal128(_, _) => field.data_type().clone(),
         DataType::FixedSizeBinary(width) if *width == 16 => field.data_type().clone(),
         DataType::Utf8 | DataType::Utf8View => DataType::Utf8View,
         DataType::Binary | DataType::BinaryView => DataType::BinaryView,
