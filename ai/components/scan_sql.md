@@ -30,7 +30,9 @@ importance: 0.66
   - pushed filter fragments with original filter indices
   - residual DataFusion filters
   - an `all_filters_compiled` flag that only means all filters produced PostgreSQL SQL
-  - a `uses_dummy_projection` flag for zero-column scans
+  - a `uses_dummy_projection` flag for zero-column scans; PostgreSQL SQL selects
+    one synthetic dummy value, while the transport schema remains empty and
+    carries only row count
   - default limit lowering is `ExternalHint`, not SQL `LIMIT`
 - Pushdown behavior:
   - top-level `AND` filters are split so supported conjuncts still push down when sibling conjuncts remain residual

@@ -3026,3 +3026,44 @@ group by rollup(ten);
 with ctetable as not materialized ( select 1 as f1 )
 select * from ctetable c1
 where f1 in ( select c3.f1 from ctetable c2 full join ctetable c3 on true );
+
+-- id: aggregates_155_select_max_100_from_tenk1_13905752
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:410
+-- compare: multiset
+select max(100) from tenk1;
+
+-- id: create_index_181_select_count_from_tenk1_where_stringu1_tvaaaa_86690e88
+-- origin: postgres REL_17_STABLE src/test/regress/sql/create_index.sql:376
+-- compare: multiset
+SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
+
+-- id: create_index_362_select_count_from_tenk1_where_hundred_42_and_thousand_42_or_thousand_99_8518b2e5
+-- origin: postgres REL_17_STABLE src/test/regress/sql/create_index.sql:739
+-- compare: multiset
+SELECT count(*) FROM tenk1
+  WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
+
+-- id: select_parallel_183_select_count_from_tenk1_dc2a1c37
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_parallel.sql:412
+-- compare: multiset
+select count(*) from tenk1;
+
+-- id: stats_54_select_count_from_tenk2_56c47e65
+-- origin: postgres REL_17_STABLE src/test/regress/sql/stats.sql:91
+-- compare: multiset
+SELECT count(*) FROM tenk2;
+
+-- id: stats_56_select_count_from_tenk2_where_unique1_1_4f4fcf17
+-- origin: postgres REL_17_STABLE src/test/regress/sql/stats.sql:97
+-- compare: multiset
+SELECT count(*) FROM tenk2 WHERE unique1 = 1;
+
+-- id: window_8_select_count_over_from_tenk1_where_unique2_10_da5675b2
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:34
+-- compare: multiset
+SELECT COUNT(*) OVER () FROM tenk1 WHERE unique2 < 10;
+
+-- id: window_9_select_count_over_w_from_tenk1_where_unique2_10_window_w_as_e62c4294
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:37
+-- compare: multiset
+SELECT COUNT(*) OVER w FROM tenk1 WHERE unique2 < 10 WINDOW w AS ();

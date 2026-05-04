@@ -120,8 +120,7 @@ impl PgScanExecFactory for WorkerPgScanExecFactory {
                     scan_id: spec.scan_id.get(),
                 }))
             })?;
-        let output_schema = crate::normalize_result_transport_schema(&spec.arrow_schema())
-            .map(|(schema, _)| schema)
+        let output_schema = crate::normalize_scan_transport_schema(&spec.arrow_schema())
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
         Ok(Arc::new(WorkerPgScanExec::new(
             producers,
@@ -276,7 +275,7 @@ mod tests {
     use std::sync::Mutex;
     use std::task::{Context, Poll};
 
-    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_array::{Int64Array, RecordBatch, RecordBatchOptions};
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::physical_plan::RecordBatchStream;
     use datafusion_common::{DFSchema, TableReference};
@@ -320,10 +319,18 @@ mod tests {
         fn open_scan(&self, request: OpenScanRequest) -> DFResult<SendableRecordBatchStream> {
             let schema = Arc::clone(&request.output_schema);
             self.requests.lock().unwrap().push(request);
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![Arc::new(Int64Array::from(vec![1_i64, 2]))],
-            )?;
+            let batch = if schema.fields().is_empty() {
+                RecordBatch::try_new_with_options(
+                    Arc::clone(&schema),
+                    vec![],
+                    &RecordBatchOptions::new().with_row_count(Some(2)),
+                )?
+            } else {
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int64Array::from(vec![1_i64, 2]))],
+                )?
+            };
             Ok(Box::pin(OneBatchStream {
                 schema,
                 batch: Some(batch),
@@ -364,6 +371,38 @@ mod tests {
         )
     }
 
+    fn dummy_projection_spec(scan_id: u64) -> Arc<PgScanSpec> {
+        let source_schema = DFSchema::try_from_qualified_schema(
+            TableReference::partial("public", "users"),
+            &Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        )
+        .unwrap();
+        let scan = CompiledScan {
+            sql: "SELECT true FROM public.users".into(),
+            requested_limit: None,
+            sql_limit: None,
+            selected_columns: vec![],
+            output_columns: vec![],
+            filter_only_columns: Vec::new(),
+            residual_filter_columns: Vec::new(),
+            pushed_filters: Vec::new(),
+            residual_filters: Vec::new(),
+            all_filters_compiled: true,
+            uses_dummy_projection: true,
+        };
+
+        Arc::new(
+            PgScanSpec::try_new(
+                scan_id,
+                42,
+                PgRelation::new(Some("public"), "users"),
+                &source_schema,
+                scan,
+            )
+            .unwrap(),
+        )
+    }
+
     #[test]
     fn factory_builds_worker_pg_scan_exec() {
         let source = Arc::new(RecordingSource::new());
@@ -398,13 +437,43 @@ mod tests {
     }
 
     #[test]
+    fn factory_allows_dummy_projection_empty_scan_schema() {
+        let source = Arc::new(RecordingSource::new());
+        let mut scan_peers = BTreeMap::new();
+        let peer = BackendLeaseSlot::new(0, control_transport::BackendLeaseId::new(1, 1));
+        scan_peers.insert(
+            12,
+            vec![ScanProducerPeer {
+                producer_id: 0,
+                role: ProducerRoleKind::Leader,
+                peer,
+            }],
+        );
+        let factory = WorkerPgScanExecFactory::new(
+            99,
+            source.clone(),
+            scan_peers,
+            0x4152,
+            0,
+            WorkerScanTuning::default(),
+        );
+        let plan = factory.create(dummy_projection_spec(12)).unwrap();
+        assert!(plan.schema().fields().is_empty());
+
+        let stream = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
+        assert!(stream.schema().fields().is_empty());
+        let requests = source.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].output_schema.fields().is_empty());
+    }
+
+    #[test]
     fn execute_uses_scan_id_and_schema_from_spec() {
         let source = Arc::new(RecordingSource::new());
         let peer = BackendLeaseSlot::new(2, control_transport::BackendLeaseId::new(1, 3));
         let scan_spec = spec(8);
-        let output_schema = crate::normalize_result_transport_schema(&scan_spec.arrow_schema())
-            .expect("transport schema")
-            .0;
+        let output_schema =
+            crate::normalize_scan_transport_schema(&scan_spec.arrow_schema()).expect("schema");
         let exec = WorkerPgScanExec::new(
             vec![ScanProducerPeer {
                 producer_id: 0,
@@ -437,9 +506,8 @@ mod tests {
     fn execute_rejects_nonzero_partition() {
         let source = Arc::new(RecordingSource::new());
         let scan_spec = spec(9);
-        let output_schema = crate::normalize_result_transport_schema(&scan_spec.arrow_schema())
-            .expect("transport schema")
-            .0;
+        let output_schema =
+            crate::normalize_scan_transport_schema(&scan_spec.arrow_schema()).expect("schema");
         let exec = WorkerPgScanExec::new(
             vec![ScanProducerPeer {
                 producer_id: 0,

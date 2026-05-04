@@ -24,7 +24,7 @@ pub(crate) struct SlotScanPageSource {
     block_size: u32,
     fetch_batch_rows: usize,
     single_row_drains: bool,
-    estimator: PageRowEstimator,
+    estimator: Option<PageRowEstimator>,
     metrics: RuntimeMetrics,
     scan_timing_detail: bool,
     runtime_filter_enabled: bool,
@@ -87,7 +87,7 @@ impl SlotScanPageSource {
         source_projection: Vec<usize>,
         block_size: u32,
         fetch_batch_rows: usize,
-        estimator: PageRowEstimator,
+        estimator: Option<PageRowEstimator>,
         metrics: RuntimeMetrics,
         scan_timing_detail: bool,
         runtime_filter_enabled: bool,
@@ -95,7 +95,9 @@ impl SlotScanPageSource {
         session_epoch: u64,
         scan_id: u64,
     ) -> Self {
-        let single_row_drains = estimator.has_variable_width();
+        let single_row_drains = estimator
+            .as_ref()
+            .is_some_and(PageRowEstimator::has_variable_width);
         Self {
             snapshot,
             spi,
@@ -158,6 +160,8 @@ impl SlotScanPageSource {
         loop {
             let metrics = self.metrics;
             let retry_start = self.scan_timing_detail.then(|| metrics.now_ns());
+            let estimated_rows_per_page =
+                estimate_rows_per_page(&self.estimator, self.fetch_batch_rows)?;
             let source_projection = &self.source_projection;
             let runtime_filter_probes = &self.runtime_filter_probes;
             let runtime_filter_needed_attrs = self.runtime_filter_needed_attrs;
@@ -165,10 +169,9 @@ impl SlotScanPageSource {
                 BackendServiceError::PageSource("slot scan page source is not open".into())
             })?;
             let prepare_start = self.metrics.now_ns();
-            let estimate = self.estimator.estimate()?;
             let layout = LayoutPlan::from_arrow_schema(
                 self.schema.as_ref(),
-                estimate.rows_per_page,
+                estimated_rows_per_page,
                 self.block_size,
             )?;
             let max_rows = usize::try_from(layout.max_rows()).map_err(|_| {
@@ -185,11 +188,7 @@ impl SlotScanPageSource {
             init_block(payload, &layout)?;
 
             let mut encoder = unsafe {
-                PageBatchEncoder::new_projected(
-                    session.tuple_desc(),
-                    &self.source_projection,
-                    payload,
-                )
+                PageBatchEncoder::new_projected(session.tuple_desc(), source_projection, payload)
             }?;
             let needed_attrs = encoder.needed_attrs().max(runtime_filter_needed_attrs);
             let page_prepare_ns = self.metrics.now_ns().saturating_sub(prepare_start);
@@ -219,8 +218,7 @@ impl SlotScanPageSource {
                         timing.page_retry_ns = timing
                             .page_retry_ns
                             .saturating_add(record_page_retry(metrics, retry_start));
-                        self.estimator
-                            .observe_empty_full_page(estimate.rows_per_page)?;
+                        observe_empty_full_page(&mut self.estimator, estimated_rows_per_page)?;
                         continue;
                     }
                 }
@@ -230,8 +228,7 @@ impl SlotScanPageSource {
                 if rows_written >= max_rows {
                     let finish_start = metrics.now_ns();
                     let encoded = encoder.finish()?;
-                    self.estimator
-                        .observe_encoded_block(&payload[..encoded.payload_len])?;
+                    observe_encoded_block(&mut self.estimator, &payload[..encoded.payload_len])?;
                     let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                     return Ok(record_finished_scan_page(
                         metrics,
@@ -320,8 +317,10 @@ impl SlotScanPageSource {
                     if rows_written > 0 {
                         let finish_start = metrics.now_ns();
                         let encoded = encoder.finish()?;
-                        self.estimator
-                            .observe_encoded_block(&payload[..encoded.payload_len])?;
+                        observe_encoded_block(
+                            &mut self.estimator,
+                            &payload[..encoded.payload_len],
+                        )?;
                         let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                         return Ok(record_finished_scan_page(
                             metrics,
@@ -346,8 +345,7 @@ impl SlotScanPageSource {
                     timing.page_retry_ns = timing
                         .page_retry_ns
                         .saturating_add(record_page_retry(metrics, retry_start));
-                    self.estimator
-                        .observe_empty_full_page(estimate.rows_per_page)?;
+                    observe_empty_full_page(&mut self.estimator, estimated_rows_per_page)?;
                     break;
                 }
 
@@ -364,8 +362,7 @@ impl SlotScanPageSource {
 
                     let finish_start = metrics.now_ns();
                     let encoded = encoder.finish()?;
-                    self.estimator
-                        .observe_encoded_block(&payload[..encoded.payload_len])?;
+                    observe_encoded_block(&mut self.estimator, &payload[..encoded.payload_len])?;
                     let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                     return Ok(record_finished_scan_page(
                         metrics,
@@ -387,6 +384,43 @@ impl SlotScanPageSource {
             }
         }
     }
+}
+
+fn estimate_rows_per_page(
+    estimator: &Option<PageRowEstimator>,
+    fetch_batch_rows: usize,
+) -> Result<u32, BackendServiceError> {
+    if let Some(estimator) = estimator {
+        return Ok(estimator.estimate()?.rows_per_page);
+    }
+    u32::try_from(fetch_batch_rows.max(1)).map_err(|_| {
+        BackendServiceError::PageSource(format!(
+            "scan fetch batch rows {fetch_batch_rows} does not fit into u32"
+        ))
+    })
+}
+
+fn observe_encoded_block(
+    estimator: &mut Option<PageRowEstimator>,
+    payload: &[u8],
+) -> Result<(), BackendServiceError> {
+    if let Some(estimator) = estimator {
+        estimator.observe_encoded_block(payload)?;
+    }
+    Ok(())
+}
+
+fn observe_empty_full_page(
+    estimator: &mut Option<PageRowEstimator>,
+    attempted_rows: u32,
+) -> Result<(), BackendServiceError> {
+    if let Some(estimator) = estimator {
+        estimator.observe_empty_full_page(attempted_rows)?;
+        return Ok(());
+    }
+    Err(BackendServiceError::PageSource(
+        "empty-schema scan page filled before writing a row".into(),
+    ))
 }
 
 fn record_finished_scan_page(

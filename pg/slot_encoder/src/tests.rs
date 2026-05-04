@@ -859,6 +859,43 @@ fn append_slot_projected_fixed_width_uses_fast_path() {
 }
 
 #[test]
+fn append_slot_projected_empty_projection_writes_empty_schema_rows() {
+    let specs: [ColumnSpec; 0] = [];
+    let attrs = [TestAttr {
+        oid: pg_sys::BOOLOID,
+        attlen: 1,
+        attbyval: true,
+        attalign: b'c',
+    }];
+    let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let values = vec![pg_sys::Datum::from(true)];
+    let isnull = vec![false];
+    let mut slot = OwnedSlot::new(tuple_desc.ptr, values, isnull);
+    let mut payload = init_payload(&specs, 4, 256);
+    let projection = [];
+    let mut encoder =
+        unsafe { PageBatchEncoder::new_projected(tuple_desc.ptr, &projection, &mut payload) }
+            .expect("encoder");
+    assert_eq!(encoder.needed_attrs(), 0);
+    assert!(!encoder.fixed_width_fast_path_for_tests());
+
+    assert_eq!(
+        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        AppendStatus::Appended
+    );
+    assert_eq!(
+        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        AppendStatus::Appended
+    );
+    let encoded = encoder.finish().expect("finish");
+    assert_eq!(encoded.row_count, 2);
+
+    let block = BlockRef::open(&payload).expect("block");
+    assert_eq!(block.column_count(), 0);
+    assert_eq!(block.row_count(), 2);
+}
+
+#[test]
 fn append_slot_deforms_via_slot_ops_fast_path() {
     TEST_GETSOMEATTRS_CALLS.store(0, Ordering::Relaxed);
     let specs = [ColumnSpec::new(TypeTag::Int32, false)];

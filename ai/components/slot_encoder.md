@@ -32,6 +32,9 @@ importance: 0.72
   - executor slots may carry an equivalent but different `TupleDesc` pointer;
     the encoder validates structural compatibility once per page before using
     its planned output descriptor for type-specific writes
+  - projected encoding distinguishes identity projection from an explicit empty
+    projection; `new_projected(..., &[])` consumes rows from a dummy PostgreSQL
+    tuple descriptor and writes empty-schema pages with a non-zero row count
   - it calls the slot-specific `tts_ops->getsomeattrs` function directly when
     the slot is not yet sufficiently deformed, then preserves PostgreSQL's
     missing-attribute fallback through `slot_getmissingattrs`

@@ -508,12 +508,6 @@ select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type List(Field { name: \"item\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
 
--- id: aggregates_155_select_max_100_from_tenk1_13905752
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:410
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-select max(100) from tenk1;
-
 -- id: aggregates_169_select_min_f1_max_f1_from_minmaxtest_e0dcc504
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:429
 -- compare: multiset
@@ -1772,19 +1766,6 @@ WITH RECURSIVE foo(x) AS
    UNION ALL
    SELECT (x || 'c') COLLATE "de_DE" FROM foo WHERE length(x) < 10)
 SELECT * FROM foo;
-
--- id: create_index_181_select_count_from_tenk1_where_stringu1_tvaaaa_86690e88
--- origin: postgres REL_17_STABLE src/test/regress/sql/create_index.sql:376
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
-
--- id: create_index_362_select_count_from_tenk1_where_hundred_42_and_thousand_42_or_thousand_99_8518b2e5
--- origin: postgres REL_17_STABLE src/test/regress/sql/create_index.sql:739
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT count(*) FROM tenk1
-  WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
 
 -- id: create_index_375_select_unique1_from_tenk1_where_unique1_in_1_42_7_and_unique1_any_7_8_9_19af408b
 -- origin: postgres REL_17_STABLE src/test/regress/sql/create_index.sql:797
@@ -6920,12 +6901,6 @@ select avg(unique1::int8) from tenk1;
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42883), message: "function make_record(integer) does not exist", detail: None, hint: Some("No function matches the given name and argument types. You might need to add explicit type casts."), position: Some(Original(16)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_func.c"), line: Some(636), routine: Some("ParseFuncOrColumn") }) }
 SELECT make_record(x) FROM (SELECT generate_series(1, 5) x) ss ORDER BY x;
 
--- id: select_parallel_183_select_count_from_tenk1_dc2a1c37
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_parallel.sql:412
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-select count(*) from tenk1;
-
 -- id: select_parallel_194_select_stringu1_repeat_abcd_5000_int2_from_tenk1_where_unique1_1_96e56c49
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_parallel.sql:437
 -- compare: multiset
@@ -6950,18 +6925,6 @@ select set_and_report_role();
 -- compare: multiset
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42883), message: "function set_role_and_error(integer) does not exist", detail: None, hint: Some("No function matches the given name and argument types. You might need to add explicit type casts."), position: Some(Original(16)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_func.c"), line: Some(636), routine: Some("ParseFuncOrColumn") }) }
 select set_role_and_error(0);
-
--- id: stats_54_select_count_from_tenk2_56c47e65
--- origin: postgres REL_17_STABLE src/test/regress/sql/stats.sql:91
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT count(*) FROM tenk2;
-
--- id: stats_56_select_count_from_tenk2_where_unique1_1_4f4fcf17
--- origin: postgres REL_17_STABLE src/test/regress/sql/stats.sql:97
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT count(*) FROM tenk2 WHERE unique1 = 1;
 
 -- id: strings_60_select_cast_f1_as_text_as_text_char_from_char_tbl_7c1fcee1
 -- origin: postgres REL_17_STABLE src/test/regress/sql/strings.sql:92
@@ -8083,18 +8046,6 @@ SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PA
 -- compare: ordered
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(59)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
 SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITION BY depname ORDER BY salary) ORDER BY rank() OVER w;
-
--- id: window_8_select_count_over_from_tenk1_where_unique2_10_da5675b2
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:34
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT COUNT(*) OVER () FROM tenk1 WHERE unique2 < 10;
-
--- id: window_9_select_count_over_w_from_tenk1_where_unique2_10_window_w_as_e62c4294
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:37
--- compare: multiset
--- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion begin execution failed: scan 1 uses dummy projection and is unsupported in backend_service v1", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(386), routine: Some("pg_fusion::custom_scan::begin_pg_fusion_scan::begin_pg_fusion_scan_inner::{{closure}}") }) }
-SELECT COUNT(*) OVER w FROM tenk1 WHERE unique2 < 10 WINDOW w AS ();
 
 -- id: window_10_select_four_from_tenk1_where_false_window_w_as_partition_by_ten_b0725147
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:39

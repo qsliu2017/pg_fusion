@@ -985,7 +985,7 @@ impl BackendService {
                     "execution has no installed shared scan SPI context".into(),
                 )
             })?;
-            let estimator = PageRowEstimator::new(&physical_columns, block_size, estimator_config)?;
+            let estimator = scan_page_estimator(&physical_columns, block_size, estimator_config)?;
 
             let source = source::SlotScanPageSource::new(
                 snapshot,
@@ -1619,9 +1619,6 @@ fn prepare_scan_entry(
     scan_lease: BackendSlotLease,
 ) -> Result<PreparedScanEntry, BackendServiceError> {
     let scan_id = spec.scan_id.get();
-    if spec.compiled_scan.uses_dummy_projection {
-        return Err(BackendServiceError::UnsupportedDummyProjection { scan_id });
-    }
 
     let source_schema = spec.arrow_schema();
     let mut normalized_fields = Vec::with_capacity(source_schema.fields().len());
@@ -1899,7 +1896,7 @@ fn standalone_page_source(
     let block_size = u32::try_from(payload_capacity).map_err(|_| {
         BackendServiceError::ProtocolViolation("scan payload capacity exceeds u32".into())
     })?;
-    let estimator = PageRowEstimator::new(&physical_columns, block_size, estimator_config)?;
+    let estimator = scan_page_estimator(&physical_columns, block_size, estimator_config)?;
     let spi = ExecutionSpiContext::connect(config.diagnostics.clone())?;
     Ok(source::SlotScanPageSource::new(
         std::ptr::null_mut(),
@@ -2217,6 +2214,19 @@ fn normalize_transport_field(
 
 fn normalize_scan_fetch_batch_rows(fetch_batch_rows: u32) -> usize {
     usize::try_from(fetch_batch_rows.max(1)).expect("scan fetch batch size must fit into usize")
+}
+
+fn scan_page_estimator(
+    physical_columns: &[ColumnSpec],
+    block_size: u32,
+    estimator_config: EstimatorConfig,
+) -> Result<Option<PageRowEstimator>, BackendServiceError> {
+    if physical_columns.is_empty() {
+        return Ok(None);
+    }
+    PageRowEstimator::new(physical_columns, block_size, estimator_config)
+        .map(Some)
+        .map_err(Into::into)
 }
 
 fn drive_scan_step(

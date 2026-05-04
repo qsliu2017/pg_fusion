@@ -43,7 +43,9 @@ importance: 0.8
   page handoff latency. The defaults are `32` batches and `50us`; the backend
   captures `pg_fusion.scan_batch_channel_capacity` and
   `pg_fusion.scan_idle_poll_interval_us` at query start and passes them to the
-  worker through `StartExecution`.
+  worker through `StartExecution`. Scan transport normalization allows empty
+  schemas so dummy-projection scans can pass row counts as zero-column batches;
+  result-page transport still rejects non-empty empty-schema result batches.
 - Runtime Bloom filters are controlled by `pg_fusion.runtime_filter_enable`
   (default `on`) plus postmaster-sized pool settings
   `pg_fusion.runtime_filter_count`, `pg_fusion.runtime_filter_bits`, and

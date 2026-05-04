@@ -53,6 +53,7 @@ pub struct PageBatchEncoder<'payload> {
     needed_attrs: i32,
     projection_ptr: *const usize,
     projection_len: usize,
+    projection_active: bool,
     inner: PageRowEncoder<'payload>,
     accepted_slot_desc: Option<pg_sys::TupleDesc>,
     fixed_width_fast_path: bool,
@@ -179,6 +180,7 @@ impl<'payload> PageBatchEncoder<'payload> {
                 .map_err(|_| arrow_layout::LayoutError::SizeOverflow)?,
             projection_ptr: source_columns.map_or(ptr::null(), |columns| columns.as_ptr()),
             projection_len: source_columns.map_or(0, <[usize]>::len),
+            projection_active: source_columns.is_some(),
             inner,
             accepted_slot_desc: None,
             fixed_width_fast_path,
@@ -225,6 +227,7 @@ impl<'payload> PageBatchEncoder<'payload> {
             attrs_ptr: self.attrs_ptr,
             projection_ptr: self.projection_ptr,
             projection_len: self.projection_len,
+            projection_active: self.projection_active,
             values,
             isnulls,
         };
@@ -240,11 +243,11 @@ impl<'payload> PageBatchEncoder<'payload> {
     }
 
     fn source_index(&self, output_index: usize) -> usize {
-        if self.projection_len == 0 {
-            output_index
-        } else {
+        if self.projection_active {
             debug_assert!(output_index < self.projection_len);
             unsafe { *self.projection_ptr.add(output_index) }
+        } else {
+            output_index
         }
     }
 
@@ -259,7 +262,7 @@ impl<'payload> PageBatchEncoder<'payload> {
         }
 
         let actual_cols = unsafe { (*actual_tuple_desc).natts as usize };
-        if self.projection_len == 0 && actual_cols != self.inner.column_count() {
+        if !self.projection_active && actual_cols != self.inner.column_count() {
             return Err(EncodeError::SlotTupleDescMismatch);
         }
 
@@ -453,17 +456,18 @@ struct PgSlotRow {
     attrs_ptr: *mut pg_sys::FormData_pg_attribute,
     projection_ptr: *const usize,
     projection_len: usize,
+    projection_active: bool,
     values: *mut pg_sys::Datum,
     isnulls: *mut bool,
 }
 
 impl PgSlotRow {
     fn source_index(&self, output_index: usize) -> usize {
-        if self.projection_len == 0 {
-            output_index
-        } else {
+        if self.projection_active {
             debug_assert!(output_index < self.projection_len);
             unsafe { *self.projection_ptr.add(output_index) }
+        } else {
+            output_index
         }
     }
 

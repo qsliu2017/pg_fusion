@@ -12,8 +12,8 @@ pub mod transport_scan_source;
 pub use control_transport::{BackendLeaseId, BackendLeaseSlot};
 pub use error::WorkerRuntimeError;
 pub use result_pages::{
-    normalize_result_transport_schema, ResultPageEmitter, ResultPageProducer,
-    ResultPageProducerConfig, ResultPageStep,
+    normalize_result_transport_schema, normalize_scan_transport_schema, ResultPageEmitter,
+    ResultPageProducer, ResultPageProducerConfig, ResultPageStep,
 };
 pub use runtime::{
     DecodedInbound, PendingPhysicalPlanning, PhysicalPlanResult, TransportWorkerRuntime,

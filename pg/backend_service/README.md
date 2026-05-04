@@ -10,7 +10,8 @@ It owns the backend-local execution lifecycle:
 - capture and hold the current PostgreSQL snapshot for the execution lifetime
 - precompute reusable `slot_scan::PreparedScan` handles for every leaf
   `PgScanSpec`
-- seed one `PageRowEstimator` per scan with `row_estimator_seed`
+- seed one `PageRowEstimator` per non-empty physical scan schema with
+  `row_estimator_seed`; row-count-only scans use fixed fetch-batch page sizing
 - serve worker `OpenScan` requests by running `slot_scan`, encoding rows with
   `slot_encoder`, and streaming pages through `scan_flow`
 
@@ -24,6 +25,8 @@ It owns the backend-local execution lifecycle:
 - for relations without dropped attributes, scans execute as unprojected
   `SELECT *` leaves and `slot_encoder` applies the logical column projection;
   this avoids PostgreSQL executor projection nodes in simple leaf scans
+- zero-column scan projections execute leader-only as dummy PostgreSQL selects
+  and transfer empty-schema pages whose row count is consumed by DataFusion
 - page boundaries are enforced by the row budget passed to `PortalRunFetch()`;
   the backend does not use `receiveSlot = false` as a resumable pause signal
 - the backend uses the hidden fast `slot_scan` receiver without per-row

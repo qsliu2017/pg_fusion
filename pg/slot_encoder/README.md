@@ -84,7 +84,8 @@ caller creates a fresh block whenever `AppendStatus::Full` is returned.
   block matches the PostgreSQL `TupleDesc`.
 - `PageBatchEncoder::new_projected(tuple_desc, source_columns, payload)` writes
   the same output block shape while reading values from selected source slot
-  attributes.
+  attributes. An explicitly empty `source_columns` slice is distinct from
+  identity projection and writes empty-schema pages with row counts.
 - `append_slot(slot)` accepts undeformed or partially deformed slots and asks
   PostgreSQL to deform enough attributes when needed.
 - `with_filter_key(slot, source_index, key_type, callback)` reads one supported
@@ -98,7 +99,7 @@ caller creates a fresh block whenever `AppendStatus::Full` is returned.
 - The block must already be initialized by `arrow_layout`.
 - The `TupleDesc` and appended slots must match the target layout, or the
   supplied projection must map every output column to a compatible source
-  attribute.
+  attribute. Empty projected layouts are allowed for row-count-only scans.
 - Dropped PostgreSQL attributes are rejected when projected.
 - `Utf8View` columns require a UTF-8 PostgreSQL server encoding.
 - `AppendStatus::Full` means the current row did not fit and must be retried on a

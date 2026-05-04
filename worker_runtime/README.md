@@ -26,6 +26,9 @@ The same options carry the runtime-filter enable flag. When it is set,
 physical planning can allocate shared runtime-filter slots for eligible integer
 inner hash joins and wrap the build side so backend scan producers can filter
 probe rows before Arrow encoding.
+Scan transport schema normalization is separate from result-page normalization:
+result streams reject empty schemas, but PostgreSQL scan streams may be empty
+when dummy projection scans carry only row counts.
 Dedicated scan slots must provide at least:
 
 - `256` bytes raw backend-to-worker ring capacity

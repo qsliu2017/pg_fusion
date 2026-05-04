@@ -309,23 +309,39 @@ pub fn normalize_result_transport_schema(
         return Err(WorkerRuntimeError::EmptyResultSchema);
     }
 
+    let transport_schema = normalize_scan_transport_schema(input_schema)?;
+    let specs = transport_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            TypeTag::from_arrow_data_type(index, field.data_type())
+                .map(|type_tag| ColumnSpec::new(type_tag, field.is_nullable()))
+                .map_err(|_| WorkerRuntimeError::UnsupportedResultColumnType {
+                    index,
+                    data_type: field.data_type().to_string(),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((transport_schema, specs))
+}
+
+/// Normalize a PostgreSQL scan output schema for Arrow-page transport.
+///
+/// Unlike result streams, scan streams may have an empty schema: dummy
+/// projection scans still carry row counts in zero-column Arrow batches.
+pub fn normalize_scan_transport_schema(
+    input_schema: &SchemaRef,
+) -> Result<SchemaRef, WorkerRuntimeError> {
     let mut fields = Vec::with_capacity(input_schema.fields().len());
-    let mut specs = Vec::with_capacity(input_schema.fields().len());
 
     for (index, field) in input_schema.fields().iter().enumerate() {
         let normalized = normalize_field(index, field)?;
-        let type_tag =
-            TypeTag::from_arrow_data_type(index, normalized.data_type()).map_err(|_| {
-                WorkerRuntimeError::UnsupportedResultColumnType {
-                    index,
-                    data_type: normalized.data_type().to_string(),
-                }
-            })?;
-        specs.push(ColumnSpec::new(type_tag, normalized.is_nullable()));
         fields.push(normalized);
     }
 
-    Ok((Arc::new(Schema::new(fields)), specs))
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 fn normalize_field(index: usize, field: &Field) -> Result<Field, WorkerRuntimeError> {
