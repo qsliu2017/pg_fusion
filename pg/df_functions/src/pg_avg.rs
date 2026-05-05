@@ -155,6 +155,11 @@ impl AggregateUDFImpl for PgAvg {
                     true,
                 ),
                 Field::new(
+                    format_state_name(args.name, "finite_sxx"),
+                    DataType::Float64,
+                    true,
+                ),
+                Field::new(
                     format_state_name(args.name, "nan_count"),
                     DataType::UInt64,
                     true,
@@ -983,6 +988,7 @@ fn interval_out_of_range<T>() -> Result<T> {
 #[derive(Debug, Default)]
 struct FloatAvgAccumulator {
     finite_sum: f64,
+    finite_sxx: f64,
     count: u64,
     nan_count: u64,
     pos_inf_count: u64,
@@ -1016,7 +1022,17 @@ impl FloatAvgAccumulator {
                 )
             })?;
         } else {
-            self.finite_sum = checked_float_sum(self.finite_sum, value, "transition")?;
+            let finite_count = self.finite_count()?;
+            let next_finite_sum = checked_float_sum(self.finite_sum, value, "transition")?;
+            let next_finite_sxx = checked_float_transition_sxx(
+                finite_count,
+                self.finite_sum,
+                self.finite_sxx,
+                value,
+                next_finite_sum,
+            )?;
+            self.finite_sum = next_finite_sum;
+            self.finite_sxx = next_finite_sxx;
         }
 
         self.count = next_count;
@@ -1049,7 +1065,12 @@ impl FloatAvgAccumulator {
                 )
             })?;
         } else {
-            self.finite_sum = checked_float_sum(self.finite_sum, -value, "retraction")?;
+            let finite_count = self.finite_count()?;
+            let next_finite_sum = checked_float_sum(self.finite_sum, -value, "retraction")?;
+            let next_finite_sxx =
+                checked_float_retract_sxx(finite_count, self.finite_sum, self.finite_sxx, value)?;
+            self.finite_sum = next_finite_sum;
+            self.finite_sxx = next_finite_sxx;
         }
 
         self.count = next_count;
@@ -1060,11 +1081,11 @@ impl FloatAvgAccumulator {
         &mut self,
         count: u64,
         finite_sum: f64,
+        finite_sxx: f64,
         nan_count: u64,
         pos_inf_count: u64,
         neg_inf_count: u64,
     ) -> Result<()> {
-        let next_finite_sum = checked_float_sum(self.finite_sum, finite_sum, "merged")?;
         let next_count = self.count.checked_add(count).ok_or_else(|| {
             datafusion_common::DataFusionError::Execution(
                 "avg float merged count overflowed u64".to_owned(),
@@ -1091,13 +1112,34 @@ impl FloatAvgAccumulator {
                         "avg float merged -Infinity count overflowed u64".to_owned(),
                     )
                 })?;
+        let finite_count = self.finite_count()?;
+        let other_finite_count =
+            float_finite_count(count, nan_count, pos_inf_count, neg_inf_count)?;
+        let (next_finite_sum, next_finite_sxx) = checked_float_combine_state(
+            finite_count,
+            self.finite_sum,
+            self.finite_sxx,
+            other_finite_count,
+            finite_sum,
+            finite_sxx,
+        )?;
 
         self.finite_sum = next_finite_sum;
+        self.finite_sxx = next_finite_sxx;
         self.count = next_count;
         self.nan_count = next_nan_count;
         self.pos_inf_count = next_pos_inf_count;
         self.neg_inf_count = next_neg_inf_count;
         Ok(())
+    }
+
+    fn finite_count(&self) -> Result<u64> {
+        float_finite_count(
+            self.count,
+            self.nan_count,
+            self.pos_inf_count,
+            self.neg_inf_count,
+        )
     }
 }
 
@@ -1109,6 +1151,107 @@ fn checked_float_sum(current: f64, delta: f64, context: &str) -> Result<f64> {
         )));
     }
     Ok(next)
+}
+
+fn float_finite_count(
+    count: u64,
+    nan_count: u64,
+    pos_inf_count: u64,
+    neg_inf_count: u64,
+) -> Result<u64> {
+    let special_count = nan_count
+        .checked_add(pos_inf_count)
+        .and_then(|count| count.checked_add(neg_inf_count))
+        .ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg float special count overflowed u64".to_owned(),
+            )
+        })?;
+    count.checked_sub(special_count).ok_or_else(|| {
+        datafusion_common::DataFusionError::Execution(
+            "avg float state has more special values than rows".to_owned(),
+        )
+    })
+}
+
+fn checked_float_transition_sxx(
+    old_count: u64,
+    old_sum: f64,
+    old_sxx: f64,
+    value: f64,
+    new_sum: f64,
+) -> Result<f64> {
+    if old_count == 0 {
+        return Ok(0.0);
+    }
+
+    let old_count_f = old_count as f64;
+    let new_count_f = old_count_f + 1.0;
+    let tmp = value * new_count_f - new_sum;
+    let next_sxx = old_sxx + tmp * tmp / (new_count_f * old_count_f);
+    if next_sxx.is_infinite() && old_sxx.is_finite() && old_sum.is_finite() && value.is_finite() {
+        return Err(datafusion_common::DataFusionError::Execution(
+            "avg float transition sxx overflowed float8".to_owned(),
+        ));
+    }
+    Ok(next_sxx)
+}
+
+fn checked_float_retract_sxx(
+    old_count: u64,
+    old_sum: f64,
+    old_sxx: f64,
+    value: f64,
+) -> Result<f64> {
+    let Some(new_count) = old_count.checked_sub(1) else {
+        return Err(datafusion_common::DataFusionError::Execution(
+            "avg float retraction finite count underflowed u64".to_owned(),
+        ));
+    };
+    if new_count == 0 {
+        return Ok(0.0);
+    }
+
+    let old_count_f = old_count as f64;
+    let new_count_f = new_count as f64;
+    let tmp = value * old_count_f - old_sum;
+    let next_sxx = old_sxx - tmp * tmp / (old_count_f * new_count_f);
+    if next_sxx.is_infinite() && old_sxx.is_finite() && old_sum.is_finite() && value.is_finite() {
+        return Err(datafusion_common::DataFusionError::Execution(
+            "avg float retraction sxx overflowed float8".to_owned(),
+        ));
+    }
+    Ok(next_sxx)
+}
+
+fn checked_float_combine_state(
+    left_count: u64,
+    left_sum: f64,
+    left_sxx: f64,
+    right_count: u64,
+    right_sum: f64,
+    right_sxx: f64,
+) -> Result<(f64, f64)> {
+    if left_count == 0 {
+        return Ok((right_sum, right_sxx));
+    }
+    if right_count == 0 {
+        return Ok((left_sum, left_sxx));
+    }
+
+    let sum = checked_float_sum(left_sum, right_sum, "merged")?;
+    let left_count_f = left_count as f64;
+    let right_count_f = right_count as f64;
+    let count_f = left_count_f + right_count_f;
+    let tmp = left_sum / left_count_f - right_sum / right_count_f;
+    let sxx = left_sxx + right_sxx + left_count_f * right_count_f * tmp * tmp / count_f;
+    if sxx.is_infinite() && left_sxx.is_finite() && right_sxx.is_finite() {
+        return Err(datafusion_common::DataFusionError::Execution(
+            "avg float merged sxx overflowed float8".to_owned(),
+        ));
+    }
+
+    Ok((sum, sxx))
 }
 
 impl Accumulator for FloatAvgAccumulator {
@@ -1161,6 +1304,7 @@ impl Accumulator for FloatAvgAccumulator {
         Ok(vec![
             ScalarValue::UInt64(Some(self.count)),
             ScalarValue::Float64(Some(self.finite_sum)),
+            ScalarValue::Float64(Some(self.finite_sxx)),
             ScalarValue::UInt64(Some(self.nan_count)),
             ScalarValue::UInt64(Some(self.pos_inf_count)),
             ScalarValue::UInt64(Some(self.neg_inf_count)),
@@ -1168,18 +1312,20 @@ impl Accumulator for FloatAvgAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        if states.len() != 5 {
+        if states.len() != 6 {
             return exec_err!(
-                "avg float merge expects count, finite_sum, NaN count, +Infinity count, and -Infinity count states"
+                "avg float merge expects count, finite_sum, finite_sxx, NaN count, +Infinity count, and -Infinity count states"
             );
         }
 
         let counts = states[0].as_primitive::<UInt64Type>();
         let finite_sums = states[1].as_primitive::<Float64Type>();
-        let nan_counts = states[2].as_primitive::<UInt64Type>();
-        let pos_inf_counts = states[3].as_primitive::<UInt64Type>();
-        let neg_inf_counts = states[4].as_primitive::<UInt64Type>();
+        let finite_sxxs = states[2].as_primitive::<Float64Type>();
+        let nan_counts = states[3].as_primitive::<UInt64Type>();
+        let pos_inf_counts = states[4].as_primitive::<UInt64Type>();
+        let neg_inf_counts = states[5].as_primitive::<UInt64Type>();
         if counts.len() != finite_sums.len()
+            || counts.len() != finite_sxxs.len()
             || counts.len() != nan_counts.len()
             || counts.len() != pos_inf_counts.len()
             || counts.len() != neg_inf_counts.len()
@@ -1190,6 +1336,7 @@ impl Accumulator for FloatAvgAccumulator {
         for row in 0..counts.len() {
             if counts.is_null(row)
                 || finite_sums.is_null(row)
+                || finite_sxxs.is_null(row)
                 || nan_counts.is_null(row)
                 || pos_inf_counts.is_null(row)
                 || neg_inf_counts.is_null(row)
@@ -1199,6 +1346,7 @@ impl Accumulator for FloatAvgAccumulator {
             self.merge_state(
                 counts.value(row),
                 finite_sums.value(row),
+                finite_sxxs.value(row),
                 nan_counts.value(row),
                 pos_inf_counts.value(row),
                 neg_inf_counts.value(row),
@@ -1420,12 +1568,14 @@ mod tests {
                 state[2].to_array().unwrap(),
                 state[3].to_array().unwrap(),
                 state[4].to_array().unwrap(),
+                state[5].to_array().unwrap(),
             ])
             .unwrap_err();
         assert!(err.to_string().contains("merged sum overflowed float8"));
 
         let mut retract = FloatAvgAccumulator {
             finite_sum: -f64::MAX,
+            finite_sxx: 0.0,
             count: 2,
             nan_count: 0,
             pos_inf_count: 0,
@@ -1435,6 +1585,38 @@ mod tests {
             .retract_batch(&[Arc::new(Float64Array::from(vec![Some(f64::MAX)]))])
             .unwrap_err();
         assert!(err.to_string().contains("retraction sum overflowed float8"));
+    }
+
+    #[test]
+    fn float_avg_errors_when_finite_sxx_overflows() {
+        let mut acc = FloatAvgAccumulator::default();
+        let err = acc
+            .update_batch(&[Arc::new(Float64Array::from(vec![
+                Some(f64::MAX),
+                Some(-f64::MAX),
+            ]))])
+            .unwrap_err();
+        assert!(err.to_string().contains("transition sxx overflowed float8"));
+
+        let mut left = FloatAvgAccumulator::default();
+        left.update_batch(&[Arc::new(Float64Array::from(vec![Some(f64::MAX)]))])
+            .unwrap();
+        let state = left.state().unwrap();
+        let mut merged = FloatAvgAccumulator::default();
+        merged
+            .update_batch(&[Arc::new(Float64Array::from(vec![Some(-f64::MAX)]))])
+            .unwrap();
+        let err = merged
+            .merge_batch(&[
+                state[0].to_array().unwrap(),
+                state[1].to_array().unwrap(),
+                state[2].to_array().unwrap(),
+                state[3].to_array().unwrap(),
+                state[4].to_array().unwrap(),
+                state[5].to_array().unwrap(),
+            ])
+            .unwrap_err();
+        assert!(err.to_string().contains("merged sxx overflowed float8"));
     }
 
     #[test]

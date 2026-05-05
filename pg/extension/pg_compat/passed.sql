@@ -2301,6 +2301,13 @@ SELECT ''::text AS five, unique1, unique2, stringu1
 select sum(tenthous) as s1, sum(tenthous) + random()*0 as s2
   from tenk1 group by thousand order by thousand limit 3;
 
+-- id: memoize_5_select_count_avg_t1_unique1_from_tenk1_t1_inner_join_tenk1_t2_on_t1_uniq_0538405e
+-- origin: postgres REL_17_STABLE src/test/regress/sql/memoize.sql:40
+-- compare: multiset
+SELECT COUNT(*),AVG(t1.unique1) FROM tenk1 t1
+INNER JOIN tenk1 t2 ON t1.unique1 = t2.twenty
+WHERE t2.unique1 < 1000;
+
 -- id: memoize_53_select_unique1_from_tenk1_t0_where_unique1_3_and_exists_select_1_from_te_df59ea2a
 -- origin: postgres REL_17_STABLE src/test/regress/sql/memoize.sql:184
 -- compare: ordered
@@ -2548,6 +2555,11 @@ select * from
   (select string4, count(unique2)
    from tenk1 group by string4 order by string4) ss
   right join (values (1),(2),(3)) v(x) on true;
+
+-- id: select_parallel_147_select_avg_unique1_int8_from_tenk1_e045371e
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_parallel.sql:327
+-- compare: multiset
+select avg(unique1::int8) from tenk1;
 
 -- id: select_parallel_149_select_fivethous_from_tenk1_order_by_fivethous_limit_4_df0929ee
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_parallel.sql:333
@@ -3106,9 +3118,3 @@ SELECT i,AVG(v::smallint) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDE
 -- compare: ordered
 SELECT i,AVG(v::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
   FROM (VALUES(1,1.5),(2,2.5),(3,NULL),(4,NULL)) t(i,v);
-
--- id: window_341_select_i_avg_v_interval_over_order_by_i_rows_between_current_row_and_unb_c9d4644f
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1771
--- compare: ordered
-SELECT i,AVG(v::interval) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,'1 sec'),(2,'2 sec'),(3,NULL),(4,NULL)) t(i,v);

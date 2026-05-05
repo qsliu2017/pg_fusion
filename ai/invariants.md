@@ -32,10 +32,13 @@ importance: 0.95
   rather than reconstructing it from the page tag.
 - `pg/df_functions` `avg` has two compatibility tiers. `avg(float4/float8)`
   returns Arrow `Float64` and preserves PostgreSQL-facing `NaN`/`Infinity`
-  behavior, including controlled errors when finite transition, merge, or
-  inverse sums overflow to infinity. Integer and finite `numeric` averages use
-  the fast Arrow `Decimal128(38,16)` result path; this intentionally does not
-  model PostgreSQL numeric's value-dependent display scale or arbitrary
+  behavior. Its finite transition and merge paths track PostgreSQL-style
+  Youngs-Cramer `Sxx` state so finite `Sx` or `Sxx` overflow fails with a
+  controlled error; the DataFusion window inverse path is still pg_fusion-owned
+  because PostgreSQL does not declare a moving inverse for float avg. Integer
+  and finite `numeric` averages use the fast Arrow `Decimal128(38,16)` result
+  path; this intentionally does not model PostgreSQL numeric's value-dependent
+  display scale or arbitrary
   precision. PostgreSQL `numeric` `NaN`/`Infinity` cannot be represented in
   Arrow decimal arrays; known special numeric constants and literal numeric
   casts must fail with a controlled pg_fusion error before worker-side
