@@ -30,6 +30,9 @@ importance: 0.95
   `TypeTag::Decimal128` only records the 16-byte fixed-width layout, so
   import/projection code must preserve precision/scale from the Arrow schema
   rather than reconstructing it from the page tag.
+- Result schema normalization must preserve finite PostgreSQL interval outputs
+  as Arrow `Interval(MonthDayNano)` so worker result pages and `slot_import`
+  agree on the `INTERVALOID` projection path.
 - `pg/df_functions` `avg` has two compatibility tiers. `avg(float4/float8)`
   returns Arrow `Float64` and preserves PostgreSQL-facing `NaN`/`Infinity`
   behavior. Its finite transition and merge paths track PostgreSQL-style

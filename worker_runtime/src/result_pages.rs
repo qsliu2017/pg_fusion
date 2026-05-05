@@ -301,7 +301,9 @@ impl ResultPageProducer {
 ///
 /// The transport path preserves primitive types and `Uuid`, but rewrites
 /// `Utf8`/`Utf8View` into `Utf8View` and `Binary`/`BinaryView` into
-/// `BinaryView`.
+/// `BinaryView`. Finite PostgreSQL intervals are represented as Arrow
+/// `Interval(MonthDayNano)` and can be returned through the same fixed-width
+/// page path.
 pub fn normalize_result_transport_schema(
     input_schema: &SchemaRef,
 ) -> Result<(SchemaRef, Vec<ColumnSpec>), WorkerRuntimeError> {
@@ -352,7 +354,8 @@ fn normalize_field(index: usize, field: &Field) -> Result<Field, WorkerRuntimeEr
         | DataType::Int64
         | DataType::Float32
         | DataType::Float64
-        | DataType::Decimal128(_, _) => field.data_type().clone(),
+        | DataType::Decimal128(_, _)
+        | DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano) => field.data_type().clone(),
         DataType::FixedSizeBinary(width) if *width == 16 => field.data_type().clone(),
         DataType::Utf8 | DataType::Utf8View => DataType::Utf8View,
         DataType::Binary | DataType::BinaryView => DataType::BinaryView,
@@ -485,6 +488,44 @@ mod tests {
         assert_eq!(transport_schema.field(2).data_type(), &DataType::Int64);
         assert_eq!(specs[0], ColumnSpec::new(TypeTag::Utf8View, true));
         assert_eq!(specs[1], ColumnSpec::new(TypeTag::BinaryView, false));
+    }
+
+    #[test]
+    fn preserves_month_day_nano_interval_columns() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "iv",
+            DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
+            true,
+        )]));
+
+        let (transport_schema, specs) =
+            normalize_result_transport_schema(&schema).expect("transport schema");
+
+        assert_eq!(
+            transport_schema.field(0).data_type(),
+            &DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
+        );
+        assert_eq!(
+            specs[0],
+            ColumnSpec::new(TypeTag::IntervalMonthDayNano, true)
+        );
+    }
+
+    #[test]
+    fn rejects_other_interval_units() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "iv",
+            DataType::Interval(arrow_schema::IntervalUnit::DayTime),
+            true,
+        )]));
+
+        let err = normalize_result_transport_schema(&schema)
+            .expect_err("unsupported interval unit must fail");
+
+        assert!(matches!(
+            err,
+            WorkerRuntimeError::UnsupportedResultColumnType { index: 0, .. }
+        ));
     }
 
     #[test]

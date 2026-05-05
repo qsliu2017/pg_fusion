@@ -9887,13 +9887,6 @@ WINDOW fwd AS (
 	ORDER BY vs.i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
 );
 
--- id: window_341_select_i_avg_v_interval_over_order_by_i_rows_between_current_row_and_unb_c9d4644f
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1771
--- compare: ordered
--- reason: runtime failed: pg_fusion result transport schema does not yet support Interval(MonthDayNano) output columns.
-SELECT i,AVG(v::interval) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,'1 sec'),(2,'2 sec'),(3,NULL),(4,NULL)) t(i,v);
-
 -- id: window_342_select_x_avg_x_over_rows_between_current_row_and_1_following_as_curr_nex_cdfdadec
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1774
 -- compare: multiset
