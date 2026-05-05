@@ -48,8 +48,17 @@ importance: 0.95
   Decimal128 aggregation. Finite `avg(interval)` uses Arrow
   `Interval(MonthDayNano)` with PostgreSQL-compatible finite division cascade;
   PostgreSQL interval infinities must fail with controlled errors because Arrow
-  has no interval special values. Document accepted `Decimal128` differences in
+  has no interval special values. `avg(DISTINCT)` uses mergeable `AHashSet`
+  accumulators whose partial state is a list of distinct finite input values;
+  float distinct keys collapse all `NaN` values and treat `+0.0`/`-0.0` as one
+  key. Document accepted
+  `Decimal128` differences in
   `pg/extension/pg_compat/limitations.sql`, not in the passing corpus.
+- pg_fusion planning disables DataFusion's
+  `single_distinct_aggregation_to_group_by` rewrite. That rule delegates
+  distinctness to DataFusion grouping keys and can bypass PostgreSQL-compatible
+  aggregate distinct semantics, notably `avg(DISTINCT float8)` handling of
+  signed zero.
 - `pg/df_functions` aggregate overrides that can appear in DataFusion window
   frames must keep `update_batch` and `retract_batch` symmetric. Sliding frames
   such as `ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING` move their start

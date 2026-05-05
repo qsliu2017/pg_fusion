@@ -10,6 +10,7 @@ crate-type = ["lib"]
 doctest = false
 
 [dependencies]
+ahash = "0.8"
 arrow-array = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }

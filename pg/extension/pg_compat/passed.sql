@@ -3124,3 +3124,23 @@ SELECT i,AVG(v::numeric) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED
 -- compare: ordered
 SELECT i,AVG(v::interval) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
   FROM (VALUES(1,'1 sec'),(2,'2 sec'),(3,NULL),(4,NULL)) t(i,v);
+
+-- id: local_pg_avg_distinct_int
+-- origin: local pg_fusion avg distinct compatibility
+-- compare: multiset
+SELECT avg(DISTINCT v::int) FROM (VALUES (1),(2),(2),(NULL)) t(v);
+
+-- id: local_pg_avg_distinct_numeric
+-- origin: local pg_fusion avg distinct compatibility
+-- compare: multiset
+SELECT avg(DISTINCT v::numeric) FROM (VALUES (1.5),(1.5),(2.5),(NULL)) t(v);
+
+-- id: local_pg_avg_distinct_float8_zero
+-- origin: local pg_fusion avg distinct compatibility
+-- compare: multiset
+SELECT avg(DISTINCT v::float8) FROM (VALUES (0.0),(-0.0),(2.0),(NULL)) t(v);
+
+-- id: local_pg_avg_distinct_interval
+-- origin: local pg_fusion avg distinct compatibility
+-- compare: multiset
+SELECT avg(DISTINCT v::interval) FROM (VALUES ('1 sec'),('1 sec'),('3 sec'),(NULL)) t(v);

@@ -254,9 +254,18 @@ fn optimize_logical_plan(
     options.execution.target_partitions = target_partitions;
     let mut state = SessionStateBuilder::new()
         .with_config(options.into())
+        .with_optimizer_rules(pg_fusion_optimizer_rules())
         .build();
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state.optimize(&plan)
+}
+
+fn pg_fusion_optimizer_rules() -> Vec<Arc<dyn datafusion::optimizer::OptimizerRule + Send + Sync>> {
+    datafusion::optimizer::Optimizer::new()
+        .rules
+        .into_iter()
+        .filter(|rule| rule.name() != "single_distinct_aggregation_to_group_by")
+        .collect()
 }
 
 fn pg_identifier_max_bytes() -> usize {

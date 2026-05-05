@@ -754,10 +754,19 @@ fn build_worker_planning_session_state() -> SessionState {
     options.execution.target_partitions = 1;
     let mut state = SessionStateBuilder::new()
         .with_config(options.into())
+        .with_optimizer_rules(pg_fusion_optimizer_rules())
         .with_default_features()
         .build();
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state
+}
+
+fn pg_fusion_optimizer_rules() -> Vec<Arc<dyn datafusion::optimizer::OptimizerRule + Send + Sync>> {
+    datafusion::optimizer::Optimizer::new()
+        .rules
+        .into_iter()
+        .filter(|rule| rule.name() != "single_distinct_aggregation_to_group_by")
+        .collect()
 }
 
 /// Thin worker-side attachment to `control_transport`.

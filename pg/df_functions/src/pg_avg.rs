@@ -1,8 +1,10 @@
 use std::any::Any;
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 use std::mem::size_of_val;
 use std::sync::Arc;
 
+use ahash::AHashSet;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Decimal128Type, Decimal256Type, Float64Type, Int16Type, Int32Type, Int64Type,
@@ -80,14 +82,13 @@ impl AggregateUDFImpl for PgAvg {
     }
 
     fn accumulator(&self, acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        if acc_args.is_distinct {
-            return exec_err!("avg(DISTINCT) aggregations are not available");
-        }
-
         let Some(expr) = acc_args.exprs.first() else {
             return exec_err!("avg expects one input expression");
         };
         let data_type = expr.data_type(acc_args.schema)?;
+        if acc_args.is_distinct {
+            return DistinctAvgAccumulator::try_new(&data_type).map(|acc| Box::new(acc) as _);
+        }
         match (&data_type, acc_args.return_type) {
             (
                 DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -115,6 +116,14 @@ impl AggregateUDFImpl for PgAvg {
 
     fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
         let input_type = single_arg_type(self.name(), args.input_types)?;
+        if args.is_distinct {
+            return Ok(vec![Field::new_list(
+                format_state_name(args.name, "distinct_values"),
+                Field::new_list_field(input_type.clone(), true),
+                false,
+            )]);
+        }
+
         let count_field = Field::new(
             format_state_name(args.name, "count"),
             DataType::UInt64,
@@ -219,6 +228,349 @@ fn single_arg_type<'a>(name: &str, arg_types: &'a [DataType]) -> Result<&'a Data
         return exec_err!("{name} expects exactly one argument");
     }
     Ok(&arg_types[0])
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FloatDistinctKey(u64);
+
+impl FloatDistinctKey {
+    const NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
+
+    fn new(value: f64) -> Self {
+        if value.is_nan() {
+            Self(Self::NAN_BITS)
+        } else if value == 0.0 {
+            Self(0.0_f64.to_bits())
+        } else {
+            Self(value.to_bits())
+        }
+    }
+
+    fn value(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl Hash for FloatDistinctKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct IntervalDistinctKey {
+    months: i32,
+    days: i32,
+    time_micros: i64,
+}
+
+impl IntervalDistinctKey {
+    fn try_new(
+        value: <IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native,
+        context: &str,
+    ) -> Result<Self> {
+        let (months, days, time_micros) = interval_parts_to_pg_micros(value, context)?;
+        Ok(Self {
+            months,
+            days,
+            time_micros,
+        })
+    }
+
+    fn native(
+        self,
+    ) -> Result<<IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native> {
+        let nanos = self
+            .time_micros
+            .checked_mul(NANOS_PER_MICRO)
+            .ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg distinct interval state cannot be represented as Arrow interval"
+                        .to_owned(),
+                )
+            })?;
+        Ok(IntervalMonthDayNanoType::make_value(
+            self.months,
+            self.days,
+            nanos,
+        ))
+    }
+}
+
+#[derive(Debug)]
+enum DistinctAvgAccumulator {
+    Int16(AHashSet<i16>),
+    Int32(AHashSet<i32>),
+    Int64(AHashSet<i64>),
+    Decimal128 {
+        precision: u8,
+        scale: i8,
+        values: AHashSet<i128>,
+    },
+    Float64(AHashSet<FloatDistinctKey>),
+    IntervalMonthDayNano(AHashSet<IntervalDistinctKey>),
+}
+
+impl DistinctAvgAccumulator {
+    fn try_new(data_type: &DataType) -> Result<Self> {
+        match data_type {
+            DataType::Int16 => Ok(Self::Int16(AHashSet::new())),
+            DataType::Int32 => Ok(Self::Int32(AHashSet::new())),
+            DataType::Int64 => Ok(Self::Int64(AHashSet::new())),
+            DataType::Decimal128(precision, scale) => Ok(Self::Decimal128 {
+                precision: *precision,
+                scale: *scale,
+                values: AHashSet::new(),
+            }),
+            DataType::Float64 => Ok(Self::Float64(AHashSet::new())),
+            DataType::Interval(IntervalUnit::MonthDayNano) => {
+                Ok(Self::IntervalMonthDayNano(AHashSet::new()))
+            }
+            other => exec_err!("avg(DISTINCT) does not support {other:?}"),
+        }
+    }
+
+    fn data_type(&self) -> DataType {
+        match self {
+            Self::Int16(_) => DataType::Int16,
+            Self::Int32(_) => DataType::Int32,
+            Self::Int64(_) => DataType::Int64,
+            Self::Decimal128 {
+                precision, scale, ..
+            } => DataType::Decimal128(*precision, *scale),
+            Self::Float64(_) => DataType::Float64,
+            Self::IntervalMonthDayNano(_) => DataType::Interval(IntervalUnit::MonthDayNano),
+        }
+    }
+
+    fn state_values(&self) -> Result<Vec<ScalarValue>> {
+        match self {
+            Self::Int16(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                Ok(values
+                    .into_iter()
+                    .map(|value| ScalarValue::Int16(Some(value)))
+                    .collect())
+            }
+            Self::Int32(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                Ok(values
+                    .into_iter()
+                    .map(|value| ScalarValue::Int32(Some(value)))
+                    .collect())
+            }
+            Self::Int64(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                Ok(values
+                    .into_iter()
+                    .map(|value| ScalarValue::Int64(Some(value)))
+                    .collect())
+            }
+            Self::Decimal128 {
+                precision,
+                scale,
+                values,
+            } => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                Ok(values
+                    .into_iter()
+                    .map(|value| ScalarValue::Decimal128(Some(value), *precision, *scale))
+                    .collect())
+            }
+            Self::Float64(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                Ok(values
+                    .into_iter()
+                    .map(|value| ScalarValue::Float64(Some(value.value())))
+                    .collect())
+            }
+            Self::IntervalMonthDayNano(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                values
+                    .into_iter()
+                    .map(|value| {
+                        value
+                            .native()
+                            .map(|value| ScalarValue::IntervalMonthDayNano(Some(value)))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn insert_batch(&mut self, values: &ArrayRef, context: &str) -> Result<()> {
+        match (self, values.data_type()) {
+            (Self::Int16(seen), DataType::Int16) => {
+                for value in values.as_primitive::<Int16Type>().iter().flatten() {
+                    seen.insert(value);
+                }
+            }
+            (Self::Int32(seen), DataType::Int32) => {
+                for value in values.as_primitive::<Int32Type>().iter().flatten() {
+                    seen.insert(value);
+                }
+            }
+            (Self::Int64(seen), DataType::Int64) => {
+                for value in values.as_primitive::<Int64Type>().iter().flatten() {
+                    seen.insert(value);
+                }
+            }
+            (
+                Self::Decimal128 {
+                    precision,
+                    scale,
+                    values: seen,
+                },
+                DataType::Decimal128(value_precision, value_scale),
+            ) if precision == value_precision && scale == value_scale => {
+                for value in values.as_primitive::<Decimal128Type>().iter().flatten() {
+                    seen.insert(value);
+                }
+            }
+            (Self::Float64(seen), DataType::Float64) => {
+                for value in values.as_primitive::<Float64Type>().iter().flatten() {
+                    seen.insert(FloatDistinctKey::new(value));
+                }
+            }
+            (Self::IntervalMonthDayNano(seen), DataType::Interval(IntervalUnit::MonthDayNano)) => {
+                for value in values
+                    .as_primitive::<IntervalMonthDayNanoType>()
+                    .iter()
+                    .flatten()
+                {
+                    seen.insert(IntervalDistinctKey::try_new(value, context)?);
+                }
+            }
+            (_, other) => return exec_err!("avg(DISTINCT) accumulator got {other:?}"),
+        }
+        Ok(())
+    }
+}
+
+impl Accumulator for DistinctAvgAccumulator {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+        self.insert_batch(values, "transition")
+    }
+
+    fn evaluate(&mut self) -> Result<ScalarValue> {
+        match self {
+            Self::Int16(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = IntegerAvgAccumulator::default();
+                for value in values {
+                    acc.add_i256(i256::from_i128(i128::from(value)))?;
+                }
+                acc.evaluate()
+            }
+            Self::Int32(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = IntegerAvgAccumulator::default();
+                for value in values {
+                    acc.add_i256(i256::from_i128(i128::from(value)))?;
+                }
+                acc.evaluate()
+            }
+            Self::Int64(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = IntegerAvgAccumulator::default();
+                for value in values {
+                    acc.add_i256(i256::from_i128(i128::from(value)))?;
+                }
+                acc.evaluate()
+            }
+            Self::Decimal128 {
+                precision,
+                scale,
+                values,
+            } => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = DecimalAvgAccumulator::try_new(*precision, *scale)?;
+                for value in values {
+                    acc.add_decimal128(value)?;
+                }
+                acc.evaluate()
+            }
+            Self::Float64(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = FloatAvgAccumulator::default();
+                for value in values {
+                    acc.add_value(value.value())?;
+                }
+                acc.evaluate()
+            }
+            Self::IntervalMonthDayNano(values) => {
+                let mut values = values.iter().copied().collect::<Vec<_>>();
+                values.sort_unstable();
+                let mut acc = IntervalAvgAccumulator::default();
+                for value in values {
+                    acc.add_interval(value.native()?)?;
+                }
+                acc.evaluate()
+            }
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::Int16(values) => size_of_val(self) + values.capacity() * size_of_val(&0_i16),
+            Self::Int32(values) => size_of_val(self) + values.capacity() * size_of_val(&0_i32),
+            Self::Int64(values) => size_of_val(self) + values.capacity() * size_of_val(&0_i64),
+            Self::Decimal128 { values, .. } => {
+                size_of_val(self) + values.capacity() * size_of_val(&0_i128)
+            }
+            Self::Float64(values) => {
+                size_of_val(self) + values.capacity() * size_of_val(&FloatDistinctKey(0))
+            }
+            Self::IntervalMonthDayNano(values) => {
+                size_of_val(self)
+                    + values.capacity()
+                        * size_of_val(&IntervalDistinctKey {
+                            months: 0,
+                            days: 0,
+                            time_micros: 0,
+                        })
+            }
+        }
+    }
+
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        Ok(vec![ScalarValue::List(ScalarValue::new_list_nullable(
+            &self.state_values()?,
+            &self.data_type(),
+        ))])
+    }
+
+    fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
+        if states.len() != 1 {
+            return exec_err!("avg(DISTINCT) merge expects one distinct-values state");
+        }
+        for values in states[0].as_list::<i32>().iter().flatten() {
+            self.insert_batch(&values, "merge")?;
+        }
+        Ok(())
+    }
+
+    fn retract_batch(&mut self, _values: &[ArrayRef]) -> Result<()> {
+        exec_err!("avg(DISTINCT) does not support window retraction")
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1398,6 +1750,97 @@ mod tests {
                 .with_precision_and_scale(precision, scale)
                 .unwrap(),
         )
+    }
+
+    #[test]
+    fn distinct_integer_avg_deduplicates_and_merges_state() {
+        let mut left = DistinctAvgAccumulator::try_new(&DataType::Int32).unwrap();
+        left.update_batch(&[Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            Some(2),
+            None,
+        ]))])
+        .unwrap();
+        assert_eq!(
+            decimal128_value(left.evaluate().unwrap()),
+            INT_AVG_SCALE_FACTOR + INT_AVG_SCALE_FACTOR / 2
+        );
+
+        let state = left.state().unwrap();
+        let mut merged = DistinctAvgAccumulator::try_new(&DataType::Int32).unwrap();
+        merged
+            .update_batch(&[Arc::new(Int32Array::from(vec![Some(2), Some(4)]))])
+            .unwrap();
+        merged.merge_batch(&[state[0].to_array().unwrap()]).unwrap();
+        assert_eq!(
+            decimal128_value(merged.evaluate().unwrap()),
+            23_333_333_333_333_333
+        );
+    }
+
+    #[test]
+    fn distinct_decimal_avg_deduplicates_scaled_values() {
+        let mut acc = DistinctAvgAccumulator::try_new(&DataType::Decimal128(10, 1)).unwrap();
+        acc.update_batch(&[decimal128_array(vec![Some(15), Some(15), Some(25)], 10, 1)])
+            .unwrap();
+
+        assert_eq!(
+            decimal128_value(acc.evaluate().unwrap()),
+            2 * INT_AVG_SCALE_FACTOR
+        );
+    }
+
+    #[test]
+    fn distinct_float_avg_uses_pg_like_distinct_keys() {
+        let mut zero = DistinctAvgAccumulator::try_new(&DataType::Float64).unwrap();
+        zero.update_batch(&[Arc::new(Float64Array::from(vec![
+            Some(0.0),
+            Some(-0.0),
+            Some(2.0),
+        ]))])
+        .unwrap();
+        assert_eq!(float64_value(zero.evaluate().unwrap()), Some(1.0));
+
+        let mut nan = DistinctAvgAccumulator::try_new(&DataType::Float64).unwrap();
+        nan.update_batch(&[Arc::new(Float64Array::from(vec![
+            Some(f64::NAN),
+            Some(f64::from_bits(0x7ff8_0000_0000_0001)),
+            Some(1.0),
+        ]))])
+        .unwrap();
+        assert!(float64_value(nan.evaluate().unwrap()).unwrap().is_nan());
+
+        let mut infinity = DistinctAvgAccumulator::try_new(&DataType::Float64).unwrap();
+        infinity
+            .update_batch(&[Arc::new(Float64Array::from(vec![
+                Some(f64::INFINITY),
+                Some(f64::INFINITY),
+                Some(1.0),
+            ]))])
+            .unwrap();
+        assert_eq!(
+            float64_value(infinity.evaluate().unwrap()),
+            Some(f64::INFINITY)
+        );
+    }
+
+    #[test]
+    fn distinct_interval_avg_deduplicates_finite_values() {
+        let mut acc =
+            DistinctAvgAccumulator::try_new(&DataType::Interval(IntervalUnit::MonthDayNano))
+                .unwrap();
+        acc.update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(0, 0, 1_000_000_000)),
+            Some(IntervalMonthDayNanoType::make_value(0, 0, 1_000_000_000)),
+            Some(IntervalMonthDayNanoType::make_value(0, 0, 3_000_000_000)),
+        ]))])
+        .unwrap();
+
+        assert_eq!(
+            interval_value(acc.evaluate().unwrap()),
+            Some(IntervalMonthDayNanoType::make_value(0, 0, 2_000_000_000))
+        );
     }
 
     #[test]
