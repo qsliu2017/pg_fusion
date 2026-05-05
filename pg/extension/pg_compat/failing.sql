@@ -8104,12 +8104,6 @@ SELECT (count(*) OVER (PARTITION BY four ORDER BY ten) +
   sum(hundred) OVER (PARTITION BY four ORDER BY ten))::varchar AS cntsum
   FROM tenk1 WHERE unique2 < 10;
 
--- id: window_35_select_avg_four_over_partition_by_four_order_by_thousand_100_from_tenk1__c0d80dfa
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:104
--- compare: ordered
--- reason: result mismatch: vanilla_rows=10, fusion_rows=10
-SELECT avg(four) OVER (PARTITION BY four ORDER BY thousand / 100) FROM tenk1 WHERE unique2 < 10;
-
 -- id: window_37_select_sum_salary_row_number_over_order_by_depname_sum_sum_salary_over_o_39754aeb
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:109
 -- compare: ordered

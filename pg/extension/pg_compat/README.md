@@ -17,11 +17,15 @@ Files:
 
 - `fixtures.sql`: local temp-table fixtures adapted from PostgreSQL regression
   tests, restricted to currently supported column types.
-- `passed.sql`: 539 allowlisted queries that must match vanilla PostgreSQL.
-- `failing.sql`: 1513 known failing or unsupported repros kept for iterative
+- `passed.sql`: allowlisted queries that must match vanilla PostgreSQL.
+- `failing.sql`: known failing or unsupported repros kept for iterative
   fixes; the current pgrx runner does not execute this file.
+- `limitations.sql`: executable queries with documented, accepted semantic or
+  formatting differences; the current pgrx runner parses this file but does not
+  execute it as passing coverage.
 
-Each query in `passed.sql` and `failing.sql` carries lightweight metadata:
+Each query in `passed.sql`, `failing.sql`, and `limitations.sql` carries
+lightweight metadata:
 
 - `id`: stable case name used in assertion messages.
 - `origin`: upstream PostgreSQL source location or local origin note.

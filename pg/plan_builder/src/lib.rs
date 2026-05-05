@@ -54,7 +54,7 @@ mod join_reorder;
 pub use join_reorder::{JoinStatsProvider, LiveJoinStatsProvider};
 
 const SPECIAL_NUMERIC_ERROR: &str =
-    "pg_fusion does not support PostgreSQL numeric NaN/Infinity values because Arrow Decimal128 cannot represent them";
+    "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values";
 
 static BUILTINS: Lazy<Arc<Builtins>> = Lazy::new(|| Arc::new(Builtins::new()));
 

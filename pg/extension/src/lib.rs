@@ -59,6 +59,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_float_avg_special_value_smoke() {
+        super::smoke_tests::float_avg_special_value_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_explain_smoke() {
         super::smoke_tests::explain_smoke();
     }

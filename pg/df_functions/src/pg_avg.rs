@@ -102,34 +102,68 @@ impl AggregateUDFImpl for PgAvg {
 
     fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
         let input_type = single_arg_type(self.name(), args.input_types)?;
-        let sum_type = match (input_type, args.return_type) {
+        let count_field = Field::new(
+            format_state_name(args.name, "count"),
+            DataType::UInt64,
+            true,
+        );
+
+        match (input_type, args.return_type) {
             (
                 DataType::Int16 | DataType::Int32 | DataType::Int64,
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
-            ) => DataType::Decimal256(INT_AVG_SUM_PRECISION, INT_AVG_SUM_SCALE),
+            ) => Ok(vec![
+                count_field,
+                Field::new(
+                    format_state_name(args.name, "sum"),
+                    DataType::Decimal256(INT_AVG_SUM_PRECISION, INT_AVG_SUM_SCALE),
+                    true,
+                ),
+            ]),
             (
                 DataType::Decimal128(_, scale),
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
-            ) => DataType::Decimal256(DECIMAL_AVG_SUM_PRECISION, decimal_avg_state_scale(*scale)),
-            (DataType::Float64, DataType::Float64) => DataType::Float64,
-            _ => {
-                return exec_err!(
-                    "{} state does not support ({} -> {})",
-                    self.name(),
-                    input_type,
-                    args.return_type
-                )
-            }
-        };
-
-        Ok(vec![
-            Field::new(
-                format_state_name(args.name, "count"),
-                DataType::UInt64,
-                true,
+            ) => Ok(vec![
+                count_field,
+                Field::new(
+                    format_state_name(args.name, "sum"),
+                    DataType::Decimal256(
+                        DECIMAL_AVG_SUM_PRECISION,
+                        decimal_avg_state_scale(*scale),
+                    ),
+                    true,
+                ),
+            ]),
+            (DataType::Float64, DataType::Float64) => Ok(vec![
+                count_field,
+                Field::new(
+                    format_state_name(args.name, "finite_sum"),
+                    DataType::Float64,
+                    true,
+                ),
+                Field::new(
+                    format_state_name(args.name, "nan_count"),
+                    DataType::UInt64,
+                    true,
+                ),
+                Field::new(
+                    format_state_name(args.name, "pos_inf_count"),
+                    DataType::UInt64,
+                    true,
+                ),
+                Field::new(
+                    format_state_name(args.name, "neg_inf_count"),
+                    DataType::UInt64,
+                    true,
+                ),
+            ]),
+            _ => exec_err!(
+                "{} state does not support ({} -> {})",
+                self.name(),
+                input_type,
+                args.return_type
             ),
-            Field::new(format_state_name(args.name, "sum"), sum_type, true),
-        ])
+        }
     }
 
     fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
@@ -576,8 +610,133 @@ impl Accumulator for DecimalAvgAccumulator {
 
 #[derive(Debug, Default)]
 struct FloatAvgAccumulator {
-    sum: Option<f64>,
+    finite_sum: f64,
     count: u64,
+    nan_count: u64,
+    pos_inf_count: u64,
+    neg_inf_count: u64,
+}
+
+impl FloatAvgAccumulator {
+    fn add_value(&mut self, value: f64) -> Result<()> {
+        let next_count = self.count.checked_add(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg float transition count overflowed u64".to_owned(),
+            )
+        })?;
+
+        if value.is_nan() {
+            self.nan_count = self.nan_count.checked_add(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float transition NaN count overflowed u64".to_owned(),
+                )
+            })?;
+        } else if value == f64::INFINITY {
+            self.pos_inf_count = self.pos_inf_count.checked_add(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float transition +Infinity count overflowed u64".to_owned(),
+                )
+            })?;
+        } else if value == f64::NEG_INFINITY {
+            self.neg_inf_count = self.neg_inf_count.checked_add(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float transition -Infinity count overflowed u64".to_owned(),
+                )
+            })?;
+        } else {
+            self.finite_sum = checked_float_sum(self.finite_sum, value, "transition")?;
+        }
+
+        self.count = next_count;
+        Ok(())
+    }
+
+    fn retract_value(&mut self, value: f64) -> Result<()> {
+        let next_count = self.count.checked_sub(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg float retraction count underflowed u64".to_owned(),
+            )
+        })?;
+
+        if value.is_nan() {
+            self.nan_count = self.nan_count.checked_sub(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float retraction NaN count underflowed u64".to_owned(),
+                )
+            })?;
+        } else if value == f64::INFINITY {
+            self.pos_inf_count = self.pos_inf_count.checked_sub(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float retraction +Infinity count underflowed u64".to_owned(),
+                )
+            })?;
+        } else if value == f64::NEG_INFINITY {
+            self.neg_inf_count = self.neg_inf_count.checked_sub(1).ok_or_else(|| {
+                datafusion_common::DataFusionError::Execution(
+                    "avg float retraction -Infinity count underflowed u64".to_owned(),
+                )
+            })?;
+        } else {
+            self.finite_sum = checked_float_sum(self.finite_sum, -value, "retraction")?;
+        }
+
+        self.count = next_count;
+        Ok(())
+    }
+
+    fn merge_state(
+        &mut self,
+        count: u64,
+        finite_sum: f64,
+        nan_count: u64,
+        pos_inf_count: u64,
+        neg_inf_count: u64,
+    ) -> Result<()> {
+        let next_finite_sum = checked_float_sum(self.finite_sum, finite_sum, "merged")?;
+        let next_count = self.count.checked_add(count).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg float merged count overflowed u64".to_owned(),
+            )
+        })?;
+        let next_nan_count = self.nan_count.checked_add(nan_count).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg float merged NaN count overflowed u64".to_owned(),
+            )
+        })?;
+        let next_pos_inf_count =
+            self.pos_inf_count
+                .checked_add(pos_inf_count)
+                .ok_or_else(|| {
+                    datafusion_common::DataFusionError::Execution(
+                        "avg float merged +Infinity count overflowed u64".to_owned(),
+                    )
+                })?;
+        let next_neg_inf_count =
+            self.neg_inf_count
+                .checked_add(neg_inf_count)
+                .ok_or_else(|| {
+                    datafusion_common::DataFusionError::Execution(
+                        "avg float merged -Infinity count overflowed u64".to_owned(),
+                    )
+                })?;
+
+        self.finite_sum = next_finite_sum;
+        self.count = next_count;
+        self.nan_count = next_nan_count;
+        self.pos_inf_count = next_pos_inf_count;
+        self.neg_inf_count = next_neg_inf_count;
+        Ok(())
+    }
+}
+
+fn checked_float_sum(current: f64, delta: f64, context: &str) -> Result<f64> {
+    let next = current + delta;
+    if next.is_infinite() && current.is_finite() && delta.is_finite() {
+        return Err(datafusion_common::DataFusionError::Execution(format!(
+            "avg float {context} sum overflowed float8"
+        )));
+    }
+    Ok(next)
 }
 
 impl Accumulator for FloatAvgAccumulator {
@@ -587,12 +746,7 @@ impl Accumulator for FloatAvgAccumulator {
         };
         let values = values.as_primitive::<Float64Type>();
         for value in values.iter().flatten() {
-            self.sum = Some(self.sum.unwrap_or(0.0) + value);
-            self.count = self.count.checked_add(1).ok_or_else(|| {
-                datafusion_common::DataFusionError::Execution(
-                    "avg float transition count overflowed u64".to_owned(),
-                )
-            })?;
+            self.add_value(value)?;
         }
         Ok(())
     }
@@ -603,18 +757,7 @@ impl Accumulator for FloatAvgAccumulator {
         };
         let values = values.as_primitive::<Float64Type>();
         for value in values.iter().flatten() {
-            let next_count = self.count.checked_sub(1).ok_or_else(|| {
-                datafusion_common::DataFusionError::Execution(
-                    "avg float retraction count underflowed u64".to_owned(),
-                )
-            })?;
-            let sum = self.sum.ok_or_else(|| {
-                datafusion_common::DataFusionError::Execution(
-                    "avg float retraction sum underflowed".to_owned(),
-                )
-            })?;
-            self.count = next_count;
-            self.sum = (next_count > 0).then_some(sum - value);
+            self.retract_value(value)?;
         }
         Ok(())
     }
@@ -624,9 +767,18 @@ impl Accumulator for FloatAvgAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(
-            self.sum.map(|sum| sum / self.count as f64),
-        ))
+        let value = if self.count == 0 {
+            None
+        } else if self.nan_count > 0 || (self.pos_inf_count > 0 && self.neg_inf_count > 0) {
+            Some(f64::NAN)
+        } else if self.pos_inf_count > 0 {
+            Some(f64::INFINITY)
+        } else if self.neg_inf_count > 0 {
+            Some(f64::NEG_INFINITY)
+        } else {
+            Some(self.finite_sum / self.count as f64)
+        };
+        Ok(ScalarValue::Float64(value))
     }
 
     fn size(&self) -> usize {
@@ -636,31 +788,49 @@ impl Accumulator for FloatAvgAccumulator {
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
             ScalarValue::UInt64(Some(self.count)),
-            ScalarValue::Float64(self.sum),
+            ScalarValue::Float64(Some(self.finite_sum)),
+            ScalarValue::UInt64(Some(self.nan_count)),
+            ScalarValue::UInt64(Some(self.pos_inf_count)),
+            ScalarValue::UInt64(Some(self.neg_inf_count)),
         ])
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        if states.len() != 2 {
-            return exec_err!("avg float merge expects count and sum states");
+        if states.len() != 5 {
+            return exec_err!(
+                "avg float merge expects count, finite_sum, NaN count, +Infinity count, and -Infinity count states"
+            );
         }
 
         let counts = states[0].as_primitive::<UInt64Type>();
-        let sums = states[1].as_primitive::<Float64Type>();
-        if counts.len() != sums.len() {
+        let finite_sums = states[1].as_primitive::<Float64Type>();
+        let nan_counts = states[2].as_primitive::<UInt64Type>();
+        let pos_inf_counts = states[3].as_primitive::<UInt64Type>();
+        let neg_inf_counts = states[4].as_primitive::<UInt64Type>();
+        if counts.len() != finite_sums.len()
+            || counts.len() != nan_counts.len()
+            || counts.len() != pos_inf_counts.len()
+            || counts.len() != neg_inf_counts.len()
+        {
             return exec_err!("avg float merge state arrays have different lengths");
         }
 
         for row in 0..counts.len() {
-            if counts.is_null(row) || sums.is_null(row) {
+            if counts.is_null(row)
+                || finite_sums.is_null(row)
+                || nan_counts.is_null(row)
+                || pos_inf_counts.is_null(row)
+                || neg_inf_counts.is_null(row)
+            {
                 continue;
             }
-            self.count = self.count.checked_add(counts.value(row)).ok_or_else(|| {
-                datafusion_common::DataFusionError::Execution(
-                    "avg float merged count overflowed u64".to_owned(),
-                )
-            })?;
-            self.sum = Some(self.sum.unwrap_or(0.0) + sums.value(row));
+            self.merge_state(
+                counts.value(row),
+                finite_sums.value(row),
+                nan_counts.value(row),
+                pos_inf_counts.value(row),
+                neg_inf_counts.value(row),
+            )?;
         }
 
         Ok(())
@@ -675,6 +845,13 @@ mod tests {
     fn decimal128_value(value: ScalarValue) -> i128 {
         match value {
             ScalarValue::Decimal128(Some(value), NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE) => value,
+            other => panic!("unexpected scalar value {other:?}"),
+        }
+    }
+
+    fn float64_value(value: ScalarValue) -> Option<f64> {
+        match value {
+            ScalarValue::Float64(value) => value,
             other => panic!("unexpected scalar value {other:?}"),
         }
     }
@@ -789,6 +966,91 @@ mod tests {
         acc.retract_batch(&[Arc::new(Float64Array::from(vec![Some(2.0)]))])
             .unwrap();
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::Float64(None));
+    }
+
+    #[test]
+    fn float_avg_preserves_nan_and_infinity() {
+        let cases = [
+            (vec![Some(f64::INFINITY), Some(1.0)], f64::INFINITY),
+            (vec![Some(f64::NEG_INFINITY), Some(1.0)], f64::NEG_INFINITY),
+            (vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY)], f64::NAN),
+            (vec![Some(f64::NAN), Some(1.0)], f64::NAN),
+        ];
+
+        for (input, expected) in cases {
+            let mut acc = FloatAvgAccumulator::default();
+            acc.update_batch(&[Arc::new(Float64Array::from(input))])
+                .unwrap();
+            let actual = float64_value(acc.evaluate().unwrap()).unwrap();
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn float_avg_retracts_special_values_for_sliding_windows() {
+        let mut acc = FloatAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(Float64Array::from(vec![
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(1.0),
+        ]))])
+        .unwrap();
+        assert!(float64_value(acc.evaluate().unwrap()).unwrap().is_nan());
+
+        acc.retract_batch(&[Arc::new(Float64Array::from(vec![Some(f64::NEG_INFINITY)]))])
+            .unwrap();
+        assert_eq!(float64_value(acc.evaluate().unwrap()), Some(f64::INFINITY));
+
+        acc.retract_batch(&[Arc::new(Float64Array::from(vec![Some(f64::INFINITY)]))])
+            .unwrap();
+        assert_eq!(float64_value(acc.evaluate().unwrap()), Some(1.0));
+    }
+
+    #[test]
+    fn float_avg_errors_when_finite_sum_overflows() {
+        let mut acc = FloatAvgAccumulator::default();
+        let err = acc
+            .update_batch(&[Arc::new(Float64Array::from(vec![
+                Some(f64::MAX),
+                Some(f64::MAX),
+            ]))])
+            .unwrap_err();
+        assert!(err.to_string().contains("transition sum overflowed float8"));
+
+        let mut left = FloatAvgAccumulator::default();
+        left.update_batch(&[Arc::new(Float64Array::from(vec![Some(f64::MAX)]))])
+            .unwrap();
+        let state = left.state().unwrap();
+        let mut merged = FloatAvgAccumulator::default();
+        merged
+            .update_batch(&[Arc::new(Float64Array::from(vec![Some(f64::MAX)]))])
+            .unwrap();
+        let err = merged
+            .merge_batch(&[
+                state[0].to_array().unwrap(),
+                state[1].to_array().unwrap(),
+                state[2].to_array().unwrap(),
+                state[3].to_array().unwrap(),
+                state[4].to_array().unwrap(),
+            ])
+            .unwrap_err();
+        assert!(err.to_string().contains("merged sum overflowed float8"));
+
+        let mut retract = FloatAvgAccumulator {
+            finite_sum: -f64::MAX,
+            count: 2,
+            nan_count: 0,
+            pos_inf_count: 0,
+            neg_inf_count: 0,
+        };
+        let err = retract
+            .retract_batch(&[Arc::new(Float64Array::from(vec![Some(f64::MAX)]))])
+            .unwrap_err();
+        assert!(err.to_string().contains("retraction sum overflowed float8"));
     }
 
     #[test]

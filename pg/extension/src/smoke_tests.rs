@@ -162,9 +162,31 @@ pub(crate) fn numeric_special_value_error_smoke() {
             .map(|db_error| db_error.message().to_owned())
             .unwrap_or_else(|| err.to_string());
         assert!(
-            message.contains("numeric NaN/Infinity"),
+            message.contains(
+                "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values"
+            ),
             "unexpected error for {sql}: {message}"
         );
+    }
+}
+
+pub(crate) fn float_avg_special_value_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+
+    let cases = [
+        ("SELECT avg('Infinity'::float8)", "Infinity"),
+        ("SELECT avg('-Infinity'::float8)", "-Infinity"),
+        ("SELECT avg('NaN'::float8)", "NaN"),
+        (
+            "SELECT avg(x::float8) FROM (VALUES ('Infinity'), ('-Infinity')) AS v(x)",
+            "NaN",
+        ),
+    ];
+    for (sql, expected) in cases {
+        let actual = simple_query_first_column_tx(&mut tx, sql)
+            .unwrap_or_else(|| panic!("float avg smoke query must return one row: {sql}"));
+        assert_eq!(actual, expected, "unexpected result for {sql}");
     }
 }
 

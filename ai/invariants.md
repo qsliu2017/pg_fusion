@@ -30,11 +30,17 @@ importance: 0.95
   `TypeTag::Decimal128` only records the 16-byte fixed-width layout, so
   import/projection code must preserve precision/scale from the Arrow schema
   rather than reconstructing it from the page tag.
-- PostgreSQL-compatible `avg(numeric)` currently covers finite Arrow
-  `Decimal128` values only. PostgreSQL `numeric` `NaN`/`Infinity` cannot be
-  represented in Arrow decimal arrays; known special numeric constants and
-  literal numeric casts must fail with a controlled pg_fusion error before
-  worker-side Decimal128 aggregation.
+- `pg/df_functions` `avg` has two compatibility tiers. `avg(float4/float8)`
+  returns Arrow `Float64` and preserves PostgreSQL-facing `NaN`/`Infinity`
+  behavior, including controlled errors when finite transition, merge, or
+  inverse sums overflow to infinity. Integer and finite `numeric` averages use
+  the fast Arrow `Decimal128(38,16)` result path; this intentionally does not
+  model PostgreSQL numeric's value-dependent display scale or arbitrary
+  precision. PostgreSQL `numeric` `NaN`/`Infinity` cannot be represented in
+  Arrow decimal arrays; known special numeric constants and literal numeric
+  casts must fail with a controlled pg_fusion error before worker-side
+  Decimal128 aggregation. Document accepted `Decimal128` differences in
+  `pg/extension/pg_compat/limitations.sql`, not in the passing corpus.
 - `pg/df_functions` aggregate overrides that can appear in DataFusion window
   frames must keep `update_batch` and `retract_batch` symmetric. Sliding frames
   such as `ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING` move their start

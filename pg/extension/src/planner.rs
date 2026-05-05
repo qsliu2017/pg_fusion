@@ -20,7 +20,7 @@ use crate::utility_hook::skip_planner;
 static mut PREV_PLANNER_HOOK: planner_hook_type = None;
 
 const SPECIAL_NUMERIC_ERROR: &str =
-    "pg_fusion does not support PostgreSQL numeric NaN/Infinity values because Arrow Decimal128 cannot represent them";
+    "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values";
 
 pub fn register_hooks() {
     unsafe {

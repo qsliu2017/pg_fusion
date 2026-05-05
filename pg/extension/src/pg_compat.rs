@@ -7,6 +7,7 @@ use crate::smoke_tests::{
 
 const FIXTURES_SQL: &str = include_str!("../pg_compat/fixtures.sql");
 const PASSED_SQL: &str = include_str!("../pg_compat/passed.sql");
+const LIMITATIONS_SQL: &str = include_str!("../pg_compat/limitations.sql");
 
 #[derive(Clone, Copy)]
 enum CompareMode {
@@ -40,6 +41,11 @@ pub(crate) fn pg_compat_allowlist() {
     assert!(
         !cases.is_empty(),
         "pg_compat passed corpus must not be empty"
+    );
+    let limitation_cases = parse_cases(LIMITATIONS_SQL);
+    assert!(
+        !limitation_cases.is_empty(),
+        "pg_compat limitations corpus must not be empty"
     );
     for case in &cases {
         assert_uses_pg_fusion(&mut tx, case);

@@ -178,7 +178,9 @@ fn rejects_special_numeric_literal_casts() {
     ] {
         let error = build_err(sql).to_string();
         assert!(
-            error.contains("numeric NaN/Infinity"),
+            error.contains(
+                "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values"
+            ),
             "unexpected error for {sql}: {error}"
         );
     }
