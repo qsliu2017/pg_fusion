@@ -159,3 +159,156 @@ INSERT INTO j2_tbl VALUES
 
 ANALYZE j1_tbl;
 ANALYZE j2_tbl;
+
+CREATE TEMP TABLE booltbl3(d text, b bool, o int4);
+INSERT INTO booltbl3 VALUES
+    ('true', true, 1),
+    ('false', false, 2),
+    ('null', NULL, 3);
+ANALYZE booltbl3;
+
+CREATE TEMP TABLE booltbl4(isfalse bool, istrue bool, isnul bool);
+INSERT INTO booltbl4 VALUES (false, true, NULL);
+ANALYZE booltbl4;
+
+CREATE TEMP TABLE bool_test(
+    b1 bool,
+    b2 bool,
+    b3 bool,
+    b4 bool
+);
+INSERT INTO bool_test VALUES
+    (true, NULL, false, NULL),
+    (false, true, NULL, NULL),
+    (NULL, true, false, NULL);
+ANALYZE bool_test;
+
+CREATE TEMP TABLE test_having(a int4, b int4, c char(8), d char);
+INSERT INTO test_having VALUES
+    (0, 1, 'XXXX', 'A'),
+    (1, 2, 'AAAA', 'b'),
+    (2, 2, 'AAAA', 'c'),
+    (3, 3, 'BBBB', 'D'),
+    (4, 3, 'BBBB', 'e'),
+    (5, 3, 'bbbb', 'F'),
+    (6, 4, 'cccc', 'g'),
+    (7, 4, 'cccc', 'h'),
+    (8, 4, 'CCCC', 'I'),
+    (9, 4, 'CCCC', 'j');
+ANALYZE test_having;
+
+CREATE TEMP TABLE subselect_tbl(
+    f1 int4,
+    f2 int4,
+    f3 float4
+);
+INSERT INTO subselect_tbl VALUES
+    (1, 2, 3),
+    (2, 3, 4),
+    (3, 4, 5),
+    (1, 1, 1),
+    (2, 2, 2),
+    (3, 3, 3),
+    (6, 7, 8),
+    (8, 9, NULL);
+ANALYZE subselect_tbl;
+
+CREATE TEMP TABLE disttable(f1 int4);
+INSERT INTO disttable VALUES (1), (2), (3), (NULL);
+ANALYZE disttable;
+
+CREATE TEMP TABLE x(x1 int4, x2 int4);
+INSERT INTO x VALUES
+    (1, 11),
+    (2, 22),
+    (3, NULL),
+    (4, 44),
+    (5, NULL);
+ANALYZE x;
+
+CREATE TEMP TABLE y(y1 int4, y2 int4);
+INSERT INTO y VALUES
+    (1, 111),
+    (2, 222),
+    (3, 333),
+    (4, NULL);
+ANALYZE y;
+
+CREATE TEMP TABLE gstest1(a int4, b int4, v int4);
+INSERT INTO gstest1 VALUES
+    (1, 1, 10),
+    (1, 1, 11),
+    (1, 2, 12),
+    (1, 2, 13),
+    (1, 3, 14),
+    (2, 3, 15),
+    (3, 3, 16),
+    (3, 4, 17),
+    (4, 1, 18),
+    (4, 1, 19);
+ANALYZE gstest1;
+
+CREATE TEMP TABLE gstest2(
+    a int4,
+    b int4,
+    c int4,
+    d int4,
+    e int4,
+    f int4,
+    g int4,
+    h int4
+);
+INSERT INTO gstest2 VALUES
+    (1, 1, 1, 1, 1, 1, 1, 1),
+    (1, 1, 1, 1, 1, 1, 1, 2),
+    (1, 1, 1, 1, 1, 1, 2, 2),
+    (1, 1, 1, 1, 1, 2, 2, 2),
+    (1, 1, 1, 1, 2, 2, 2, 2),
+    (1, 1, 1, 2, 2, 2, 2, 2),
+    (1, 1, 2, 2, 2, 2, 2, 2),
+    (1, 2, 2, 2, 2, 2, 2, 2),
+    (2, 2, 2, 2, 2, 2, 2, 2);
+ANALYZE gstest2;
+
+CREATE TEMP TABLE gstest3(a int4, b int4, c int4, d int4);
+INSERT INTO gstest3 VALUES (1, 1, 1, 1), (2, 2, 2, 2);
+ANALYZE gstest3;
+
+CREATE TEMP TABLE gstest_empty(a int4, b int4, v int4);
+ANALYZE gstest_empty;
+
+CREATE TEMP TABLE student(gpa float8);
+INSERT INTO student VALUES (3.0), (3.4), (3.7);
+ANALYZE student;
+
+CREATE TEMP TABLE regr_test(x float8, y float8);
+INSERT INTO regr_test VALUES
+    (10, 150),
+    (20, 250),
+    (30, 350),
+    (80, 540),
+    (100, 200);
+ANALYZE regr_test;
+
+CREATE TEMP TABLE minmaxtest(f1 int4);
+INSERT INTO minmaxtest VALUES (11), (12), (13), (14), (15), (16), (17), (18);
+ANALYZE minmaxtest;
+
+CREATE TEMP TABLE empsalary(
+    depname varchar,
+    empno int8,
+    salary int4,
+    enroll_date text
+);
+INSERT INTO empsalary VALUES
+    ('develop', 10, 5200, '2007-08-01'),
+    ('sales', 1, 5000, '2006-10-01'),
+    ('personnel', 5, 3500, '2007-12-10'),
+    ('sales', 4, 4800, '2007-08-08'),
+    ('personnel', 2, 3900, '2006-12-23'),
+    ('develop', 7, 4200, '2008-01-01'),
+    ('develop', 9, 4500, '2008-01-01'),
+    ('sales', 3, 4800, '2007-08-01'),
+    ('develop', 8, 6000, '2006-10-01'),
+    ('develop', 11, 5200, '2007-08-15');
+ANALYZE empsalary;

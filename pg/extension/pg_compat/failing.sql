@@ -34,12 +34,6 @@ SELECT avg(gpa) AS avg_3_4 FROM ONLY student;
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"student\" does not exist", detail: None, hint: None, position: Some(Original(46)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
 SELECT sum(gpa) AS avg_6_8 FROM ONLY student;
 
--- id: aggregates_20_select_max_student_gpa_as_max_3_7_from_student_a2802753
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:47
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"student\" does not exist", detail: None, hint: None, position: Some(Original(49)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT max(student.gpa) AS max_3_7 FROM student;
-
 -- id: aggregates_25_select_stddev_pop_b_numeric_from_aggtest_4f6b1b4b
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:53
 -- compare: multiset
@@ -490,18 +484,6 @@ select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type List(Field { name: \"item\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
 
--- id: aggregates_169_select_min_f1_max_f1_from_minmaxtest_e0dcc504
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:429
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"minmaxtest\" does not exist", detail: None, hint: None, position: Some(Original(38)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-select min(f1), max(f1) from minmaxtest;
-
--- id: aggregates_171_select_distinct_min_f1_max_f1_from_minmaxtest_e2a61c73
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:434
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"minmaxtest\" does not exist", detail: None, hint: None, position: Some(Original(47)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-select distinct min(f1), max(f1) from minmaxtest;
-
 -- id: aggregates_178_select_max_min_unique1_from_tenk1_a08134f9
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:447
 -- compare: multiset
@@ -893,12 +875,6 @@ select sum(unique1) FILTER (WHERE
 select aggfns(distinct a,b,c order by a,c using ~<~,b) filter (where a > 1)
     from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
     generate_series(1,2) i;
-
--- id: aggregates_320_select_max_0_filter_where_b1_from_bool_test_65bf20d8
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:888
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"bool_test\" does not exist", detail: None, hint: None, position: Some(Original(46)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-select max(0) filter (where b1) from bool_test;
 
 -- id: aggregates_321_select_select_max_0_filter_where_b1_from_bool_test_b0d587f6
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:891
@@ -6618,30 +6594,6 @@ SELECT count(*) FROM
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Projections require unique expression names but the expression \"Int64(1) AS ?column?\" at position 1 and \"Int64(2) AS ?column?\" at position 2 have the same name. Consider aliasing (\"AS\") one of them.", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 SELECT DISTINCT four,1,2,3 FROM tenk1 WHERE four = 0;
 
--- id: select_distinct_65_select_f1_f1_is_distinct_from_2_as_not_2_from_disttable_051b53f8
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:205
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"disttable\" does not exist", detail: None, hint: None, position: Some(Original(58)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1, f1 IS DISTINCT FROM 2 as "not 2" FROM disttable;
-
--- id: select_distinct_66_select_f1_f1_is_distinct_from_null_as_not_null_from_disttable_2ce47e84
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:208
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"disttable\" does not exist", detail: None, hint: None, position: Some(Original(64)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1, f1 IS DISTINCT FROM NULL as "not null" FROM disttable;
-
--- id: select_distinct_67_select_f1_f1_is_distinct_from_f1_as_false_from_disttable_fde466eb
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:209
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"disttable\" does not exist", detail: None, hint: None, position: Some(Original(59)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1, f1 IS DISTINCT FROM f1 as "false" FROM disttable;
-
--- id: select_distinct_68_select_f1_f1_is_distinct_from_f1_1_as_not_null_from_disttable_daf3d666
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:210
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"disttable\" does not exist", detail: None, hint: None, position: Some(Original(64)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1, f1 IS DISTINCT FROM f1+1 as "not null" FROM disttable;
-
 -- id: select_distinct_70_select_2_is_distinct_from_2_as_no_ae43f112
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:214
 -- compare: multiset
@@ -6685,13 +6637,6 @@ select distinct on (1) floor(random()) as r, f1 from int4_tbl order by 1,2;
 SELECT DISTINCT ON (four) four,two
    FROM tenk1 WHERE four = 0 ORDER BY 1;
 
--- id: select_having_12_select_b_c_from_test_having_group_by_b_c_having_count_1_order_by_b_c_2f761135
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:16
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"test_having\" does not exist", detail: None, hint: None, position: Some(Original(26)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT b, c FROM test_having
-	GROUP BY b, c HAVING count(*) = 1 ORDER BY b, c;
-
 -- id: select_having_13_select_b_c_from_test_having_group_by_b_c_having_b_3_order_by_b_c_1701b4fc
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:19
 -- compare: ordered
@@ -6714,18 +6659,6 @@ SELECT lower(c), count(c) FROM test_having
 SELECT c, max(a) FROM test_having
 	GROUP BY c HAVING count(*) > 2 OR min(a) = max(a)
 	ORDER BY c;
-
--- id: select_having_16_select_min_a_max_a_from_test_having_having_min_a_max_a_ceb43825
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:31
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"test_having\" does not exist", detail: None, hint: None, position: Some(Original(36)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT min(a), max(a) FROM test_having HAVING min(a) = max(a);
-
--- id: select_having_17_select_min_a_max_a_from_test_having_having_min_a_max_a_95c6d507
--- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:36
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"test_having\" does not exist", detail: None, hint: None, position: Some(Original(36)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT min(a), max(a) FROM test_having HAVING min(a) < max(a);
 
 -- id: select_having_18_select_a_from_test_having_having_min_a_max_a_c5dbe2f6
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:37
@@ -6948,34 +6881,6 @@ SELECT ((SELECT 2) UNION SELECT 2);
 -- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: failed to parse SQL: sql parser error: Expected: ), found: UNION", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 SELECT (((SELECT 2)) UNION SELECT 2);
 
--- id: subselect_23_select_from_subselect_tbl_4e4266f1
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:43
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(23)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT * FROM SUBSELECT_TBL;
-
--- id: subselect_24_select_f1_as_constant_select_from_subselect_tbl_where_f1_in_select_1_6c08eea2
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:45
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(45)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1 AS "Constant Select" FROM SUBSELECT_TBL
-  WHERE f1 IN (SELECT 1);
-
--- id: subselect_25_select_f1_as_uncorrelated_field_from_subselect_tbl_where_f1_in_select_f2_95581194
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:50
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(48)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
-  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL);
-
--- id: subselect_26_select_f1_as_uncorrelated_field_from_subselect_tbl_where_f1_in_select_f2_5fc4be42
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:53
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(48)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
-  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE
-    f2 IN (SELECT f1 FROM SUBSELECT_TBL));
-
 -- id: subselect_27_select_f1_f2_from_subselect_tbl_where_f1_f2_not_in_select_f2_cast_f3_as__7cec3535
 -- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:57
 -- compare: multiset
@@ -6984,23 +6889,6 @@ SELECT f1, f2
   FROM SUBSELECT_TBL
   WHERE (f1, f2) NOT IN (SELECT f2, CAST(f3 AS int4) FROM SUBSELECT_TBL
                          WHERE f3 IS NOT NULL);
-
--- id: subselect_28_select_f1_as_correlated_field_f2_as_second_field_from_subselect_tbl_uppe_311f9dd4
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:62
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(70)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1 AS "Correlated Field", f2 AS "Second Field"
-  FROM SUBSELECT_TBL upper
-  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE f1 = upper.f1);
-
--- id: subselect_29_select_f1_as_correlated_field_f3_as_second_field_from_subselect_tbl_uppe_fd00b567
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:68
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(70)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT f1 AS "Correlated Field", f3 AS "Second Field"
-  FROM SUBSELECT_TBL upper
-  WHERE f1 IN
-    (SELECT f2 FROM SUBSELECT_TBL WHERE CAST(upper.f2 AS float) = f3);
 
 -- id: subselect_30_select_f1_as_correlated_field_f3_as_second_field_from_subselect_tbl_uppe_6efbecff
 -- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:73
@@ -7055,15 +6943,6 @@ SELECT COUNT(*) FROM (SELECT DISTINCT name FROM road);
 -- compare: multiset
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"view_unnamed_ss\" does not exist", detail: None, hint: None, position: Some(Original(23)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
 SELECT * FROM view_unnamed_ss;
-
--- id: subselect_45_select_ss_f1_as_correlated_field_ss_f3_as_second_field_from_subselect_tb_f52652ee
--- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:126
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"subselect_tbl\" does not exist", detail: None, hint: None, position: Some(Original(76)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT ss.f1 AS "Correlated Field", ss.f3 AS "Second Field"
-  FROM SUBSELECT_TBL ss
-  WHERE f1 NOT IN (SELECT f1+1 FROM INT4_TBL
-                   WHERE f1 != ss.f1 AND f1 < 2147483647);
 
 -- id: subselect_46_select_q1_float8_count_select_count_from_int8_tbl_from_int8_tbl_group_by_d701a7c2
 -- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:135
@@ -8003,12 +7882,6 @@ SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary
 SELECT four, ten, SUM(SUM(four)) OVER (PARTITION BY four), AVG(ten) FROM tenk1
 GROUP BY four, ten ORDER BY four, ten;
 
--- id: window_6_select_depname_empno_salary_sum_salary_over_w_from_empsalary_window_w_as_01ed8406
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:30
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(64)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PARTITION BY depname);
-
 -- id: window_7_select_depname_empno_salary_rank_over_w_from_empsalary_window_w_as_parti_30988d04
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:32
 -- compare: ordered
@@ -8098,13 +7971,6 @@ SELECT sum(salary),
 	row_number() OVER (ORDER BY depname),
 	sum(sum(salary)) OVER (ORDER BY depname DESC)
 FROM empsalary GROUP BY depname;
-
--- id: window_38_select_sum_salary_over_w1_count_over_w2_from_empsalary_window_w1_as_orde_119781cb
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:115
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(59)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT sum(salary) OVER w1, count(*) OVER w2
-FROM empsalary WINDOW w1 AS (ORDER BY salary), w2 AS (ORDER BY salary);
 
 -- id: window_39_select_lead_ten_select_two_from_tenk1_where_s_unique2_unique2_over_parti_e52b96e9
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:119
@@ -8467,23 +8333,6 @@ select sum(salary) over (order by enroll_date range between '1 year'::interval p
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(172)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
 select sum(salary) over (order by enroll_date range between '1 year'::interval preceding and '1 year'::interval following
 	exclude ties), salary, enroll_date from empsalary;
-
--- id: window_116_select_first_value_salary_over_order_by_salary_range_between_1000_preced_433047fa
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:417
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(298)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-select first_value(salary) over(order by salary range between 1000 preceding and 1000 following),
-	lead(salary) over(order by salary range between 1000 preceding and 1000 following),
-	nth_value(salary, 1) over(order by salary range between 1000 preceding and 1000 following),
-	salary from empsalary;
-
--- id: window_117_select_last_value_salary_over_order_by_salary_range_between_1000_precedi_21c0f8c1
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:422
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(203)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-select last_value(salary) over(order by salary range between 1000 preceding and 1000 following),
-	lag(salary) over(order by salary range between 1000 preceding and 1000 following),
-	salary from empsalary;
 
 -- id: window_118_select_first_value_salary_over_order_by_salary_range_between_1000_follow_50c93101
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:426
@@ -9667,28 +9516,6 @@ SELECT * FROM
    FROM empsalary) emp
 WHERE dr = 1;
 
--- id: window_284_select_from_select_empno_salary_count_over_order_by_salary_desc_c_from_e_b1e73f18
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1268
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(115)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT * FROM
-  (SELECT empno,
-          salary,
-          count(*) OVER (ORDER BY salary DESC) c
-   FROM empsalary) emp
-WHERE c <= 3;
-
--- id: window_286_select_from_select_empno_salary_count_empno_over_order_by_salary_desc_c__ca524725
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1283
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(119)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT * FROM
-  (SELECT empno,
-          salary,
-          count(empno) OVER (ORDER BY salary DESC) c
-   FROM empsalary) emp
-WHERE c <= 3;
-
 -- id: window_291_select_from_select_empno_depname_row_number_over_partition_by_depname_or_da35a813
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1324
 -- compare: ordered
@@ -9699,18 +9526,6 @@ SELECT * FROM
           row_number() OVER (PARTITION BY depname ORDER BY empno) rn
    FROM empsalary) emp
 WHERE rn < 3;
-
--- id: window_294_select_from_select_empno_depname_salary_count_empno_over_partition_by_de_9c84484c
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1352
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"empsalary\" does not exist", detail: None, hint: None, position: Some(Original(159)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT * FROM
-  (SELECT empno,
-          depname,
-          salary,
-          count(empno) OVER (PARTITION BY depname ORDER BY salary DESC) c
-   FROM empsalary) emp
-WHERE c <= 3;
 
 -- id: window_296_select_from_select_row_number_over_partition_by_salary_as_rn_lead_depnam_f6213e3f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1372
@@ -11034,12 +10849,6 @@ WITH t AS (
 )
 INSERT INTO y
 SELECT a+20 FROM t RETURNING *;
-
--- id: with_112_select_from_y_e488eccc
--- origin: postgres REL_17_STABLE src/test/regress/sql/with.sql:872
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42P01), message: "relation \"y\" does not exist", detail: None, hint: None, position: Some(Original(23)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_relation.c"), line: Some(1452), routine: Some("parserOpenTable") }) }
-SELECT * FROM y;
 
 -- id: with_113_with_t_as_select_a_from_y_update_y_set_a_y_a_10_from_t_where_y_a_20_and__4741630a
 -- origin: postgres REL_17_STABLE src/test/regress/sql/with.sql:874

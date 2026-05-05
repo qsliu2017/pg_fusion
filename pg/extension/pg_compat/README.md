@@ -16,7 +16,10 @@ bypassed catalog/service queries do not count as compatibility coverage.
 Files:
 
 - `fixtures.sql`: local temp-table fixtures adapted from PostgreSQL regression
-  tests, restricted to currently supported column types.
+  tests, restricted to currently supported column types. Fixtures may use
+  equivalent pg_fusion-supported storage for narrow compatibility coverage; for
+  example `empsalary.enroll_date` is stored as ISO text so non-date window cases
+  can run without claiming general date scan support.
 - `passed.sql`: allowlisted queries that must match vanilla PostgreSQL.
 - `failing.sql`: known failing or unsupported repros kept for iterative
   fixes; the current pgrx runner does not execute this file.

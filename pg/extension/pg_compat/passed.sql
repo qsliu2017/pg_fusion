@@ -3144,3 +3144,168 @@ SELECT avg(DISTINCT v::float8) FROM (VALUES (0.0),(-0.0),(2.0),(NULL)) t(v);
 -- origin: local pg_fusion avg distinct compatibility
 -- compare: multiset
 SELECT avg(DISTINCT v::interval) FROM (VALUES ('1 sec'),('1 sec'),('3 sec'),(NULL)) t(v);
+
+-- id: aggregates_20_select_max_student_gpa_as_max_3_7_from_student_a2802753
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:47
+-- compare: multiset
+SELECT max(student.gpa) AS max_3_7 FROM student;
+
+-- id: aggregates_169_select_min_f1_max_f1_from_minmaxtest_e0dcc504
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:429
+-- compare: multiset
+select min(f1), max(f1) from minmaxtest;
+
+-- id: aggregates_171_select_distinct_min_f1_max_f1_from_minmaxtest_e2a61c73
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:434
+-- compare: multiset
+select distinct min(f1), max(f1) from minmaxtest;
+
+-- id: aggregates_320_select_max_0_filter_where_b1_from_bool_test_65bf20d8
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:888
+-- compare: multiset
+select max(0) filter (where b1) from bool_test;
+
+-- id: select_distinct_65_select_f1_f1_is_distinct_from_2_as_not_2_from_disttable_051b53f8
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:205
+-- compare: multiset
+SELECT f1, f1 IS DISTINCT FROM 2 as "not 2" FROM disttable;
+
+-- id: select_distinct_66_select_f1_f1_is_distinct_from_null_as_not_null_from_disttable_2ce47e84
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:208
+-- compare: multiset
+SELECT f1, f1 IS DISTINCT FROM NULL as "not null" FROM disttable;
+
+-- id: select_distinct_67_select_f1_f1_is_distinct_from_f1_as_false_from_disttable_fde466eb
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:209
+-- compare: multiset
+SELECT f1, f1 IS DISTINCT FROM f1 as "false" FROM disttable;
+
+-- id: select_distinct_68_select_f1_f1_is_distinct_from_f1_1_as_not_null_from_disttable_daf3d666
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:210
+-- compare: multiset
+SELECT f1, f1 IS DISTINCT FROM f1+1 as "not null" FROM disttable;
+
+-- id: select_having_12_select_b_c_from_test_having_group_by_b_c_having_count_1_order_by_b_c_2f761135
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:16
+-- compare: ordered
+SELECT b, c FROM test_having
+	GROUP BY b, c HAVING count(*) = 1 ORDER BY b, c;
+
+-- id: select_having_16_select_min_a_max_a_from_test_having_having_min_a_max_a_ceb43825
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:31
+-- compare: multiset
+SELECT min(a), max(a) FROM test_having HAVING min(a) = max(a);
+
+-- id: select_having_17_select_min_a_max_a_from_test_having_having_min_a_max_a_95c6d507
+-- origin: postgres REL_17_STABLE src/test/regress/sql/select_having.sql:36
+-- compare: multiset
+SELECT min(a), max(a) FROM test_having HAVING min(a) < max(a);
+
+-- id: subselect_23_select_from_subselect_tbl_4e4266f1
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:43
+-- compare: multiset
+SELECT * FROM SUBSELECT_TBL;
+
+-- id: subselect_24_select_f1_as_constant_select_from_subselect_tbl_where_f1_in_select_1_6c08eea2
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:45
+-- compare: multiset
+SELECT f1 AS "Constant Select" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT 1);
+
+-- id: subselect_25_select_f1_as_uncorrelated_field_from_subselect_tbl_where_f1_in_select_f2_95581194
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:50
+-- compare: multiset
+SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL);
+
+-- id: subselect_26_select_f1_as_uncorrelated_field_from_subselect_tbl_where_f1_in_select_f2_5fc4be42
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:53
+-- compare: multiset
+SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE
+    f2 IN (SELECT f1 FROM SUBSELECT_TBL));
+
+-- id: subselect_28_select_f1_as_correlated_field_f2_as_second_field_from_subselect_tbl_uppe_311f9dd4
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:62
+-- compare: multiset
+SELECT f1 AS "Correlated Field", f2 AS "Second Field"
+  FROM SUBSELECT_TBL upper
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE f1 = upper.f1);
+
+-- id: subselect_29_select_f1_as_correlated_field_f3_as_second_field_from_subselect_tbl_uppe_fd00b567
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:68
+-- compare: multiset
+SELECT f1 AS "Correlated Field", f3 AS "Second Field"
+  FROM SUBSELECT_TBL upper
+  WHERE f1 IN
+    (SELECT f2 FROM SUBSELECT_TBL WHERE CAST(upper.f2 AS float) = f3);
+
+-- id: subselect_45_select_ss_f1_as_correlated_field_ss_f3_as_second_field_from_subselect_tb_f52652ee
+-- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:126
+-- compare: multiset
+SELECT ss.f1 AS "Correlated Field", ss.f3 AS "Second Field"
+  FROM SUBSELECT_TBL ss
+  WHERE f1 NOT IN (SELECT f1+1 FROM INT4_TBL
+                   WHERE f1 != ss.f1 AND f1 < 2147483647);
+
+-- id: window_6_select_depname_empno_salary_sum_salary_over_w_from_empsalary_window_w_as_01ed8406
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:30
+-- compare: multiset
+SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PARTITION BY depname);
+
+-- id: window_38_select_sum_salary_over_w1_count_over_w2_from_empsalary_window_w1_as_orde_119781cb
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:115
+-- compare: ordered
+SELECT sum(salary) OVER w1, count(*) OVER w2
+FROM empsalary WINDOW w1 AS (ORDER BY salary), w2 AS (ORDER BY salary);
+
+-- id: window_116_select_first_value_salary_over_order_by_salary_range_between_1000_preced_433047fa
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:417
+-- compare: ordered
+select first_value(salary) over(order by salary range between 1000 preceding and 1000 following),
+	lead(salary) over(order by salary range between 1000 preceding and 1000 following),
+	nth_value(salary, 1) over(order by salary range between 1000 preceding and 1000 following),
+	salary from empsalary;
+
+-- id: window_117_select_last_value_salary_over_order_by_salary_range_between_1000_precedi_21c0f8c1
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:422
+-- compare: ordered
+select last_value(salary) over(order by salary range between 1000 preceding and 1000 following),
+	lag(salary) over(order by salary range between 1000 preceding and 1000 following),
+	salary from empsalary;
+
+-- id: window_284_select_from_select_empno_salary_count_over_order_by_salary_desc_c_from_e_b1e73f18
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1268
+-- compare: ordered
+SELECT * FROM
+  (SELECT empno,
+          salary,
+          count(*) OVER (ORDER BY salary DESC) c
+   FROM empsalary) emp
+WHERE c <= 3;
+
+-- id: window_286_select_from_select_empno_salary_count_empno_over_order_by_salary_desc_c__ca524725
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1283
+-- compare: ordered
+SELECT * FROM
+  (SELECT empno,
+          salary,
+          count(empno) OVER (ORDER BY salary DESC) c
+   FROM empsalary) emp
+WHERE c <= 3;
+
+-- id: window_294_select_from_select_empno_depname_salary_count_empno_over_partition_by_de_9c84484c
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1352
+-- compare: ordered
+SELECT * FROM
+  (SELECT empno,
+          depname,
+          salary,
+          count(empno) OVER (PARTITION BY depname ORDER BY salary DESC) c
+   FROM empsalary) emp
+WHERE c <= 3;
+
+-- id: with_112_select_from_y_e488eccc
+-- origin: postgres REL_17_STABLE src/test/regress/sql/with.sql:872
+-- compare: multiset
+SELECT * FROM y;
