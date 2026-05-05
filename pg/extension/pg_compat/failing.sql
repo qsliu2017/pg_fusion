@@ -9901,17 +9901,10 @@ WINDOW fwd AS (
 	ORDER BY vs.i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
 );
 
--- id: window_341_select_i_avg_v_interval_over_order_by_i_rows_between_current_row_and_unb_c9d4644f
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1771
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Execution error: User-defined coercion failed with Plan(\"The function \\\"avg\\\" does not support inputs of type Interval(MonthDayNano).\") No function matches the given name and argument types 'avg(Interval(MonthDayNano))'. You might need to add explicit type casts.\n\tCandidate functions:\n\tavg(UserDefined)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT i,AVG(v::interval) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
-  FROM (VALUES(1,'1 sec'),(2,'2 sec'),(3,NULL),(4,NULL)) t(i,v);
-
 -- id: window_342_select_x_avg_x_over_rows_between_current_row_and_1_following_as_curr_nex_cdfdadec
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1774
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Execution error: User-defined coercion failed with Plan(\"The function \\\"avg\\\" does not support inputs of type Interval(MonthDayNano).\") No function matches the given name and argument types 'avg(Interval(MonthDayNano))'. You might need to add explicit type casts.\n\tCandidate functions:\n\tavg(UserDefined)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: pg_fusion supports finite avg(interval), but this regression case includes PostgreSQL interval infinity/extreme sentinel values that Arrow Interval(MonthDayNano) cannot represent with PostgreSQL semantics.
 SELECT  x
         ,avg(x) OVER(ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING ) as curr_next_avg
         ,avg(x) OVER(ROWS BETWEEN 1 PRECEDING AND CURRENT ROW ) as prev_curr_avg
@@ -9931,7 +9924,7 @@ FROM (VALUES (NULL::interval),
 -- id: window_343_select_x_avg_x_over_rows_between_current_row_and_2_following_from_values_743f5cb2
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1791
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Execution error: User-defined coercion failed with Plan(\"The function \\\"avg\\\" does not support inputs of type Interval(MonthDayNano).\") No function matches the given name and argument types 'avg(Interval(MonthDayNano))'. You might need to add explicit type casts.\n\tCandidate functions:\n\tavg(UserDefined)", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: pg_fusion supports finite avg(interval), but this regression case includes PostgreSQL interval infinity values that Arrow Interval(MonthDayNano) cannot represent with PostgreSQL semantics.
 SELECT x, avg(x) OVER(ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING)
 FROM (VALUES (NULL::interval),
                ('3 days'::interval),

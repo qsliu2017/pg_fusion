@@ -1,7 +1,8 @@
 use crate::{ConfigError, ProjectError};
+use arrow_array::types::IntervalMonthDayNanoType;
 use arrow_array::{
     Array, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, StringViewArray,
+    Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray, StringViewArray,
 };
 use arrow_layout::TypeTag;
 use arrow_schema::{DataType, SchemaRef};
@@ -63,6 +64,7 @@ enum ColumnProjector {
     Float64,
     Uuid,
     Numeric { scale: i8 },
+    Interval,
     TextLike(TextLikeProjector),
     Bytea,
 }
@@ -95,6 +97,7 @@ enum PageColumnView {
     Float64(Float64Array),
     Uuid(FixedSizeBinaryArray),
     Decimal128(Decimal128Array),
+    IntervalMonthDayNano(IntervalMonthDayNanoArray),
     Utf8View(StringViewArray),
     BinaryView(BinaryViewArray),
 }
@@ -308,6 +311,16 @@ impl ArrowSlotProjector {
                             expected: "Decimal128Array",
                         })?,
                 ),
+                ColumnProjector::Interval => PageColumnView::IntervalMonthDayNano(
+                    array
+                        .as_any()
+                        .downcast_ref::<IntervalMonthDayNanoArray>()
+                        .cloned()
+                        .ok_or(ProjectError::ImportedArrayTypeMismatch {
+                            index,
+                            expected: "IntervalMonthDayNanoArray",
+                        })?,
+                ),
                 ColumnProjector::TextLike(_) => PageColumnView::Utf8View(
                     array
                         .as_any()
@@ -373,6 +386,9 @@ impl ArrowSlotProjector {
                 }
                 (ColumnProjector::Numeric { scale }, PageColumnView::Decimal128(array)) => {
                     values[index] = numeric_datum(array.value(row), *scale)?;
+                }
+                (ColumnProjector::Interval, PageColumnView::IntervalMonthDayNano(array)) => {
+                    values[index] = interval_datum(array.value(row), index)?;
                 }
                 (ColumnProjector::TextLike(projector), PageColumnView::Utf8View(array)) => {
                     values[index] = text_datum(*projector, array.value(row), index)?;
@@ -470,6 +486,7 @@ impl PageColumnView {
             Self::Float64(array) => array.is_null(row),
             Self::Uuid(array) => array.is_null(row),
             Self::Decimal128(array) => array.is_null(row),
+            Self::IntervalMonthDayNano(array) => array.is_null(row),
             Self::Utf8View(array) => array.is_null(row),
             Self::BinaryView(array) => array.is_null(row),
         }
@@ -500,6 +517,9 @@ fn projector_for_attr(
                 });
             };
             ColumnProjector::Numeric { scale: *scale }
+        }
+        (TypeTag::IntervalMonthDayNano, oid) if oid == pg_sys::INTERVALOID => {
+            ColumnProjector::Interval
         }
         (TypeTag::Utf8View, oid) if oid == pg_sys::TEXTOID => {
             ColumnProjector::TextLike(TextLikeProjector {
@@ -626,6 +646,31 @@ fn numeric_datum(value: i128, scale: i8) -> Result<pg_sys::Datum, ProjectError> 
     }))
     .catch_others(|error| Err(project_error_from_caught_error(error)))
     .execute()
+}
+
+fn interval_datum(
+    value: <IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native,
+    index: usize,
+) -> Result<pg_sys::Datum, ProjectError> {
+    let (months, days, nanoseconds) = IntervalMonthDayNanoType::to_parts(value);
+    if nanoseconds % 1_000 != 0 {
+        return Err(ProjectError::IntervalNanosecondsNotMicrosecond { index, nanoseconds });
+    }
+    let time = nanoseconds / 1_000;
+    if (months == i32::MIN && days == i32::MIN && time == i64::MIN)
+        || (months == i32::MAX && days == i32::MAX && time == i64::MAX)
+    {
+        return Err(ProjectError::IntervalOutOfRange { index });
+    }
+
+    let ptr = unsafe { pg_sys::palloc0(std::mem::size_of::<pg_sys::Interval>()) }
+        as *mut pg_sys::Interval;
+    unsafe {
+        (*ptr).time = time;
+        (*ptr).day = days;
+        (*ptr).month = months;
+    }
+    Ok(pg_sys::Datum::from(ptr))
 }
 
 fn format_decimal128(value: i128, scale: i8) -> String {

@@ -334,9 +334,11 @@ impl<'a> BlockMut<'a> {
             TypeTag::Int16 => self.zero_value_slot(index, row, 2)?,
             TypeTag::Int32 | TypeTag::Float32 => self.zero_value_slot(index, row, 4)?,
             TypeTag::Int64 | TypeTag::Float64 => self.zero_value_slot(index, row, 8)?,
-            TypeTag::Uuid | TypeTag::Utf8View | TypeTag::BinaryView | TypeTag::Decimal128 => {
-                self.zero_value_slot(index, row, 16)?
-            }
+            TypeTag::Uuid
+            | TypeTag::Utf8View
+            | TypeTag::BinaryView
+            | TypeTag::Decimal128
+            | TypeTag::IntervalMonthDayNano => self.zero_value_slot(index, row, 16)?,
         }
         Ok(())
     }

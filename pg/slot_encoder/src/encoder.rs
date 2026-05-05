@@ -1,7 +1,7 @@
 use crate::datum::{
     database_encoding, pg_oid_needs_detoast, read_bool, read_f32, read_f64, read_fixed_bytes,
-    read_i16, read_i32, read_i64, read_name_bytes, read_packed_varlena, validate_pg_layout_type,
-    with_detoasted_slot_datum,
+    read_i16, read_i32, read_i64, read_interval_month_day_nano, read_name_bytes,
+    read_packed_varlena, validate_pg_layout_type, with_detoasted_slot_datum,
 };
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
@@ -159,6 +159,7 @@ impl<'payload> PageBatchEncoder<'payload> {
                         | TypeTag::Int64
                         | TypeTag::Float32
                         | TypeTag::Float64
+                        | TypeTag::IntervalMonthDayNano
                 )
             {
                 fixed_width_fast_path = false;
@@ -196,7 +197,14 @@ impl<'payload> PageBatchEncoder<'payload> {
     /// Returns [`AppendStatus::Full`] when the row does not fit into the
     /// current block. In that case the caller should finalize the current
     /// block, allocate a fresh one, and retry the same slot there.
-    pub fn append_slot(
+    ///
+    /// # Safety
+    ///
+    /// `slot` must point to a live PostgreSQL `TupleTableSlot` whose tuple
+    /// descriptor, values, null flags, and slot operations remain valid for the
+    /// duration of this call. The call must run on a PostgreSQL backend thread
+    /// where it is legal to deform the slot and access PostgreSQL datums.
+    pub unsafe fn append_slot(
         &mut self,
         slot: *mut pg_sys::TupleTableSlot,
     ) -> Result<AppendStatus, EncodeError> {
@@ -305,6 +313,12 @@ impl<'payload> PageBatchEncoder<'payload> {
     }
 }
 
+/// Ensures that at least `needed_attrs` attributes are available in `slot`.
+///
+/// # Safety
+///
+/// `slot` must point to a live PostgreSQL `TupleTableSlot` whose slot
+/// operations may be invoked on the current backend thread.
 pub unsafe fn ensure_slot_deformed(
     slot: *mut pg_sys::TupleTableSlot,
     needed_attrs: i32,
@@ -346,6 +360,13 @@ pub unsafe fn ensure_slot_deformed(
     Ok(())
 }
 
+/// Reads an integer dynamic-filter key from a deformed PostgreSQL slot.
+///
+/// # Safety
+///
+/// `slot` must point to a live PostgreSQL `TupleTableSlot` with valid tuple
+/// descriptor, values, and null flags. The requested attribute must already be
+/// deformed.
 pub unsafe fn read_int_key(
     slot: *mut pg_sys::TupleTableSlot,
     source_index: usize,
@@ -367,6 +388,15 @@ pub unsafe fn read_int_key(
     }
 }
 
+/// Reads one dynamic-filter key from a deformed PostgreSQL slot and passes it
+/// to `f`.
+///
+/// # Safety
+///
+/// `slot` must point to a live PostgreSQL `TupleTableSlot` with valid tuple
+/// descriptor, values, and null flags. The requested attribute must already be
+/// deformed, and any borrowed key bytes passed to `f` are only valid for the
+/// duration of the callback.
 pub unsafe fn with_filter_key<R>(
     slot: *mut pg_sys::TupleTableSlot,
     source_index: usize,
@@ -502,6 +532,15 @@ impl FixedWidthRowSource for PgSlotRow {
             TypeTag::Int64 => FixedWidthCell::Int64(unsafe { read_i64(datum, attr.attbyval) }),
             TypeTag::Float32 => FixedWidthCell::Float32(unsafe { read_f32(datum, attr.attbyval) }),
             TypeTag::Float64 => FixedWidthCell::Float64(unsafe { read_f64(datum, attr.attbyval) }),
+            TypeTag::IntervalMonthDayNano => {
+                let (months, days, nanoseconds) =
+                    unsafe { read_interval_month_day_nano(datum, index)? };
+                FixedWidthCell::IntervalMonthDayNano {
+                    months,
+                    days,
+                    nanoseconds,
+                }
+            }
             _ => return Err(EncodeError::UnsupportedRowAccess { index }),
         };
         Ok(cell)
@@ -549,6 +588,18 @@ impl RowSource for PgSlotRow {
             oid if oid == pg_sys::UUIDOID => {
                 let bytes = unsafe { read_fixed_bytes(datum, 16, index)? };
                 self.write_cell(CellRef::Uuid(bytes), f)
+            }
+            oid if oid == pg_sys::INTERVALOID => {
+                let (months, days, nanoseconds) =
+                    unsafe { read_interval_month_day_nano(datum, index)? };
+                self.write_cell(
+                    CellRef::IntervalMonthDayNano {
+                        months,
+                        days,
+                        nanoseconds,
+                    },
+                    f,
+                )
             }
             oid if oid == pg_sys::NAMEOID => {
                 let bytes = unsafe { read_name_bytes(datum, index)? };

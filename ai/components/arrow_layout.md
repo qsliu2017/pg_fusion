@@ -32,6 +32,8 @@ importance: 0.7
   - `uuid`
   - `Utf8View`
   - `BinaryView`
+  - `Decimal128`
+  - `Interval(MonthDayNano)`
 - Current status:
   - crate is implemented and tested in isolation
   - `page/import` consumes this layout directly

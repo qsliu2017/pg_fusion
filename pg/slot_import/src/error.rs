@@ -56,4 +56,10 @@ pub enum ProjectError {
         len: usize,
         max_len: usize,
     },
+    #[error(
+        "projected interval at column {index} has nanoseconds {nanoseconds}, not representable as PostgreSQL microseconds"
+    )]
+    IntervalNanosecondsNotMicrosecond { index: usize, nanoseconds: i64 },
+    #[error("projected interval at column {index} is outside finite PostgreSQL interval range")]
+    IntervalOutOfRange { index: usize },
 }

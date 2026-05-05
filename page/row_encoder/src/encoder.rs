@@ -29,6 +29,7 @@ pub enum CellType {
     Float64,
     Uuid,
     Decimal128,
+    IntervalMonthDayNano,
     Utf8,
     Binary,
 }
@@ -44,6 +45,11 @@ pub enum CellRef<'a> {
     Float64(f64),
     Uuid(&'a [u8]),
     Decimal128(i128),
+    IntervalMonthDayNano {
+        months: i32,
+        days: i32,
+        nanoseconds: i64,
+    },
     Utf8(&'a [u8]),
     Binary(&'a [u8]),
 }
@@ -60,6 +66,7 @@ impl CellRef<'_> {
             Self::Float64(_) => CellType::Float64,
             Self::Uuid(_) => CellType::Uuid,
             Self::Decimal128(_) => CellType::Decimal128,
+            Self::IntervalMonthDayNano { .. } => CellType::IntervalMonthDayNano,
             Self::Utf8(_) => CellType::Utf8,
             Self::Binary(_) => CellType::Binary,
         }
@@ -75,6 +82,11 @@ pub enum FixedWidthCell {
     Float32(f32),
     Float64(f64),
     Decimal128(i128),
+    IntervalMonthDayNano {
+        months: i32,
+        days: i32,
+        nanoseconds: i64,
+    },
 }
 
 impl FixedWidthCell {
@@ -87,6 +99,7 @@ impl FixedWidthCell {
             Self::Float32(_) => CellType::Float32,
             Self::Float64(_) => CellType::Float64,
             Self::Decimal128(_) => CellType::Decimal128,
+            Self::IntervalMonthDayNano { .. } => CellType::IntervalMonthDayNano,
         }
     }
 }
@@ -212,8 +225,7 @@ impl<'payload> PageRowEncoder<'payload> {
                 Err(error) => return Err(RowEncodeError::Layout(error).into()),
             };
             let cell = source.fixed_width_cell(col_idx, type_tag)?;
-            self.write_fixed_width_cell(col_idx, row_idx, desc, type_tag, cell)
-                .map_err(Into::into)?;
+            self.write_fixed_width_cell(col_idx, row_idx, desc, type_tag, cell)?;
         }
 
         self.header.row_count = row_idx + 1;
@@ -245,6 +257,7 @@ impl<'payload> PageRowEncoder<'payload> {
                 | TypeTag::Float32
                 | TypeTag::Float64
                 | TypeTag::Decimal128
+                | TypeTag::IntervalMonthDayNano
         ) {
             return Ok(None);
         }
@@ -283,6 +296,18 @@ impl<'payload> PageRowEncoder<'payload> {
                 (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
                     self.write_validity(row_idx, desc, true);
                     self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
+                }
+                (
+                    TypeTag::IntervalMonthDayNano,
+                    CellRef::IntervalMonthDayNano {
+                        months,
+                        days,
+                        nanoseconds,
+                    },
+                ) => {
+                    self.write_validity(row_idx, desc, true);
+                    let bytes = interval_month_day_nano_bytes(months, days, nanoseconds);
+                    self.write_fixed_bytes(row_idx, desc, &bytes)?;
                 }
                 (expected, actual) => {
                     return Err(RowEncodeError::TypeMismatch {
@@ -346,6 +371,17 @@ impl<'payload> PageRowEncoder<'payload> {
             (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_ne_bytes())
             }
+            (
+                TypeTag::IntervalMonthDayNano,
+                CellRef::IntervalMonthDayNano {
+                    months,
+                    days,
+                    nanoseconds,
+                },
+            ) => {
+                let bytes = interval_month_day_nano_bytes(months, days, nanoseconds);
+                self.write_fixed(row_idx, desc, &bytes)
+            }
             (TypeTag::Uuid, CellRef::Uuid(bytes)) => {
                 if bytes.len() != UUID_WIDTH_BYTES as usize {
                     return Err(RowEncodeError::InvalidUuidWidth {
@@ -404,6 +440,18 @@ impl<'payload> PageRowEncoder<'payload> {
             }
             (TypeTag::Decimal128, FixedWidthCell::Decimal128(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
+                Ok(())
+            }
+            (
+                TypeTag::IntervalMonthDayNano,
+                FixedWidthCell::IntervalMonthDayNano {
+                    months,
+                    days,
+                    nanoseconds,
+                },
+            ) => {
+                let bytes = interval_month_day_nano_bytes(months, days, nanoseconds);
+                self.write_fixed(row_idx, desc, &bytes)?;
                 Ok(())
             }
             (expected, actual) => Err(RowEncodeError::TypeMismatch {
@@ -497,7 +545,8 @@ impl<'payload> PageRowEncoder<'payload> {
             raw if raw == TypeTag::Uuid.to_raw()
                 || raw == TypeTag::Utf8View.to_raw()
                 || raw == TypeTag::BinaryView.to_raw()
-                || raw == TypeTag::Decimal128.to_raw() =>
+                || raw == TypeTag::Decimal128.to_raw()
+                || raw == TypeTag::IntervalMonthDayNano.to_raw() =>
             {
                 self.zero_value_slot(row_idx, desc, 16)
             }
@@ -608,7 +657,12 @@ impl<'payload> PageRowEncoder<'payload> {
             raw if raw == TypeTag::Int16.to_raw() => 2usize,
             raw if raw == TypeTag::Int32.to_raw() || raw == TypeTag::Float32.to_raw() => 4usize,
             raw if raw == TypeTag::Int64.to_raw() || raw == TypeTag::Float64.to_raw() => 8usize,
-            raw if raw == TypeTag::Uuid.to_raw() || raw == TypeTag::Decimal128.to_raw() => 16usize,
+            raw if raw == TypeTag::Uuid.to_raw()
+                || raw == TypeTag::Decimal128.to_raw()
+                || raw == TypeTag::IntervalMonthDayNano.to_raw() =>
+            {
+                16usize
+            }
             raw => return Err(arrow_layout::LayoutError::InvalidTypeTag { raw }.into()),
         };
         if bytes.len() != width {
@@ -645,6 +699,14 @@ impl<'payload> PageRowEncoder<'payload> {
     pub fn tail_cursor_for_tests(&self) -> u32 {
         self.header.tail_cursor
     }
+}
+
+fn interval_month_day_nano_bytes(months: i32, days: i32, nanoseconds: i64) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[..4].copy_from_slice(&months.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&days.to_ne_bytes());
+    bytes[8..16].copy_from_slice(&nanoseconds.to_ne_bytes());
+    bytes
 }
 
 enum CellWrite {

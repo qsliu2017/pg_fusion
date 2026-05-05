@@ -109,6 +109,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_heap_interval_avg_smoke() {
+        super::smoke_tests::heap_interval_avg_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_heap_varlena_full_scan_smoke() {
         super::smoke_tests::heap_varlena_full_scan_smoke();
     }

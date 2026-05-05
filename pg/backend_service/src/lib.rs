@@ -1928,6 +1928,9 @@ fn arrow_data_type_for_type_tag(type_tag: TypeTag) -> DataType {
         TypeTag::Utf8View => DataType::Utf8View,
         TypeTag::BinaryView => DataType::BinaryView,
         TypeTag::Decimal128 => DataType::Decimal128(38, 16),
+        TypeTag::IntervalMonthDayNano => {
+            DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
+        }
     }
 }
 

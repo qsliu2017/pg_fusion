@@ -5,7 +5,7 @@ use crate::constants::{BUFFER_ALIGNMENT, UUID_WIDTH_BYTES};
 use crate::internals::{align_up_u32, aligned_mul, checked_u32};
 use crate::raw::ColumnDesc;
 use crate::LayoutError;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, IntervalUnit};
 
 /// Raw block-level flags stored in [`crate::raw::BlockHeader::flags`].
 ///
@@ -111,6 +111,8 @@ pub enum TypeTag {
     BinaryView = 9,
     /// Native-endian 128-bit decimal values.
     Decimal128 = 10,
+    /// Native-endian Arrow `Interval(MonthDayNano)` values.
+    IntervalMonthDayNano = 11,
 }
 
 impl TypeTag {
@@ -127,6 +129,7 @@ impl TypeTag {
             8 => Ok(Self::Utf8View),
             9 => Ok(Self::BinaryView),
             10 => Ok(Self::Decimal128),
+            11 => Ok(Self::IntervalMonthDayNano),
             _ => Err(LayoutError::InvalidTypeTag { raw }),
         }
     }
@@ -148,7 +151,11 @@ impl TypeTag {
             Self::Int16 => Some(2),
             Self::Int32 | Self::Float32 => Some(4),
             Self::Int64 | Self::Float64 => Some(8),
-            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => Some(16),
+            Self::Uuid
+            | Self::Utf8View
+            | Self::BinaryView
+            | Self::Decimal128
+            | Self::IntervalMonthDayNano => Some(16),
         }
     }
 
@@ -160,9 +167,11 @@ impl TypeTag {
             Self::Int16 => aligned_mul(max_rows, 2),
             Self::Int32 | Self::Float32 => aligned_mul(max_rows, 4),
             Self::Int64 | Self::Float64 => aligned_mul(max_rows, 8),
-            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => {
-                aligned_mul(max_rows, 16)
-            }
+            Self::Uuid
+            | Self::Utf8View
+            | Self::BinaryView
+            | Self::Decimal128
+            | Self::IntervalMonthDayNano => aligned_mul(max_rows, 16),
         }
     }
 
@@ -189,7 +198,11 @@ impl TypeTag {
                     .checked_mul(8)
                     .ok_or(LayoutError::SizeOverflow)?,
             ),
-            Self::Uuid | Self::Utf8View | Self::BinaryView | Self::Decimal128 => checked_u32(
+            Self::Uuid
+            | Self::Utf8View
+            | Self::BinaryView
+            | Self::Decimal128
+            | Self::IntervalMonthDayNano => checked_u32(
                 usize::try_from(row_count)
                     .map_err(|_| LayoutError::SizeOverflow)?
                     .checked_mul(16)
@@ -211,6 +224,7 @@ impl TypeTag {
             DataType::Utf8View => Ok(Self::Utf8View),
             DataType::BinaryView => Ok(Self::BinaryView),
             DataType::Decimal128(_, _) => Ok(Self::Decimal128),
+            DataType::Interval(IntervalUnit::MonthDayNano) => Ok(Self::IntervalMonthDayNano),
             other => Err(LayoutError::UnsupportedArrowType {
                 index,
                 data_type: other.to_string(),

@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::ptr::null_mut;
 
-use arrow_schema::DataType;
+use arrow_schema::{DataType, IntervalUnit};
 use datafusion::logical_expr::LogicalPlan;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
@@ -385,6 +385,7 @@ fn type_to_oid(data_type: &DataType) -> Option<Oid> {
         DataType::Utf8 | DataType::Utf8View => Some(pgrx::pg_sys::TEXTOID),
         DataType::Binary | DataType::BinaryView => Some(pgrx::pg_sys::BYTEAOID),
         DataType::FixedSizeBinary(16) => Some(pgrx::pg_sys::UUIDOID),
+        DataType::Interval(IntervalUnit::MonthDayNano) => Some(pgrx::pg_sys::INTERVALOID),
         _ => None,
     }
 }

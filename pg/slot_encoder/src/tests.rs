@@ -203,6 +203,7 @@ enum MockCell {
     Utf8(Vec<u8>),
     Binary(Vec<u8>),
     Uuid(Box<[u8; 16]>),
+    Interval(Box<pg_sys::Interval>),
     Name(Box<pg_sys::NameData>),
 }
 
@@ -218,6 +219,10 @@ impl MockCell {
                 (pg_sys::Datum::from(value.as_mut_ptr()), false)
             }
             Self::Uuid(value) => (pg_sys::Datum::from(value.as_mut_ptr()), false),
+            Self::Interval(value) => (
+                pg_sys::Datum::from(value.as_mut() as *mut pg_sys::Interval),
+                false,
+            ),
             Self::Name(value) => (
                 pg_sys::Datum::from(value.as_mut() as *mut pg_sys::NameData),
                 false,
@@ -311,6 +316,14 @@ fn uuid_at(block: &BlockRef<'_>, col: usize, row: u32) -> [u8; 16] {
         .expect("fixed value")
         .try_into()
         .expect("uuid bytes")
+}
+
+fn interval_at(block: &BlockRef<'_>, col: usize, row: u32) -> (i32, i32, i64) {
+    let bytes = block.fixed_value(col, row).expect("fixed value");
+    let months = i32::from_ne_bytes(bytes[..4].try_into().expect("month bytes"));
+    let days = i32::from_ne_bytes(bytes[4..8].try_into().expect("day bytes"));
+    let nanoseconds = i64::from_ne_bytes(bytes[8..16].try_into().expect("time bytes"));
+    (months, days, nanoseconds)
 }
 
 fn view_bytes(block: &BlockRef<'_>, col: usize, row: u32) -> Option<Vec<u8>> {
@@ -461,7 +474,7 @@ fn encodes_rows_directly_into_layout_block() {
 
     for slot in &mut rows {
         assert_eq!(
-            encoder.append_slot(slot.as_mut_ptr()).expect("append"),
+            unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append"),
             AppendStatus::Appended
         );
     }
@@ -518,12 +531,12 @@ fn append_slot_reports_full_without_committing_the_overflowing_row() {
     );
 
     assert_eq!(
-        encoder.append_slot(small.as_mut_ptr()).expect("small"),
+        unsafe { encoder.append_slot(small.as_mut_ptr()) }.expect("small"),
         AppendStatus::Appended
     );
     let tail_after_small = encoder.tail_cursor();
     assert_eq!(
-        encoder.append_slot(huge.as_mut_ptr()).expect("huge"),
+        unsafe { encoder.append_slot(huge.as_mut_ptr()) }.expect("huge"),
         AppendStatus::Full
     );
     let encoded = encoder.finish().expect("finish");
@@ -577,7 +590,7 @@ fn append_slot_reads_fixed_width_and_name_values() {
     let mut encoder =
         unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     encoder.finish().expect("finish");
@@ -586,6 +599,63 @@ fn append_slot_reads_fixed_width_and_name_values() {
     assert!(bool_at(&block, 0, 0));
     assert_eq!(i32_at(&block, 1, 0), 42);
     assert_eq!(view_bytes(&block, 2, 0).as_deref(), Some(&b"slot_name"[..]));
+}
+
+#[test]
+fn append_slot_encodes_interval_as_month_day_nano() {
+    let specs = [ColumnSpec::new(TypeTag::IntervalMonthDayNano, true)];
+    let attrs = [TestAttr {
+        oid: pg_sys::INTERVALOID,
+        attlen: 16,
+        attbyval: false,
+        attalign: b'd',
+    }];
+    let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let interval = Box::new(pg_sys::Interval {
+        time: 123_456,
+        day: 7,
+        month: 2,
+    });
+    let mut slot = OwnedSlot::from_cells(tuple_desc.ptr, vec![MockCell::Interval(interval)]);
+
+    let mut payload = init_payload(&specs, 2, 512);
+    let mut encoder =
+        unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
+    assert_eq!(
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
+        AppendStatus::Appended
+    );
+    encoder.finish().expect("finish");
+
+    let block = BlockRef::open(&payload).expect("block");
+    assert_eq!(interval_at(&block, 0, 0), (2, 7, 123_456_000));
+}
+
+#[test]
+fn append_slot_rejects_infinite_interval() {
+    let specs = [ColumnSpec::new(TypeTag::IntervalMonthDayNano, true)];
+    let attrs = [TestAttr {
+        oid: pg_sys::INTERVALOID,
+        attlen: 16,
+        attbyval: false,
+        attalign: b'd',
+    }];
+    let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let interval = Box::new(pg_sys::Interval {
+        time: i64::MAX,
+        day: i32::MAX,
+        month: i32::MAX,
+    });
+    let mut slot = OwnedSlot::from_cells(tuple_desc.ptr, vec![MockCell::Interval(interval)]);
+
+    let mut payload = init_payload(&specs, 2, 512);
+    let mut encoder =
+        unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
+    let err = unsafe { encoder.append_slot(slot.as_mut_ptr()) }.unwrap_err();
+    assert!(matches!(
+        err,
+        EncodeError::UnsupportedInfiniteInterval { index: 0 }
+    ));
 }
 
 #[test]
@@ -796,7 +866,7 @@ fn append_slot_projected_reads_source_columns() {
             .expect("encoder");
 
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     encoder.finish().expect("finish");
@@ -848,7 +918,7 @@ fn append_slot_projected_fixed_width_uses_fast_path() {
     assert!(encoder.fixed_width_fast_path_for_tests());
 
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     encoder.finish().expect("finish");
@@ -880,11 +950,11 @@ fn append_slot_projected_empty_projection_writes_empty_schema_rows() {
     assert!(!encoder.fixed_width_fast_path_for_tests());
 
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     let encoded = encoder.finish().expect("finish");
@@ -917,7 +987,7 @@ fn append_slot_deforms_via_slot_ops_fast_path() {
     assert!(encoder.fixed_width_fast_path_for_tests());
 
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append slot"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
         AppendStatus::Appended
     );
     assert_eq!(TEST_GETSOMEATTRS_CALLS.load(Ordering::Relaxed), 1);
@@ -945,9 +1015,7 @@ fn append_slot_reports_unavailable_slot_ops_for_undeformed_slot() {
     let mut encoder =
         unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
 
-    let error = encoder
-        .append_slot(slot.as_mut_ptr())
-        .expect_err("missing slot ops");
+    let error = unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect_err("missing slot ops");
     assert!(matches!(
         error,
         EncodeError::SlotAttrOpsUnavailable { attnum: 1 }
@@ -1004,9 +1072,7 @@ fn append_slot_rejects_mismatched_tuple_desc() {
     let mut payload = init_payload(&specs, 2, 256);
     let mut encoder =
         unsafe { PageBatchEncoder::new(encoder_desc.ptr, &mut payload) }.expect("encoder");
-    let error = encoder
-        .append_slot(slot.as_mut_ptr())
-        .expect_err("mismatch");
+    let error = unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect_err("mismatch");
     assert!(matches!(error, EncodeError::SlotTupleDescMismatch));
 }
 
@@ -1029,9 +1095,7 @@ fn append_slot_accepts_equivalent_tuple_desc_pointer() {
     let mut encoder =
         unsafe { PageBatchEncoder::new(encoder_desc.ptr, &mut payload) }.expect("encoder");
     assert_eq!(
-        encoder
-            .append_slot(slot.as_mut_ptr())
-            .expect("equivalent desc"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("equivalent desc"),
         AppendStatus::Appended
     );
 }
@@ -1070,7 +1134,7 @@ fn encodes_empty_short_varlena_values() {
         ],
     );
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append"),
         AppendStatus::Appended
     );
     encoder.finish().expect("finish");
@@ -1189,8 +1253,9 @@ fn append_slot_mixed_is_allocation_free_after_encoder_construction() {
         ],
     );
 
-    let (allocations, status) =
-        count_thread_allocations(|| encoder.append_slot(slot.as_mut_ptr()).expect("append slot"));
+    let (allocations, status) = count_thread_allocations(|| {
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot")
+    });
     assert_eq!(allocations, 0);
     assert_eq!(status, AppendStatus::Appended);
 }
@@ -1223,8 +1288,9 @@ fn append_slot_fixed_width_is_allocation_free() {
     let mut encoder =
         unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
 
-    let (allocations, status) =
-        count_thread_allocations(|| encoder.append_slot(slot.as_mut_ptr()).expect("append slot"));
+    let (allocations, status) = count_thread_allocations(|| {
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot")
+    });
     assert_eq!(allocations, 0);
     assert_eq!(status, AppendStatus::Appended);
 }
@@ -1248,7 +1314,7 @@ fn finish_is_allocation_free() {
         vec![MockCell::Utf8(short_varlena(b"alpha"))],
     );
     assert_eq!(
-        encoder.append_slot(slot.as_mut_ptr()).expect("append"),
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append"),
         AppendStatus::Appended
     );
 

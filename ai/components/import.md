@@ -22,6 +22,8 @@ importance: 0.72
   - page payload is exactly one validated `arrow_layout` block
   - external Arrow schema must match the on-page layout exactly
   - string/binary columns must use `Utf8View` / `BinaryView`
+  - finite PostgreSQL intervals use Arrow `Interval(MonthDayNano)` fixed-width
+    slots; interval infinities are outside the page contract
 - Ownership model:
   - importer consumes `ReceivedPage`
   - Arrow buffers are created with `arrow_buffer::Buffer::from_custom_allocation`

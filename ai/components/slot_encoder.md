@@ -20,8 +20,9 @@ importance: 0.72
   - caller plans and initializes a block externally through `arrow_layout`
   - `PageBatchEncoder::new(tuple_desc, payload)` validates the block against the
     PostgreSQL `TupleDesc`
-  - `append_slot(slot)` deforms/detoasts PostgreSQL values, forwards typed
-    cells to `row_encoder`, and returns `AppendStatus::{Appended, Full}`
+  - `unsafe append_slot(slot)` deforms/detoasts PostgreSQL values, forwards
+    typed cells to `row_encoder`, and returns `AppendStatus::{Appended, Full}`;
+    the caller must provide a live backend-local `TupleTableSlot`
   - `finish()` writes final header state and returns `{ row_count, payload_len }`
 - Hot-path details:
   - `row_encoder` writes fixed-width values, validity bits, `ByteView` slots,
@@ -52,6 +53,8 @@ importance: 0.72
   - `text/varchar/bpchar/name -> Arrow Utf8View`
   - `bytea -> Arrow BinaryView`
   - `uuid -> Arrow FixedSizeBinary(16)`
+  - finite `interval -> Arrow Interval(MonthDayNano)`; PostgreSQL interval
+    infinities are rejected because Arrow has no interval special values
 - Output contract:
   - caller-provided payload already contains one initialized `arrow_layout` block
   - `payload_len` currently equals the block size published by `arrow_layout`

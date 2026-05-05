@@ -445,7 +445,7 @@ fn run_arrow_bench(
 
         while scan.next_slot() {
             loop {
-                match encoder.append_slot(scan.slot())? {
+                match unsafe { encoder.append_slot(scan.slot()) }? {
                     AppendStatus::Appended => {
                         rows_total += 1;
                         break;

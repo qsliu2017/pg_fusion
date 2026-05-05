@@ -59,7 +59,7 @@ init_block(&mut payload, &plan)?;
 
 let mut encoder = unsafe { PageBatchEncoder::new(tuple_desc, &mut payload)? };
 loop {
-    match encoder.append_slot(slot)? {
+    match unsafe { encoder.append_slot(slot) }? {
         AppendStatus::Appended => {
             // Slot was written into the current block.
         }
@@ -86,8 +86,9 @@ caller creates a fresh block whenever `AppendStatus::Full` is returned.
   the same output block shape while reading values from selected source slot
   attributes. An explicitly empty `source_columns` slice is distinct from
   identity projection and writes empty-schema pages with row counts.
-- `append_slot(slot)` accepts undeformed or partially deformed slots and asks
-  PostgreSQL to deform enough attributes when needed.
+- `unsafe append_slot(slot)` accepts undeformed or partially deformed slots and
+  asks PostgreSQL to deform enough attributes when needed. The caller must pass
+  a live backend-local `TupleTableSlot`.
 - `with_filter_key(slot, source_index, key_type, callback)` reads one supported
   runtime-filter key from a deformed slot without staging text-like values on
   the Rust heap. Borrowed text bytes are valid only inside the callback.

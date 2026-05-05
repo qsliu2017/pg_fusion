@@ -1,8 +1,8 @@
 use super::{ArrowPageDecoder, ConfigError, ImportError, ARROW_LAYOUT_BATCH_KIND};
 use arrow_array::{
     Array, ArrayRef, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch,
-    RecordBatchOptions, StringViewArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray,
+    RecordBatch, RecordBatchOptions, StringViewArray,
 };
 use arrow_layout::{init_block, BlockMut, BlockRef, ByteView, LayoutPlan, ViewWriteStatus};
 use arrow_schema::{DataType, Field, Schema};
@@ -337,6 +337,18 @@ fn encode_layout_payload(batch: &RecordBatch, block_size: usize) -> Vec<u8> {
                             .value(row as usize)
                             .to_ne_bytes();
                         block.write_fixed(col, row, &value).expect("write fixed");
+                    }
+                    arrow_layout::TypeTag::IntervalMonthDayNano => {
+                        let value = array
+                            .as_any()
+                            .downcast_ref::<IntervalMonthDayNanoArray>()
+                            .expect("interval month day nano")
+                            .value(row as usize);
+                        let mut bytes = [0u8; 16];
+                        bytes[..4].copy_from_slice(&value.months.to_ne_bytes());
+                        bytes[4..8].copy_from_slice(&value.days.to_ne_bytes());
+                        bytes[8..16].copy_from_slice(&value.nanoseconds.to_ne_bytes());
+                        block.write_fixed(col, row, &bytes).expect("write fixed");
                     }
                     arrow_layout::TypeTag::Uuid => {
                         let value = array

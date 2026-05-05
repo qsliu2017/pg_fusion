@@ -39,7 +39,10 @@ importance: 0.95
   precision. PostgreSQL `numeric` `NaN`/`Infinity` cannot be represented in
   Arrow decimal arrays; known special numeric constants and literal numeric
   casts must fail with a controlled pg_fusion error before worker-side
-  Decimal128 aggregation. Document accepted `Decimal128` differences in
+  Decimal128 aggregation. Finite `avg(interval)` uses Arrow
+  `Interval(MonthDayNano)` with PostgreSQL-compatible finite division cascade;
+  PostgreSQL interval infinities must fail with controlled errors because Arrow
+  has no interval special values. Document accepted `Decimal128` differences in
   `pg/extension/pg_compat/limitations.sql`, not in the passing corpus.
 - `pg/df_functions` aggregate overrides that can appear in DataFusion window
   frames must keep `update_batch` and `retract_batch` symmetric. Sliding frames

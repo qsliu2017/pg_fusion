@@ -21,6 +21,7 @@ mod tests;
 
 use arrow_array::types::{
     ArrowPrimitiveType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
+    IntervalMonthDayNanoType,
 };
 use arrow_array::{
     ArrayRef, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, PrimitiveArray, RecordBatch,
@@ -191,6 +192,11 @@ impl ArrowPageDecoder {
                         self.import_primitive::<Decimal128Type>(&owner, &layout, row_count, nulls)?
                             .with_precision_and_scale(*precision, *scale)?,
                     )
+                }
+                TypeTag::IntervalMonthDayNano => {
+                    Arc::new(self.import_primitive::<IntervalMonthDayNanoType>(
+                        &owner, &layout, row_count, nulls,
+                    )?)
                 }
                 TypeTag::Uuid => Arc::new(self.import_uuid(&owner, &layout, row_count, nulls)?),
                 TypeTag::Utf8View => Arc::new(self.import_utf8_view(

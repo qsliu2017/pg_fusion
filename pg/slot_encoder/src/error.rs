@@ -82,6 +82,10 @@ pub enum EncodeError {
     CompressedVarlena { index: usize },
     #[error("packed varlena at column {index} is malformed")]
     MalformedVarlena { index: usize },
+    #[error("PostgreSQL interval infinity at column {index} cannot be encoded as Arrow")]
+    UnsupportedInfiniteInterval { index: usize },
+    #[error("PostgreSQL interval time at column {index} overflows Arrow nanoseconds")]
+    IntervalTimeOverflow { index: usize },
     #[error("column {index} is not nullable in the target layout")]
     NullInNonNullableColumn { index: usize },
     #[error("unsupported row access at column {index}")]

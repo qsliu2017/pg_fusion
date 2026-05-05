@@ -712,7 +712,7 @@ fn append_pending_overflow(
         pg_sys::ExecStoreHeapTuple(*pending, slot, false);
     }
 
-    let status = encoder.append_slot(slot)?;
+    let status = unsafe { encoder.append_slot(slot)? };
     if status == AppendStatus::Appended {
         unsafe {
             clear_slot(slot);

@@ -411,7 +411,7 @@ fn encode_rows_into_page(
         let mut encoder = unsafe { PageBatchEncoder::new(tupdesc, payload)? };
         for row in rows {
             slot.store(row);
-            match encoder.append_slot(slot.as_mut_ptr())? {
+            match unsafe { encoder.append_slot(slot.as_mut_ptr()) }? {
                 AppendStatus::Appended => {}
                 AppendStatus::Full => bail!("page encoder reported Full before all rows fit"),
             }
@@ -498,7 +498,7 @@ fn send_issued_encoded_page(
         let mut encoder = unsafe { PageBatchEncoder::new(tupdesc, payload)? };
         for row in rows {
             slot.store(row);
-            match encoder.append_slot(slot.as_mut_ptr())? {
+            match unsafe { encoder.append_slot(slot.as_mut_ptr()) }? {
                 AppendStatus::Appended => {}
                 AppendStatus::Full => bail!("page encoder reported Full before all rows fit"),
             }

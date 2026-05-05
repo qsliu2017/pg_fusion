@@ -34,6 +34,7 @@ pub(crate) fn validate_pg_layout_type(
         TypeTag::Float64 => oid == pg_sys::FLOAT8OID,
         TypeTag::Uuid => oid == pg_sys::UUIDOID,
         TypeTag::Decimal128 => false,
+        TypeTag::IntervalMonthDayNano => oid == pg_sys::INTERVALOID,
         TypeTag::Utf8View => {
             oid == pg_sys::TEXTOID
                 || oid == pg_sys::VARCHAROID
@@ -191,6 +192,30 @@ pub(crate) unsafe fn read_fixed_bytes<'a>(
         return Err(EncodeError::NullDatumPointer { index });
     }
     Ok(unsafe { slice::from_raw_parts(ptr, width) })
+}
+
+pub(crate) unsafe fn read_interval_month_day_nano(
+    datum: pg_sys::Datum,
+    index: usize,
+) -> Result<(i32, i32, i64), EncodeError> {
+    let ptr = datum.cast_mut_ptr::<pg_sys::Interval>();
+    if ptr.is_null() {
+        return Err(EncodeError::NullDatumPointer { index });
+    }
+    let interval = unsafe { *ptr };
+    if interval_is_infinite(interval) {
+        return Err(EncodeError::UnsupportedInfiniteInterval { index });
+    }
+    let nanoseconds = interval
+        .time
+        .checked_mul(1_000)
+        .ok_or(EncodeError::IntervalTimeOverflow { index })?;
+    Ok((interval.month, interval.day, nanoseconds))
+}
+
+fn interval_is_infinite(interval: pg_sys::Interval) -> bool {
+    (interval.month == i32::MIN && interval.day == i32::MIN && interval.time == i64::MIN)
+        || (interval.month == i32::MAX && interval.day == i32::MAX && interval.time == i64::MAX)
 }
 
 pub(crate) unsafe fn read_packed_varlena<'a>(

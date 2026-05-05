@@ -538,6 +538,59 @@ pub(crate) fn heap_avg_window_sliding_smoke() {
     );
 }
 
+pub(crate) fn heap_interval_avg_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_heap_interval_avg_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {table_name} (
+                i integer,
+                v interval
+            );
+            INSERT INTO {table_name} VALUES
+                (1, interval '1 month'),
+                (2, interval '2 months'),
+                (3, interval '1 day'),
+                (4, NULL)
+            "
+        ),
+    );
+
+    let avg_sql = format!("SELECT avg(v)::text FROM {table_name}");
+    tx.batch_execute("SET LOCAL pg_fusion.enable = off")
+        .expect("disable pg_fusion for expected interval avg");
+    let expected_avg = simple_query_first_column_tx(&mut tx, &avg_sql)
+        .expect("vanilla interval avg must return one row");
+    tx.batch_execute("SET LOCAL pg_fusion.enable = on")
+        .expect("re-enable pg_fusion for interval avg");
+    let actual_avg = simple_query_first_column_tx(&mut tx, &avg_sql)
+        .expect("pg_fusion interval avg must return one row");
+    assert_eq!(actual_avg, expected_avg);
+
+    let window_sql = format!(
+        "\
+        SELECT i::text || ':' || COALESCE(
+            avg(v) OVER (
+                ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+            )::text,
+            'NULL'
+        )
+        FROM {table_name}
+        ORDER BY i
+        "
+    );
+    tx.batch_execute("SET LOCAL pg_fusion.enable = off")
+        .expect("disable pg_fusion for expected interval window avg");
+    let expected_window = simple_query_first_column_rows_tx(&mut tx, &window_sql);
+    tx.batch_execute("SET LOCAL pg_fusion.enable = on")
+        .expect("re-enable pg_fusion for interval window avg");
+    let actual_window = simple_query_first_column_rows_tx(&mut tx, &window_sql);
+    assert_eq!(actual_window, expected_window);
+}
+
 pub(crate) fn heap_varlena_full_scan_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);

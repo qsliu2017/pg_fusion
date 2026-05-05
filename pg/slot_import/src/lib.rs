@@ -18,6 +18,7 @@
 //! - `Float32 -> FLOAT4OID`
 //! - `Float64 -> FLOAT8OID`
 //! - `FixedSizeBinary(16) -> UUIDOID`
+//! - `Interval(MonthDayNano) -> INTERVALOID`
 //! - `Utf8View -> TEXTOID | VARCHAROID | BPCHAROID | NAMEOID`
 //! - `BinaryView -> BYTEAOID`
 //!

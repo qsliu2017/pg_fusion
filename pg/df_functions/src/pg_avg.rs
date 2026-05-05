@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    Decimal128Type, Decimal256Type, Float64Type, Int16Type, Int32Type, Int64Type, UInt64Type,
+    Decimal128Type, Decimal256Type, Float64Type, Int16Type, Int32Type, Int64Type,
+    IntervalMonthDayNanoType, UInt64Type,
 };
 use arrow_array::{Array, ArrayRef};
 use arrow_buffer::i256;
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, IntervalUnit};
 use datafusion_common::{exec_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::utils::format_state_name;
@@ -22,6 +23,11 @@ const INT_AVG_SUM_SCALE: i8 = 0;
 #[cfg(test)]
 const INT_AVG_SCALE_FACTOR: i128 = 10_000_000_000_000_000;
 const DECIMAL_AVG_SUM_PRECISION: u8 = 76;
+const NANOS_PER_MICRO: i64 = 1_000;
+const DAYS_PER_MONTH: f64 = 30.0;
+const SECS_PER_DAY: f64 = 86_400.0;
+const USECS_PER_SEC: f64 = 1_000_000.0;
+const TS_PREC_INV: f64 = 1_000_000.0;
 
 /// PostgreSQL-compatible AVG aggregate for the type surface pg_fusion supports.
 #[derive(Debug)]
@@ -66,6 +72,9 @@ impl AggregateUDFImpl for PgAvg {
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
             ),
             DataType::Float32 | DataType::Float64 => Ok(DataType::Float64),
+            DataType::Interval(IntervalUnit::MonthDayNano) => {
+                Ok(DataType::Interval(IntervalUnit::MonthDayNano))
+            }
             other => exec_err!("{} does not support {other:?}", self.name()),
         }
     }
@@ -91,6 +100,10 @@ impl AggregateUDFImpl for PgAvg {
                 *precision, *scale,
             )?)),
             (DataType::Float64, DataType::Float64) => Ok(Box::<FloatAvgAccumulator>::default()),
+            (
+                DataType::Interval(IntervalUnit::MonthDayNano),
+                DataType::Interval(IntervalUnit::MonthDayNano),
+            ) => Ok(Box::<IntervalAvgAccumulator>::default()),
             _ => exec_err!(
                 "{} accumulator does not support ({} -> {})",
                 self.name(),
@@ -157,6 +170,23 @@ impl AggregateUDFImpl for PgAvg {
                     true,
                 ),
             ]),
+            (
+                DataType::Interval(IntervalUnit::MonthDayNano),
+                DataType::Interval(IntervalUnit::MonthDayNano),
+            ) => Ok(vec![
+                count_field,
+                Field::new(
+                    format_state_name(args.name, "months"),
+                    DataType::Int64,
+                    true,
+                ),
+                Field::new(format_state_name(args.name, "days"), DataType::Int64, true),
+                Field::new(
+                    format_state_name(args.name, "time_micros"),
+                    DataType::Int64,
+                    true,
+                ),
+            ]),
             _ => exec_err!(
                 "{} state does not support ({} -> {})",
                 self.name(),
@@ -172,6 +202,7 @@ impl AggregateUDFImpl for PgAvg {
             DataType::Int16 | DataType::Int32 | DataType::Int64 => arg_type.clone(),
             DataType::Float32 | DataType::Float64 => DataType::Float64,
             DataType::Decimal128(_, _) => arg_type.clone(),
+            DataType::Interval(IntervalUnit::MonthDayNano) => arg_type.clone(),
             other => return exec_err!("{} does not support inputs of type {other:?}", self.name()),
         };
         Ok(vec![coerced])
@@ -609,6 +640,347 @@ impl Accumulator for DecimalAvgAccumulator {
 }
 
 #[derive(Debug, Default)]
+struct IntervalAvgAccumulator {
+    months: i64,
+    days: i64,
+    time_micros: i64,
+    count: u64,
+}
+
+impl IntervalAvgAccumulator {
+    fn add_interval(
+        &mut self,
+        value: <IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native,
+    ) -> Result<()> {
+        let (months, days, time_micros) = interval_parts_to_pg_micros(value, "transition")?;
+        let next_months = self.months.checked_add(i64::from(months)).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval transition month sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_days = self.days.checked_add(i64::from(days)).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval transition day sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_time_micros = self.time_micros.checked_add(time_micros).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval transition time sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_count = self.count.checked_add(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval transition count overflowed u64".to_owned(),
+            )
+        })?;
+        validate_pg_finite_interval(next_months, next_days, next_time_micros, "transition")?;
+        self.months = next_months;
+        self.days = next_days;
+        self.time_micros = next_time_micros;
+        self.count = next_count;
+        Ok(())
+    }
+
+    fn retract_interval(
+        &mut self,
+        value: <IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native,
+    ) -> Result<()> {
+        let (months, days, time_micros) = interval_parts_to_pg_micros(value, "retraction")?;
+        let next_count = self.count.checked_sub(1).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval retraction count underflowed u64".to_owned(),
+            )
+        })?;
+        if next_count == 0 {
+            self.months = 0;
+            self.days = 0;
+            self.time_micros = 0;
+            self.count = 0;
+            return Ok(());
+        }
+
+        let next_months = self.months.checked_sub(i64::from(months)).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval retraction month sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_days = self.days.checked_sub(i64::from(days)).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval retraction day sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_time_micros = self.time_micros.checked_sub(time_micros).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval retraction time sum overflowed i64".to_owned(),
+            )
+        })?;
+        validate_pg_finite_interval(next_months, next_days, next_time_micros, "retraction")?;
+        self.months = next_months;
+        self.days = next_days;
+        self.time_micros = next_time_micros;
+        self.count = next_count;
+        Ok(())
+    }
+
+    fn merge_state(&mut self, count: u64, months: i64, days: i64, time_micros: i64) -> Result<()> {
+        validate_pg_finite_interval(months, days, time_micros, "merge input")?;
+        let next_months = self.months.checked_add(months).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval merged month sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_days = self.days.checked_add(days).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval merged day sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_time_micros = self.time_micros.checked_add(time_micros).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval merged time sum overflowed i64".to_owned(),
+            )
+        })?;
+        let next_count = self.count.checked_add(count).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(
+                "avg interval merged count overflowed u64".to_owned(),
+            )
+        })?;
+        validate_pg_finite_interval(next_months, next_days, next_time_micros, "merge")?;
+        self.months = next_months;
+        self.days = next_days;
+        self.time_micros = next_time_micros;
+        self.count = next_count;
+        Ok(())
+    }
+}
+
+impl Accumulator for IntervalAvgAccumulator {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+        let values = values.as_primitive::<IntervalMonthDayNanoType>();
+        for value in values.iter().flatten() {
+            self.add_interval(value)?;
+        }
+        Ok(())
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let Some(values) = values.first() else {
+            return exec_err!("avg expects one input array");
+        };
+        let values = values.as_primitive::<IntervalMonthDayNanoType>();
+        for value in values.iter().flatten() {
+            self.retract_interval(value)?;
+        }
+        Ok(())
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        true
+    }
+
+    fn evaluate(&mut self) -> Result<ScalarValue> {
+        let value = if self.count == 0 {
+            None
+        } else {
+            Some(pg_interval_div(
+                self.months,
+                self.days,
+                self.time_micros,
+                self.count,
+            )?)
+        };
+        Ok(ScalarValue::IntervalMonthDayNano(value))
+    }
+
+    fn size(&self) -> usize {
+        size_of_val(self)
+    }
+
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        Ok(vec![
+            ScalarValue::UInt64(Some(self.count)),
+            ScalarValue::Int64(Some(self.months)),
+            ScalarValue::Int64(Some(self.days)),
+            ScalarValue::Int64(Some(self.time_micros)),
+        ])
+    }
+
+    fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
+        if states.len() != 4 {
+            return exec_err!("avg interval merge expects count, month, day, and time states");
+        }
+
+        let counts = states[0].as_primitive::<UInt64Type>();
+        let months = states[1].as_primitive::<Int64Type>();
+        let days = states[2].as_primitive::<Int64Type>();
+        let time_micros = states[3].as_primitive::<Int64Type>();
+        if counts.len() != months.len()
+            || counts.len() != days.len()
+            || counts.len() != time_micros.len()
+        {
+            return exec_err!("avg interval merge state arrays have different lengths");
+        }
+
+        for row in 0..counts.len() {
+            if counts.is_null(row)
+                || months.is_null(row)
+                || days.is_null(row)
+                || time_micros.is_null(row)
+            {
+                continue;
+            }
+            self.merge_state(
+                counts.value(row),
+                months.value(row),
+                days.value(row),
+                time_micros.value(row),
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+fn interval_parts_to_pg_micros(
+    value: <IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native,
+    context: &str,
+) -> Result<(i32, i32, i64)> {
+    let (months, days, nanoseconds) = IntervalMonthDayNanoType::to_parts(value);
+    if nanoseconds % NANOS_PER_MICRO != 0 {
+        return Err(datafusion_common::DataFusionError::Execution(format!(
+            "avg interval {context} value has nanosecond precision not representable by PostgreSQL interval"
+        )));
+    }
+    let time_micros = nanoseconds / NANOS_PER_MICRO;
+    if pg_interval_is_infinite(i64::from(months), i64::from(days), time_micros) {
+        return Err(datafusion_common::DataFusionError::Execution(format!(
+            "avg interval {context} value is PostgreSQL interval infinity, which pg_fusion does not support"
+        )));
+    }
+    Ok((months, days, time_micros))
+}
+
+fn validate_pg_finite_interval(
+    months: i64,
+    days: i64,
+    time_micros: i64,
+    context: &str,
+) -> Result<()> {
+    if pg_interval_is_infinite(months, days, time_micros) {
+        return Err(datafusion_common::DataFusionError::Execution(format!(
+            "avg interval {context} state is PostgreSQL interval infinity, which pg_fusion does not support"
+        )));
+    }
+    if months < i64::from(i32::MIN)
+        || months > i64::from(i32::MAX)
+        || days < i64::from(i32::MIN)
+        || days > i64::from(i32::MAX)
+    {
+        return Err(datafusion_common::DataFusionError::Execution(format!(
+            "avg interval {context} state is outside PostgreSQL finite interval range"
+        )));
+    }
+    Ok(())
+}
+
+fn pg_interval_is_infinite(months: i64, days: i64, time_micros: i64) -> bool {
+    (months == i64::from(i32::MIN) && days == i64::from(i32::MIN) && time_micros == i64::MIN)
+        || (months == i64::from(i32::MAX) && days == i64::from(i32::MAX) && time_micros == i64::MAX)
+}
+
+fn pg_interval_div(
+    months_sum: i64,
+    days_sum: i64,
+    time_micros_sum: i64,
+    count: u64,
+) -> Result<<IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native> {
+    if count == 0 {
+        return Err(datafusion_common::DataFusionError::Execution(
+            "avg interval division by zero".to_owned(),
+        ));
+    }
+    validate_pg_finite_interval(months_sum, days_sum, time_micros_sum, "final input")?;
+
+    let factor = count as f64;
+    let orig_month = months_sum as f64;
+    let orig_day = days_sum as f64;
+
+    let result_month_double = orig_month / factor;
+    if !float_fits_i32(result_month_double) {
+        return interval_out_of_range();
+    }
+    let result_month = result_month_double as i32;
+
+    let result_day_double = orig_day / factor;
+    if !float_fits_i32(result_day_double) {
+        return interval_out_of_range();
+    }
+    let mut result_day = result_day_double as i32;
+
+    let month_remainder_days =
+        tsround((orig_month / factor - f64::from(result_month)) * DAYS_PER_MONTH);
+    let mut sec_remainder = tsround(
+        (orig_day / factor - f64::from(result_day) + month_remainder_days
+            - f64::from(month_remainder_days as i32))
+            * SECS_PER_DAY,
+    );
+    if sec_remainder.abs() >= SECS_PER_DAY {
+        let whole_days = (sec_remainder / SECS_PER_DAY) as i32;
+        result_day = result_day
+            .checked_add(whole_days)
+            .ok_or_else(interval_range_error)?;
+        sec_remainder -= f64::from(whole_days) * SECS_PER_DAY;
+    }
+
+    result_day = result_day
+        .checked_add(month_remainder_days as i32)
+        .ok_or_else(interval_range_error)?;
+
+    let time_double =
+        (time_micros_sum as f64 / factor + sec_remainder * USECS_PER_SEC).round_ties_even();
+    if !float_fits_i64(time_double) {
+        return interval_out_of_range();
+    }
+    let result_time_micros = time_double as i64;
+    validate_pg_finite_interval(
+        i64::from(result_month),
+        i64::from(result_day),
+        result_time_micros,
+        "final result",
+    )?;
+    let result_time_nanos = result_time_micros
+        .checked_mul(NANOS_PER_MICRO)
+        .ok_or_else(interval_range_error)?;
+    Ok(IntervalMonthDayNanoType::make_value(
+        result_month,
+        result_day,
+        result_time_nanos,
+    ))
+}
+
+fn tsround(value: f64) -> f64 {
+    (value * TS_PREC_INV).round_ties_even() / TS_PREC_INV
+}
+
+fn float_fits_i32(value: f64) -> bool {
+    value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX)
+}
+
+fn float_fits_i64(value: f64) -> bool {
+    value.is_finite() && value >= i64::MIN as f64 && value < -(i64::MIN as f64)
+}
+
+fn interval_range_error() -> datafusion_common::DataFusionError {
+    datafusion_common::DataFusionError::Execution("avg interval result out of range".to_owned())
+}
+
+fn interval_out_of_range<T>() -> Result<T> {
+    Err(interval_range_error())
+}
+
+#[derive(Debug, Default)]
 struct FloatAvgAccumulator {
     finite_sum: f64,
     count: u64,
@@ -840,7 +1212,10 @@ impl Accumulator for FloatAvgAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Decimal128Array, Float64Array, Int32Array, Int64Array};
+    use arrow_array::{
+        Decimal128Array, Float64Array, Int32Array, Int64Array, IntervalMonthDayNanoArray,
+        UInt64Array,
+    };
 
     fn decimal128_value(value: ScalarValue) -> i128 {
         match value {
@@ -852,6 +1227,15 @@ mod tests {
     fn float64_value(value: ScalarValue) -> Option<f64> {
         match value {
             ScalarValue::Float64(value) => value,
+            other => panic!("unexpected scalar value {other:?}"),
+        }
+    }
+
+    fn interval_value(
+        value: ScalarValue,
+    ) -> Option<<IntervalMonthDayNanoType as arrow_array::types::ArrowPrimitiveType>::Native> {
+        match value {
+            ScalarValue::IntervalMonthDayNano(value) => value,
             other => panic!("unexpected scalar value {other:?}"),
         }
     }
@@ -1133,7 +1517,123 @@ mod tests {
     }
 
     #[test]
-    fn pg_avg_type_rules_match_pg_integer_float_and_decimal_surface() {
+    fn interval_avg_cascades_fractional_months_like_postgres() {
+        let mut acc = IntervalAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(1, 0, 0)),
+            Some(IntervalMonthDayNanoType::make_value(2, 0, 0)),
+        ]))])
+        .unwrap();
+
+        assert_eq!(
+            interval_value(acc.evaluate().unwrap()),
+            Some(IntervalMonthDayNanoType::make_value(1, 15, 0))
+        );
+    }
+
+    #[test]
+    fn interval_avg_cascades_fractional_days_to_time_like_postgres() {
+        let mut acc = IntervalAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(0, 1, 0)),
+            Some(IntervalMonthDayNanoType::make_value(0, 2, 0)),
+        ]))])
+        .unwrap();
+
+        assert_eq!(
+            interval_value(acc.evaluate().unwrap()),
+            Some(IntervalMonthDayNanoType::make_value(
+                0,
+                1,
+                43_200_000_000_000
+            ))
+        );
+    }
+
+    #[test]
+    fn interval_avg_retracts_rows_for_sliding_windows() {
+        let mut acc = IntervalAvgAccumulator::default();
+        acc.update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(1, 0, 0)),
+            Some(IntervalMonthDayNanoType::make_value(3, 0, 0)),
+            None,
+        ]))])
+        .unwrap();
+        acc.retract_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(1, 0, 0)),
+            None,
+        ]))])
+        .unwrap();
+
+        assert!(acc.supports_retract_batch());
+        assert_eq!(
+            interval_value(acc.evaluate().unwrap()),
+            Some(IntervalMonthDayNanoType::make_value(3, 0, 0))
+        );
+
+        acc.retract_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![Some(
+            IntervalMonthDayNanoType::make_value(3, 0, 0),
+        )]))])
+        .unwrap();
+        assert_eq!(
+            acc.evaluate().unwrap(),
+            ScalarValue::IntervalMonthDayNano(None)
+        );
+    }
+
+    #[test]
+    fn interval_avg_merge_combines_partial_states() {
+        let mut left = IntervalAvgAccumulator::default();
+        left.update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(IntervalMonthDayNanoType::make_value(1, 0, 0)),
+            Some(IntervalMonthDayNanoType::make_value(3, 0, 0)),
+        ]))])
+        .unwrap();
+        let state = left.state().unwrap();
+
+        let mut merged = IntervalAvgAccumulator::default();
+        merged
+            .merge_batch(&[
+                state[0].to_array().unwrap(),
+                state[1].to_array().unwrap(),
+                state[2].to_array().unwrap(),
+                state[3].to_array().unwrap(),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            interval_value(merged.evaluate().unwrap()),
+            Some(IntervalMonthDayNanoType::make_value(2, 0, 0))
+        );
+    }
+
+    #[test]
+    fn interval_avg_rejects_nanosecond_precision() {
+        let mut acc = IntervalAvgAccumulator::default();
+        let err = acc
+            .update_batch(&[Arc::new(IntervalMonthDayNanoArray::from(vec![Some(
+                IntervalMonthDayNanoType::make_value(0, 0, 1),
+            )]))])
+            .unwrap_err();
+        assert!(err.to_string().contains("nanosecond precision"));
+    }
+
+    #[test]
+    fn interval_avg_rejects_postgres_interval_infinity_state() {
+        let mut acc = IntervalAvgAccumulator::default();
+        let err = acc
+            .merge_batch(&[
+                Arc::new(UInt64Array::from(vec![Some(1)])),
+                Arc::new(Int64Array::from(vec![Some(i64::from(i32::MAX))])),
+                Arc::new(Int64Array::from(vec![Some(i64::from(i32::MAX))])),
+                Arc::new(Int64Array::from(vec![Some(i64::MAX)])),
+            ])
+            .unwrap_err();
+        assert!(err.to_string().contains("PostgreSQL interval infinity"));
+    }
+
+    #[test]
+    fn pg_avg_type_rules_match_pg_integer_float_decimal_and_interval_surface() {
         let avg = PgAvg::new();
 
         assert_eq!(
@@ -1155,6 +1655,16 @@ mod tests {
         assert_eq!(
             avg.coerce_types(&[DataType::Decimal128(10, 3)]).unwrap(),
             vec![DataType::Decimal128(10, 3)]
+        );
+        assert_eq!(
+            avg.return_type(&[DataType::Interval(IntervalUnit::MonthDayNano)])
+                .unwrap(),
+            DataType::Interval(IntervalUnit::MonthDayNano)
+        );
+        assert_eq!(
+            avg.coerce_types(&[DataType::Interval(IntervalUnit::MonthDayNano)])
+                .unwrap(),
+            vec![DataType::Interval(IntervalUnit::MonthDayNano)]
         );
         assert!(avg.return_type(&[DataType::Decimal256(76, 16)]).is_err());
     }

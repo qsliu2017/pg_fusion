@@ -2,7 +2,7 @@ use crate::{ConfigError, EncodeError};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
     BinaryType, BinaryViewType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type,
-    Int64Type, StringViewType, Utf8Type,
+    Int64Type, IntervalMonthDayNanoType, StringViewType, Utf8Type,
 };
 use arrow_array::{
     Array, BooleanArray, FixedSizeBinaryArray, GenericByteArray, GenericByteViewArray,
@@ -11,7 +11,7 @@ use arrow_array::{
 use arrow_buffer::bit_mask::set_bits;
 use arrow_layout::constants::{UUID_WIDTH_BYTES, VIEW_INLINE_LEN};
 use arrow_layout::{BlockMut, ByteView, ColumnLayout, LayoutPlan, TypeTag};
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, IntervalUnit, Schema};
 use std::mem::size_of;
 use std::slice;
 
@@ -221,6 +221,18 @@ impl<'schema, 'payload> BatchPageEncoder<'schema, 'payload> {
                         index,
                         layout,
                         batch.column(index).as_primitive::<Decimal128Type>(),
+                        start_row,
+                        dest_start,
+                        rows_to_write,
+                    )?;
+                }
+                DataType::Interval(IntervalUnit::MonthDayNano) => {
+                    self.write_primitive_column::<IntervalMonthDayNanoType>(
+                        index,
+                        layout,
+                        batch
+                            .column(index)
+                            .as_primitive::<IntervalMonthDayNanoType>(),
                         start_row,
                         dest_start,
                         rows_to_write,
@@ -631,6 +643,9 @@ fn validate_schema_column(
         DataType::Float32 => layout.type_tag == TypeTag::Float32,
         DataType::Float64 => layout.type_tag == TypeTag::Float64,
         DataType::Decimal128(_, _) => layout.type_tag == TypeTag::Decimal128,
+        DataType::Interval(IntervalUnit::MonthDayNano) => {
+            layout.type_tag == TypeTag::IntervalMonthDayNano
+        }
         DataType::FixedSizeBinary(width) if *width == UUID_WIDTH_BYTES as i32 => {
             layout.type_tag == TypeTag::Uuid
         }
