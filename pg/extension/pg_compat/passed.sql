@@ -3309,3 +3309,153 @@ WHERE c <= 3;
 -- origin: postgres REL_17_STABLE src/test/regress/sql/with.sql:872
 -- compare: multiset
 SELECT * FROM y;
+
+-- id: text_26_select_format_null_8f03bec5
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:50
+-- compare: multiset
+select format(NULL);
+
+-- id: text_27_select_format_hello_805328f3
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:55
+-- compare: multiset
+select format('Hello');
+
+-- id: text_28_select_format_hello_s_world_08bef188
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:56
+-- compare: multiset
+select format('Hello %s', 'World');
+
+-- id: text_29_select_format_hello_819b980b
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:57
+-- compare: multiset
+select format('Hello %%');
+
+-- id: text_30_select_format_hello_09ae5bec
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:58
+-- compare: multiset
+select format('Hello %%%%');
+
+-- id: text_34_select_format_insert_into_i_values_l_l_mytab_10_hello_68281881
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:63
+-- compare: multiset
+select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', 10, 'Hello');
+
+-- id: text_35_select_format_s_s_s_hello_null_world_09dcf7ed
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:65
+-- compare: multiset
+select format('%s%s%s','Hello', NULL,'World');
+
+-- id: text_36_select_format_insert_into_i_values_l_l_mytab_10_null_f2f7e9cf
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:66
+-- compare: multiset
+select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', 10, NULL);
+
+-- id: text_37_select_format_insert_into_i_values_l_l_mytab_null_hello_069855bc
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:67
+-- compare: multiset
+select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', NULL, 'Hello');
+
+-- id: text_39_select_format_1_s_3_s_1_2_3_c4d90445
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:70
+-- compare: multiset
+select format('%1$s %3$s', 1, 2, 3);
+
+-- id: text_40_select_format_1_s_12_s_1_2_3_4_5_6_7_8_9_10_11_12_4386ac67
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:72
+-- compare: multiset
+select format('%1$s %12$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+
+-- id: text_47_select_format_hello_s_1_s_s_world_hello_again_e035cc39
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:80
+-- compare: multiset
+select format('Hello %s %1$s %s', 'World', 'Hello again');
+
+-- id: text_48_select_format_hello_s_s_2_s_2_s_world_hello_again_e48691f2
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:82
+-- compare: multiset
+select format('Hello %s %s, %2$s %2$s', 'World', 'Hello again');
+
+-- id: text_57_select_format_10s_hello_0052fff5
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:96
+-- compare: multiset
+select format('>>%10s<<', 'Hello');
+
+-- id: text_58_select_format_10s_null_361c3129
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:98
+-- compare: multiset
+select format('>>%10s<<', NULL);
+
+-- id: text_59_select_format_10s_d6af9da6
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:99
+-- compare: multiset
+select format('>>%10s<<', '');
+
+-- id: text_60_select_format_10s_dfc02ce5
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:100
+-- compare: multiset
+select format('>>%-10s<<', '');
+
+-- id: text_61_select_format_10s_hello_192a9a7e
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:101
+-- compare: multiset
+select format('>>%-10s<<', 'Hello');
+
+-- id: text_62_select_format_10s_null_8753195e
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:102
+-- compare: multiset
+select format('>>%-10s<<', NULL);
+
+-- id: text_63_select_format_1_10s_hello_4042ed86
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:103
+-- compare: multiset
+select format('>>%1$10s<<', 'Hello');
+
+-- id: text_64_select_format_1_10i_hello_f5929b14
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:104
+-- compare: multiset
+select format('>>%1$-10I<<', 'Hello');
+
+-- id: text_65_select_format_2_1_l_10_hello_309c2fc1
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:105
+-- compare: multiset
+select format('>>%2$*1$L<<', 10, 'Hello');
+
+-- id: text_66_select_format_2_1_l_10_null_c4b87459
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:106
+-- compare: multiset
+select format('>>%2$*1$L<<', 10, NULL);
+
+-- id: text_67_select_format_2_1_l_10_null_626f25c2
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:107
+-- compare: multiset
+select format('>>%2$*1$L<<', -10, NULL);
+
+-- id: text_68_select_format_s_10_hello_1f03e023
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:108
+-- compare: multiset
+select format('>>%*s<<', 10, 'Hello');
+
+-- id: text_69_select_format_1_s_10_hello_c255f7c2
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:109
+-- compare: multiset
+select format('>>%*1$s<<', 10, 'Hello');
+
+-- id: text_70_select_format_s_hello_a6a6aa7b
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:110
+-- compare: multiset
+select format('>>%-s<<', 'Hello');
+
+-- id: text_71_select_format_10l_null_adab1a54
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:111
+-- compare: multiset
+select format('>>%10L<<', NULL);
+
+-- id: text_72_select_format_2_1_l_null_hello_fce695c9
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:112
+-- compare: multiset
+select format('>>%2$*1$L<<', NULL, 'Hello');
+
+-- id: text_73_select_format_2_1_l_0_hello_50767612
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:113
+-- compare: multiset
+select format('>>%2$*1$L<<', 0, 'Hello');

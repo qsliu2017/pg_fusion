@@ -468,6 +468,18 @@ fn installs_non_core_expression_planners() {
 }
 
 #[test]
+fn normalizes_deparsed_unknown_casts() {
+    let built = build_sql("SELECT format(NULL::unknown)");
+
+    assert!(built.scans.is_empty());
+    assert!(built
+        .logical_plan
+        .display_indent()
+        .to_string()
+        .contains("format"));
+}
+
+#[test]
 fn rejects_multiple_and_non_query_statements() {
     let multiple = builder()
         .build(PlanBuildInput {

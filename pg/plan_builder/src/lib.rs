@@ -37,8 +37,8 @@ use datafusion_expr::{
 use datafusion_sql::parser::{DFParser, Statement as DFStatement};
 use datafusion_sql::planner::SqlToRel;
 use datafusion_sql::sqlparser::ast::{
-    Cte, CteAsMaterialized, Ident, ObjectName, Query, Statement as SqlStatement, Visit, Visitor,
-    With,
+    visit_expressions_mut, Cte, CteAsMaterialized, DataType as SqlDataType, Expr as SqlExpr, Ident,
+    ObjectName, Query, Statement as SqlStatement, Visit, Visitor, With,
 };
 use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion_sql::sqlparser::parser::ParserError;
@@ -234,9 +234,39 @@ fn parse_one_query(sql: &str) -> Result<DFStatement, PlanBuildError> {
     if count != 1 {
         return Err(PlanBuildError::MultipleStatements { count });
     }
-    let statement = statements.pop_front().expect("checked count above");
+    let mut statement = statements.pop_front().expect("checked count above");
+    normalize_postgres_unknown_casts(&mut statement);
     ensure_query_statement(&statement)?;
     Ok(statement)
+}
+
+fn normalize_postgres_unknown_casts(statement: &mut DFStatement) {
+    let DFStatement::Statement(statement) = statement else {
+        return;
+    };
+    let _ = visit_expressions_mut(statement.as_mut(), |expr| {
+        if let SqlExpr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } = expr
+        {
+            if is_postgres_unknown_type(data_type) {
+                *expr = (**inner).clone();
+            }
+        }
+        ControlFlow::<()>::Continue(())
+    });
+}
+
+fn is_postgres_unknown_type(data_type: &SqlDataType) -> bool {
+    let SqlDataType::Custom(name, modifiers) = data_type else {
+        return false;
+    };
+    modifiers.is_empty()
+        && name.0.len() == 1
+        && name.0[0].value.eq_ignore_ascii_case("unknown")
+        && name.0[0].quote_style.is_none()
 }
 
 fn ensure_query_statement(statement: &DFStatement) -> Result<(), PlanBuildError> {
@@ -256,6 +286,7 @@ fn optimize_logical_plan(
         .with_config(options.into())
         .with_optimizer_rules(pg_fusion_optimizer_rules())
         .build();
+    let _ = state.register_udf(df_functions::pg_format_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state.optimize(&plan)
 }
@@ -929,6 +960,7 @@ impl Builtins {
         for function in SessionStateDefaults::default_scalar_functions() {
             register_scalar_udf(&mut scalar_udf, function);
         }
+        register_scalar_udf(&mut scalar_udf, df_functions::pg_format_udf());
 
         let mut window_udf = HashMap::new();
         for function in SessionStateDefaults::default_window_functions() {

@@ -3,7 +3,7 @@ id: arch-overview-0001
 type: fact
 scope: repo
 tags: ["architecture", "datafusion", "pgrx", "shared-memory", "ipc", "slot_scan", "statistics"]
-updated_at: "2026-05-04"
+updated_at: "2026-05-07"
 importance: 0.8
 ---
 
@@ -43,7 +43,9 @@ page-backed Arrow batches.
   `pg/slot_scan`: backend-side DataFusion planning and trusted PostgreSQL scan
   SQL execution.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
-  by both backend planning and worker/codec decoding. Its `avg` UDAF returns
+  by both backend planning and worker/codec decoding. Its `format(text, ...)`
+  scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width
+  handling for ordinary non-`VARIADIC ARRAY` calls. Its `avg` UDAF returns
   `Float64` for `float4`/`float8` inputs with PostgreSQL-facing
   `NaN`/`Infinity` and finite-overflow behavior, while integer and finite
   Decimal128 averages use the fast Arrow `Decimal128(38,16)` result path.
@@ -73,9 +75,11 @@ page-backed Arrow batches.
    deparses wrapper query strings such as `EXPLAIN` and `COPY (SELECT ...)` back
    to the inner `Query` text so PostgreSQL can keep native wrapper execution
    around a pg_fusion custom scan. Eligible user query text is parsed with
-   sqlparser's PostgreSQL dialect before DataFusion planning, which accepts more
-   PostgreSQL surface syntax but does not make unsupported PostgreSQL semantics
-   executable. It then resolves PostgreSQL catalog metadata
+   sqlparser's PostgreSQL dialect before DataFusion planning; deparsed casts to
+   PostgreSQL's `unknown` pseudo-type are stripped so untyped NULL/string
+   literals can still be coerced by DataFusion function planning. This accepts
+   more PostgreSQL surface syntax but does not make unsupported PostgreSQL
+   semantics executable. It then resolves PostgreSQL catalog metadata
    for eligible user queries, runs DataFusion logical optimization, then uses
    `pg_statistics` plus `join_order` to reorder
    eligible inner/cross join components before scan lowering. The reorder pass
@@ -89,7 +93,8 @@ page-backed Arrow batches.
    join shapes keep their DataFusion order. PostgreSQL-compatible function
    overrides are registered before SQL planning, logical optimization, plan
    codec decoding, worker physical planning, and EXPLAIN physical planning; in
-   particular `float4`/`float8` `avg` keeps float semantics, integer and finite
+   particular ordinary `format(text, ...)` calls execute through pg_fusion,
+   `float4`/`float8` `avg` keeps float semantics, integer and finite
    Decimal128 `avg` are planned as `Decimal128(38,16)`, and finite `interval`
    `avg` stays as `Interval(MonthDayNano)` end to end. PostgreSQL `numeric`
    `NaN`/`Infinity` constants and literal numeric casts are rejected before

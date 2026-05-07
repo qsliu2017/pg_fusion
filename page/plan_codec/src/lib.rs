@@ -460,6 +460,7 @@ impl PlanDecodeSession {
     /// Create a new streaming decoder.
     pub fn new() -> Self {
         let mut ctx = SessionContext::new();
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_format_udf());
         let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
         Self {
             ctx,
@@ -1006,7 +1007,10 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
         ))
     }
 
-    fn try_decode_udf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+    fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+        if name.eq_ignore_ascii_case("format") {
+            return Ok(df_functions::pg_format_udf());
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),
         ))
@@ -1095,7 +1099,10 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
         ))
     }
 
-    fn try_decode_udf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+    fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+        if name.eq_ignore_ascii_case("format") {
+            return Ok(df_functions::pg_format_udf());
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),
         ))
@@ -1174,9 +1181,9 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
             let cte = decode_cte_ref_payload(buf, inputs).map_err(|error| {
                 DataFusionError::Plan(format!("failed to decode PgCteRefNode reference: {error}"))
             })?;
-            return Ok(Extension {
+            Ok(Extension {
                 node: Arc::new(cte),
-            });
+            })
         }
     }
 
@@ -1209,7 +1216,10 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
         ))
     }
 
-    fn try_decode_udf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+    fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
+        if name.eq_ignore_ascii_case("format") {
+            return Ok(df_functions::pg_format_udf());
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),
         ))

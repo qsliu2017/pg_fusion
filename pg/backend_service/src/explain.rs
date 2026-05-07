@@ -104,6 +104,7 @@ fn build_explain_session_state() -> SessionState {
         .with_config(options.into())
         .with_default_features()
         .build();
+    let _ = state.register_udf(df_functions::pg_format_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state
 }

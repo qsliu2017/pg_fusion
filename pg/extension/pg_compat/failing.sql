@@ -7535,146 +7535,65 @@ select concat(variadic '{}'::int[]) = '';
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42804), message: "VARIADIC argument must be an array", detail: None, hint: None, position: Some(Original(40)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_func.c"), line: Some(738), routine: Some("ParseFuncOrColumn") }) }
 select concat_ws(',', variadic 10);
 
--- id: text_26_select_format_null_8f03bec5
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:50
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-/*
- * format
- */
-select format(NULL);
-
--- id: text_27_select_format_hello_805328f3
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:55
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello');
-
--- id: text_28_select_format_hello_s_world_08bef188
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:56
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello %s', 'World');
-
--- id: text_29_select_format_hello_819b980b
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:57
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello %%');
-
--- id: text_30_select_format_hello_09ae5bec
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:58
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello %%%%');
-
 -- id: text_31_select_format_hello_s_s_world_1e54cbea
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:59
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: too few arguments for format()
 select format('Hello %s %s', 'World');
 
 -- id: text_32_select_format_hello_s_f3a1477a
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:61
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: too few arguments for format()
 select format('Hello %s');
 
 -- id: text_33_select_format_hello_x_20_b3874b6f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:62
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: unrecognized format() type specifier "x"
 select format('Hello %x', 20);
-
--- id: text_34_select_format_insert_into_i_values_l_l_mytab_10_hello_68281881
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:63
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', 10, 'Hello');
-
--- id: text_35_select_format_s_s_s_hello_null_world_09dcf7ed
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:65
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('%s%s%s','Hello', NULL,'World');
-
--- id: text_36_select_format_insert_into_i_values_l_l_mytab_10_null_f2f7e9cf
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:66
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', 10, NULL);
-
--- id: text_37_select_format_insert_into_i_values_l_l_mytab_null_hello_069855bc
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:67
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('INSERT INTO %I VALUES(%L,%L)', 'mytab', NULL, 'Hello');
 
 -- id: text_38_select_format_insert_into_i_values_l_l_null_10_hello_3e78ad5f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:68
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: null values cannot be formatted as an SQL identifier
 select format('INSERT INTO %I VALUES(%L,%L)', NULL, 10, 'Hello');
-
--- id: text_39_select_format_1_s_3_s_1_2_3_c4d90445
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:70
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('%1$s %3$s', 1, 2, 3);
-
--- id: text_40_select_format_1_s_12_s_1_2_3_4_5_6_7_8_9_10_11_12_4386ac67
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:72
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('%1$s %12$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 
 -- id: text_41_select_format_1_s_4_s_1_2_3_30badbb0
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:73
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: too few arguments for format()
 select format('%1$s %4$s', 1, 2, 3);
 
 -- id: text_42_select_format_1_s_13_s_1_2_3_4_5_6_7_8_9_10_11_12_68598ccc
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:75
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: too few arguments for format()
 select format('%1$s %13$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 
 -- id: text_43_select_format_0_s_hello_6df18415
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:76
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: format specifies argument 0, but arguments are numbered from 1
 select format('%0$s', 'Hello');
 
 -- id: text_44_select_format_0_s_hello_d67b75a4
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:77
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: format specifies argument 0, but arguments are numbered from 1
 select format('%*0$s', 'Hello');
 
 -- id: text_45_select_format_1_1_a1ebcca3
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:78
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: unterminated format() type specifier
 select format('%1$', 1);
 
 -- id: text_46_select_format_1_1_1_907aa19a
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:79
 -- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
+-- reason: expected PostgreSQL error: unterminated format() type specifier
 select format('%1$1', 1);
-
--- id: text_47_select_format_hello_s_1_s_s_world_hello_again_e035cc39
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:80
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello %s %1$s %s', 'World', 'Hello again');
-
--- id: text_48_select_format_hello_s_s_2_s_2_s_world_hello_again_e48691f2
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:82
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('Hello %s %s, %2$s %2$s', 'World', 'Hello again');
 
 -- id: text_49_select_format_s_s_variadic_array_hello_world_abc8ac07
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:83
@@ -7724,108 +7643,6 @@ select format('Hello', variadic NULL::int[]);
 -- reason: bypassed pg_fusion
 select format(string_agg('%s',','), variadic array_agg(i))
 from generate_series(1,200) g(i);
-
--- id: text_57_select_format_10s_hello_0052fff5
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:96
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%10s<<', 'Hello');
-
--- id: text_58_select_format_10s_null_361c3129
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:98
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%10s<<', NULL);
-
--- id: text_59_select_format_10s_d6af9da6
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:99
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%10s<<', '');
-
--- id: text_60_select_format_10s_dfc02ce5
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:100
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%-10s<<', '');
-
--- id: text_61_select_format_10s_hello_192a9a7e
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:101
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%-10s<<', 'Hello');
-
--- id: text_62_select_format_10s_null_8753195e
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:102
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%-10s<<', NULL);
-
--- id: text_63_select_format_1_10s_hello_4042ed86
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:103
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%1$10s<<', 'Hello');
-
--- id: text_64_select_format_1_10i_hello_f5929b14
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:104
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%1$-10I<<', 'Hello');
-
--- id: text_65_select_format_2_1_l_10_hello_309c2fc1
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:105
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%2$*1$L<<', 10, 'Hello');
-
--- id: text_66_select_format_2_1_l_10_null_c4b87459
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:106
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%2$*1$L<<', 10, NULL);
-
--- id: text_67_select_format_2_1_l_10_null_626f25c2
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:107
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%2$*1$L<<', -10, NULL);
-
--- id: text_68_select_format_s_10_hello_1f03e023
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:108
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%*s<<', 10, 'Hello');
-
--- id: text_69_select_format_1_s_10_hello_c255f7c2
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:109
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%*1$s<<', 10, 'Hello');
-
--- id: text_70_select_format_s_hello_a6a6aa7b
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:110
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%-s<<', 'Hello');
-
--- id: text_71_select_format_10l_null_adab1a54
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:111
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%10L<<', NULL);
-
--- id: text_72_select_format_2_1_l_null_hello_fce695c9
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:112
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%2$*1$L<<', NULL, 'Hello');
-
--- id: text_73_select_format_2_1_l_0_hello_50767612
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:113
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'format'.\nDid you mean 'concat'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select format('>>%2$*1$L<<', 0, 'Hello');
 
 -- id: tidscan_40_select_count_from_tenk1_t1_join_tenk1_t2_on_t1_ctid_t2_ctid_03676d5f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/tidscan.sql:88
