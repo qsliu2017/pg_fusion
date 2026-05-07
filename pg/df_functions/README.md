@@ -8,5 +8,5 @@ logical planning, physical planning, and tests can register the same UDF/UDAF
 definitions.
 
 Current overrides include PostgreSQL-compatible `avg` aggregation semantics for
-the supported Arrow type surface and a `format(text, ...)` scalar function for
-ordinary non-`VARIADIC ARRAY` calls.
+the supported Arrow type surface, a `format(text, ...)` scalar function for
+ordinary non-`VARIADIC ARRAY` calls, and `quote_literal(text)`.

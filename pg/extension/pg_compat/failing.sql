@@ -232,12 +232,6 @@ FROM (VALUES ('-infinity'), ('-infinity')) v(x);
 SELECT avg(x::float8), var_pop(x::float8)
 FROM (VALUES (100000003), (100000004), (100000006), (100000007)) v(x);
 
--- id: aggregates_69_select_regr_count_b_a_from_aggtest_bb712fac
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:119
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT regr_count(b, a) FROM aggtest;
-
 -- id: aggregates_83_select_count_sum_x_regr_sxx_y_x_sum_y_regr_syy_y_x_regr_sxy_y_x_from_reg_aed556e3
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:139
 -- compare: multiset
@@ -736,30 +730,6 @@ select aggfns(distinct a,b,c order by a,b,i,c)
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(E42883), message: "function aggfns(integer, integer, text) does not exist", detail: None, hint: Some("No aggregate function matches the given name and argument types. Perhaps you misplaced ORDER BY; ORDER BY must appear after all regular arguments of the aggregate."), position: Some(Original(16)), where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("parse_func.c"), line: Some(617), routine: Some("ParseFuncOrColumn") }) }
 select aggfns(distinct a,a,c order by a,b)
   from (values (1,1,'foo')) v(a,b,c), generate_series(1,2) i;
-
--- id: aggregates_267_select_string_agg_a_from_values_aaaa_bbbb_cccc_g_a_fc7a91b3
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:749
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type LargeUtf8", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select string_agg(a,',') from (values('aaaa'),('bbbb'),('cccc')) g(a);
-
--- id: aggregates_268_select_string_agg_a_from_values_aaaa_null_bbbb_cccc_g_a_1fc046c7
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:752
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type LargeUtf8", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select string_agg(a,',') from (values('aaaa'),(null),('bbbb'),('cccc')) g(a);
-
--- id: aggregates_269_select_string_agg_a_ab_from_values_null_null_bbbb_cccc_g_a_52dd872d
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:753
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type LargeUtf8", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select string_agg(a,'AB') from (values(null),(null),('bbbb'),('cccc')) g(a);
-
--- id: aggregates_270_select_string_agg_a_from_values_null_null_g_a_a4d25ef7
--- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:754
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type LargeUtf8", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select string_agg(a,',') from (values(null),(null)) g(a);
 
 -- id: aggregates_271_select_string_agg_distinct_f1_order_by_f1_from_varchar_tbl_c57bcc34
 -- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:755
@@ -2483,12 +2453,6 @@ SELECT f.f1 ^ '2.0' AS square_f1
 -- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Schema error: No field named abs_f1. Valid fields are f.f1.", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
 SELECT f.f1, @f.f1 AS abs_f1
    FROM FLOAT8_TBL f;
-
--- id: float8_54_select_ceiling_f1_as_ceiling_f1_from_float8_tbl_f_76ece77a
--- origin: postgres REL_17_STABLE src/test/regress/sql/float8.sql:107
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'ceiling'.\nDid you mean 'ceil'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select ceiling(f1) as ceiling_f1 from float8_tbl f;
 
 -- id: float8_56_select_sign_f1_as_sign_f1_from_float8_tbl_f_59c645c2
 -- origin: postgres REL_17_STABLE src/test/regress/sql/float8.sql:111
@@ -7463,41 +7427,11 @@ select concat(1,2,3,'hello',true, false, to_date('20100309','YYYYMMDD'));
 -- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion execution failed: worker failed execution session_epoch=1 code=Internal detail=None", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(495), routine: Some("pg_fusion::custom_scan::exec_pg_fusion_scan::exec_pg_fusion_scan_inner") }) }
 select concat_ws('#',1,2,3,'hello',true, false, to_date('20100309','YYYYMMDD'));
 
--- id: text_12_select_concat_ws_10_20_null_30_7d3322cc
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:34
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: This feature is not implemented: Unsupported SQL type Custom(ObjectName([Ident { value: \"unknown\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }]), [])", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select concat_ws(',',10,20,null,30);
-
--- id: text_13_select_concat_ws_10_20_null_30_0bcab669
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:35
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: This feature is not implemented: Unsupported SQL type Custom(ObjectName([Ident { value: \"unknown\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }]), [])", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select concat_ws('',10,20,null,30);
-
--- id: text_14_select_concat_ws_null_10_20_null_30_is_null_b0b1ff72
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:36
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: This feature is not implemented: Unsupported SQL type Custom(ObjectName([Ident { value: \"unknown\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }]), [])", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select concat_ws(NULL,10,20,null,30) is null;
-
 -- id: text_16_select_i_left_ahoj_i_right_ahoj_i_from_generate_series_5_5_t_i_order_by__c551c639
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:38
 -- compare: ordered
 -- reason: bypassed pg_fusion
 select i, left('ahoj', i), right('ahoj', i) from generate_series(-5, 5) t(i) order by i;
-
--- id: text_17_select_quote_literal_bf8eba58
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:39
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'quote_literal'.\nDid you mean 'to_date'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select quote_literal('');
-
--- id: text_18_select_quote_literal_abc_a9efab5a
--- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:40
--- compare: multiset
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion planner build failed: DataFusion planning failed: Error during planning: Invalid function 'quote_literal'.\nDid you mean 'date_bin'?", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(164), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select quote_literal('abc''');
 
 -- id: text_20_select_concat_variadic_array_1_2_3_21a32a28
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:42
@@ -7711,30 +7645,6 @@ SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITI
 -- reason: query failed with pg_fusion.enable=on: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion execution failed: worker failed execution session_epoch=1 code=Internal detail=None", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("custom_scan.rs"), line: Some(495), routine: Some("pg_fusion::custom_scan::exec_pg_fusion_scan::exec_pg_fusion_scan_inner") }) }
 SELECT four FROM tenk1 WHERE FALSE WINDOW w AS (PARTITION BY ten);
 
--- id: window_12_select_row_number_over_order_by_unique2_from_tenk1_where_unique2_10_704ec8c5
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:45
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT row_number() OVER (ORDER BY unique2) FROM tenk1 WHERE unique2 < 10;
-
--- id: window_13_select_rank_over_partition_by_four_order_by_ten_as_rank_1_ten_four_from__d840992d
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:47
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10;
-
--- id: window_14_select_dense_rank_over_partition_by_four_order_by_ten_ten_four_from_tenk_47e35a32
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:49
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten), ten, four FROM tenk1 WHERE unique2 < 10;
-
--- id: window_17_select_ntile_3_over_order_by_ten_four_ten_four_from_tenk1_where_unique2__e6bcd4a4
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:55
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT ntile(3) OVER (ORDER BY ten, four), ten, four FROM tenk1 WHERE unique2 < 10;
-
 -- id: window_18_select_ntile_null_over_order_by_ten_four_ten_four_from_tenk1_limit_2_548f916f
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:57
 -- compare: ordered
@@ -7819,16 +7729,6 @@ SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), 
 			AVG(salary) OVER (PARTITION BY depname) < salary
 		THEN 200 END AS depadj FROM empsalary
 )s;
-
--- id: window_44_select_ten_sum_unique1_sum_unique2_as_res_rank_over_order_by_sum_unique1_ae25f321
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:141
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-select ten,
-  sum(unique1) + sum(unique2) as res,
-  rank() over (order by sum(unique1) + sum(unique2)) as rank
-from tenk1
-group by ten order by ten;
 
 -- id: window_46_select_x_lag_x_1_over_order_by_x_lead_x_3_over_order_by_x_from_select_x__a98ef4ad
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:154
@@ -9184,12 +9084,6 @@ from t1 where f1 = f2;
 select f1, sum(f1) over (partition by f1, f2 order by f2
                          groups between 1 following and 2 following)
 from t1 where f1 = f2;
-
--- id: window_255_select_rank_over_order_by_length_abc_c7614aa6
--- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1092
--- compare: ordered
--- reason: explain failed: Error { kind: Db, cause: Some(DbError { severity: "ERROR", parsed_severity: Some(Error), code: SqlState(EXX000), message: "pg_fusion targetlist build failed: unsupported output type UInt64", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("planner.rs"), line: Some(167), routine: Some("pg_fusion::planner::build_planned_custom_scan::build_planned_custom_scan_inner::{{closure}}") }) }
-SELECT rank() OVER (ORDER BY length('abc'));
 
 -- id: window_256_select_rank_over_order_by_rank_over_order_by_random_e6a22843
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1095

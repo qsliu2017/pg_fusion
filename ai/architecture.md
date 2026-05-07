@@ -55,7 +55,8 @@ page-backed Arrow batches.
   is intentionally a pragmatic `numeric` subset with documented
   precision/display-scale limitations, and all `avg` accumulators implement
   inverse transitions so bounded/sliding window frames can retract rows during
-  DataFusion window execution.
+  DataFusion window execution. `quote_literal(text)` shares the same text
+  quoting helper as `format(... %L ...)`.
 - `pg/statistics`: PostgreSQL planner/catalog statistics bridge. It is
   PostgreSQL-specific but independent of DataFusion and `join_order`;
   `plan_builder` uses it to turn pushed-down scan SQL, `pg_class`,
@@ -93,15 +94,19 @@ page-backed Arrow batches.
    join shapes keep their DataFusion order. PostgreSQL-compatible function
    overrides are registered before SQL planning, logical optimization, plan
    codec decoding, worker physical planning, and EXPLAIN physical planning; in
-   particular ordinary `format(text, ...)` calls execute through pg_fusion,
-   `float4`/`float8` `avg` keeps float semantics, integer and finite
-   Decimal128 `avg` are planned as `Decimal128(38,16)`, and finite `interval`
-   `avg` stays as `Interval(MonthDayNano)` end to end. PostgreSQL `numeric`
+   particular ordinary `format(text, ...)` and `quote_literal(text)` calls
+   execute through pg_fusion, PostgreSQL aliases such as `ceiling` and
+   `variance` resolve to DataFusion's existing `ceil` and `var_samp`
+   implementations, `float4`/`float8` `avg` keeps float semantics, integer
+   and finite Decimal128 `avg` are planned as `Decimal128(38,16)`, and finite
+   `interval` `avg` stays as `Interval(MonthDayNano)` end to end. PostgreSQL `numeric`
    `NaN`/`Infinity` constants and literal numeric casts are rejected before
    they can enter Arrow Decimal128 execution, interval infinities are rejected
    before/while converting through Arrow interval pages, and accepted decimal
    formatting/precision differences live in
-   `pg/extension/pg_compat/limitations.sql`. Scan leaves are then lowered to
+   `pg/extension/pg_compat/limitations.sql`. Root `UInt64` and `LargeUtf8`
+   outputs are cast to PostgreSQL-facing `bigint`/`text` Arrow types before
+   result transport. Scan leaves are then lowered to
    `PgScanNode`/`scan_sql` descriptors. Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single
    lowered CTE producer so worker execution materializes the CTE once and

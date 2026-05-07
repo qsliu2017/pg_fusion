@@ -480,6 +480,57 @@ fn normalizes_deparsed_unknown_casts() {
 }
 
 #[test]
+fn resolves_postgresql_compatibility_function_names() {
+    let built = build_sql("SELECT ceiling(score) AS c FROM users");
+
+    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.logical_plan.schema().field(0).name(), "c");
+    assert_eq!(
+        built.scans[0].compiled_scan.sql,
+        "SELECT \"score\" FROM \"public\".\"users\""
+    );
+    assert!(built
+        .logical_plan
+        .display_indent()
+        .to_string()
+        .contains("ceil"));
+
+    let built = build_sql("SELECT variance(id) AS v FROM users");
+    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.logical_plan.schema().field(0).name(), "v");
+    assert_eq!(
+        built.scans[0].compiled_scan.sql,
+        "SELECT \"id\" FROM \"public\".\"users\""
+    );
+
+    let built = build_sql("SELECT quote_literal(name) AS q FROM users");
+    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.logical_plan.schema().field(0).name(), "q");
+    assert_eq!(
+        built.scans[0].compiled_scan.sql,
+        "SELECT \"name\" FROM \"public\".\"users\""
+    );
+}
+
+#[test]
+fn normalizes_unsupported_root_output_types() {
+    let built = build_sql("SELECT row_number() OVER (ORDER BY id) AS rn FROM users");
+
+    assert_eq!(
+        built.logical_plan.schema().field(0).data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(built.logical_plan.schema().field(0).name(), "rn");
+
+    let built = build_sql("SELECT string_agg(name, ',') AS names FROM users");
+    assert_eq!(
+        built.logical_plan.schema().field(0).data_type(),
+        &DataType::Utf8
+    );
+    assert_eq!(built.logical_plan.schema().field(0).name(), "names");
+}
+
+#[test]
 fn rejects_multiple_and_non_query_statements() {
     let multiple = builder()
         .build(PlanBuildInput {

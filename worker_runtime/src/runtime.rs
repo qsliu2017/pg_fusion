@@ -758,6 +758,7 @@ fn build_worker_planning_session_state() -> SessionState {
         .with_default_features()
         .build();
     let _ = state.register_udf(df_functions::pg_format_udf());
+    let _ = state.register_udf(df_functions::pg_quote_literal_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state
 }

@@ -461,6 +461,7 @@ impl PlanDecodeSession {
     pub fn new() -> Self {
         let mut ctx = SessionContext::new();
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_format_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_quote_literal_udf());
         let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
         Self {
             ctx,
@@ -966,6 +967,16 @@ fn collect_used_scan_ids(
 #[derive(Debug, Default, Clone, Copy)]
 struct NoopLogicalExtensionCodec;
 
+fn decode_pg_scalar_udf(name: &str) -> Option<Arc<ScalarUDF>> {
+    if name.eq_ignore_ascii_case("format") {
+        return Some(df_functions::pg_format_udf());
+    }
+    if name.eq_ignore_ascii_case("quote_literal") {
+        return Some(df_functions::pg_quote_literal_udf());
+    }
+    None
+}
+
 impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
     fn try_decode(
         &self,
@@ -1008,8 +1019,8 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
     }
 
     fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
-        if name.eq_ignore_ascii_case("format") {
-            return Ok(df_functions::pg_format_udf());
+        if let Some(udf) = decode_pg_scalar_udf(name) {
+            return Ok(udf);
         }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),
@@ -1100,8 +1111,8 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
     }
 
     fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
-        if name.eq_ignore_ascii_case("format") {
-            return Ok(df_functions::pg_format_udf());
+        if let Some(udf) = decode_pg_scalar_udf(name) {
+            return Ok(udf);
         }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),
@@ -1217,8 +1228,8 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
     }
 
     fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<ScalarUDF>> {
-        if name.eq_ignore_ascii_case("format") {
-            return Ok(df_functions::pg_format_udf());
+        if let Some(udf) = decode_pg_scalar_udf(name) {
+            return Ok(udf);
         }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom scalar UDF definitions".into(),

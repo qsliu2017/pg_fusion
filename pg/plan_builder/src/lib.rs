@@ -27,6 +27,7 @@ use datafusion::execution::SessionStateDefaults;
 use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion_common::{Column, TableReference};
 use datafusion_common::{DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion_expr::expr_fn::cast;
 use datafusion_expr::logical_plan::{Filter, LogicalPlan, Projection, TableScan};
 use datafusion_expr::planner::{ContextProvider, ExprPlanner};
 use datafusion_expr::registry::FunctionRegistry;
@@ -220,6 +221,7 @@ where
         };
 
         let logical_plan = lowerer.lower(optimized)?;
+        let logical_plan = normalize_root_output_types(logical_plan)?;
         Ok(BuiltPlan {
             logical_plan,
             scans: lowerer.scans,
@@ -287,6 +289,7 @@ fn optimize_logical_plan(
         .with_optimizer_rules(pg_fusion_optimizer_rules())
         .build();
     let _ = state.register_udf(df_functions::pg_format_udf());
+    let _ = state.register_udf(df_functions::pg_quote_literal_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
     state.optimize(&plan)
 }
@@ -297,6 +300,47 @@ fn pg_fusion_optimizer_rules() -> Vec<Arc<dyn datafusion::optimizer::OptimizerRu
         .into_iter()
         .filter(|rule| rule.name() != "single_distinct_aggregation_to_group_by")
         .collect()
+}
+
+fn normalize_root_output_types(plan: LogicalPlan) -> DataFusionResult<LogicalPlan> {
+    let fields = plan
+        .schema()
+        .iter()
+        .map(|(qualifier, field)| {
+            (
+                qualifier.cloned(),
+                field.name().to_owned(),
+                field.data_type().clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let columns = plan.schema().columns();
+
+    let mut changed = false;
+    let expr = columns
+        .into_iter()
+        .zip(fields)
+        .map(|(column, (qualifier, name, data_type))| {
+            let expr = Expr::Column(column);
+            match data_type {
+                DataType::UInt64 => {
+                    changed = true;
+                    cast(expr, DataType::Int64).alias_qualified(qualifier, name)
+                }
+                DataType::LargeUtf8 => {
+                    changed = true;
+                    cast(expr, DataType::Utf8).alias_qualified(qualifier, name)
+                }
+                _ => expr,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !changed {
+        return Ok(plan);
+    }
+
+    Projection::try_new(expr, Arc::new(plan)).map(LogicalPlan::Projection)
 }
 
 fn pg_identifier_max_bytes() -> usize {
@@ -955,12 +999,15 @@ impl Builtins {
             register_aggregate_udf(&mut agg_udf, function);
         }
         register_aggregate_udf(&mut agg_udf, df_functions::pg_avg_udaf());
+        register_existing_aggregate_alias(&mut agg_udf, "var_samp", "variance");
 
         let mut scalar_udf = HashMap::new();
         for function in SessionStateDefaults::default_scalar_functions() {
             register_scalar_udf(&mut scalar_udf, function);
         }
         register_scalar_udf(&mut scalar_udf, df_functions::pg_format_udf());
+        register_scalar_udf(&mut scalar_udf, df_functions::pg_quote_literal_udf());
+        register_existing_scalar_alias(&mut scalar_udf, "ceil", "ceiling");
 
         let mut window_udf = HashMap::new();
         for function in SessionStateDefaults::default_window_functions() {
@@ -983,6 +1030,16 @@ fn register_scalar_udf(registry: &mut HashMap<String, Arc<ScalarUDF>>, udf: Arc<
     registry.insert(udf.name().to_owned(), udf);
 }
 
+fn register_existing_scalar_alias(
+    registry: &mut HashMap<String, Arc<ScalarUDF>>,
+    existing: &str,
+    alias: &str,
+) {
+    if let Some(udf) = registry.get(existing).cloned() {
+        registry.insert(alias.to_owned(), udf);
+    }
+}
+
 fn register_aggregate_udf(
     registry: &mut HashMap<String, Arc<AggregateUDF>>,
     udf: Arc<AggregateUDF>,
@@ -991,6 +1048,16 @@ fn register_aggregate_udf(
         registry.insert(alias.clone(), Arc::clone(&udf));
     }
     registry.insert(udf.name().to_owned(), udf);
+}
+
+fn register_existing_aggregate_alias(
+    registry: &mut HashMap<String, Arc<AggregateUDF>>,
+    existing: &str,
+    alias: &str,
+) {
+    if let Some(udf) = registry.get(existing).cloned() {
+        registry.insert(alias.to_owned(), udf);
+    }
 }
 
 fn register_window_udf(registry: &mut HashMap<String, Arc<WindowUDF>>, udf: Arc<WindowUDF>) {

@@ -132,6 +132,15 @@ fn format_no_scan_plan() -> LogicalPlan {
     LogicalPlan::Projection(Projection::try_new(vec![expr], Arc::new(input)).expect("projection"))
 }
 
+fn quote_literal_no_scan_plan() -> LogicalPlan {
+    let input = LogicalPlan::EmptyRelation(EmptyRelation {
+        produce_one_row: true,
+        schema: Arc::new(DFSchema::empty()),
+    });
+    let expr = df_functions::pg_quote_literal_udf().call(vec![lit("World")]);
+    LogicalPlan::Projection(Projection::try_new(vec![expr], Arc::new(input)).expect("projection"))
+}
+
 fn join_plan(
     left: LogicalPlan,
     right: LogicalPlan,
@@ -469,6 +478,25 @@ fn roundtrips_pg_format_no_scan_query() {
     assert!(
         decoded.display_indent().to_string().contains("format"),
         "decoded plan should retain the pg_format scalar UDF"
+    );
+    assert!(collect_pg_scans(&decoded).is_empty());
+}
+
+#[test]
+fn roundtrips_pg_quote_literal_no_scan_query() {
+    let plan = quote_literal_no_scan_plan();
+    let decoded = roundtrip(&plan);
+
+    assert_eq!(
+        plan.display_indent().to_string(),
+        decoded.display_indent().to_string()
+    );
+    assert!(
+        decoded
+            .display_indent()
+            .to_string()
+            .contains("quote_literal"),
+        "decoded plan should retain the pg_quote_literal scalar UDF"
     );
     assert!(collect_pg_scans(&decoded).is_empty());
 }

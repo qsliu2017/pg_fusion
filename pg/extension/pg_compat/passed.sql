@@ -3459,3 +3459,92 @@ select format('>>%2$*1$L<<', NULL, 'Hello');
 -- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:113
 -- compare: multiset
 select format('>>%2$*1$L<<', 0, 'Hello');
+
+-- id: aggregates_69_select_regr_count_b_a_from_aggtest_bb712fac
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:119
+-- compare: multiset
+SELECT regr_count(b, a) FROM aggtest;
+
+-- id: aggregates_267_select_string_agg_a_from_values_aaaa_bbbb_cccc_g_a_fc7a91b3
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:749
+-- compare: multiset
+select string_agg(a,',') from (values('aaaa'),('bbbb'),('cccc')) g(a);
+
+-- id: aggregates_268_select_string_agg_a_from_values_aaaa_null_bbbb_cccc_g_a_1fc046c7
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:752
+-- compare: multiset
+select string_agg(a,',') from (values('aaaa'),(null),('bbbb'),('cccc')) g(a);
+
+-- id: aggregates_269_select_string_agg_a_ab_from_values_null_null_bbbb_cccc_g_a_52dd872d
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:753
+-- compare: multiset
+select string_agg(a,'AB') from (values(null),(null),('bbbb'),('cccc')) g(a);
+
+-- id: aggregates_270_select_string_agg_a_from_values_null_null_g_a_a4d25ef7
+-- origin: postgres REL_17_STABLE src/test/regress/sql/aggregates.sql:754
+-- compare: multiset
+select string_agg(a,',') from (values(null),(null)) g(a);
+
+-- id: float8_54_select_ceiling_f1_as_ceiling_f1_from_float8_tbl_f_76ece77a
+-- origin: postgres REL_17_STABLE src/test/regress/sql/float8.sql:107
+-- compare: multiset
+select ceiling(f1) as ceiling_f1 from float8_tbl f;
+
+-- id: text_12_select_concat_ws_10_20_null_30_7d3322cc
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:34
+-- compare: multiset
+select concat_ws(',',10,20,null,30);
+
+-- id: text_13_select_concat_ws_10_20_null_30_0bcab669
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:35
+-- compare: multiset
+select concat_ws('',10,20,null,30);
+
+-- id: text_14_select_concat_ws_null_10_20_null_30_is_null_b0b1ff72
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:36
+-- compare: multiset
+select concat_ws(NULL,10,20,null,30) is null;
+
+-- id: text_17_select_quote_literal_bf8eba58
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:39
+-- compare: multiset
+select quote_literal('');
+
+-- id: text_18_select_quote_literal_abc_a9efab5a
+-- origin: postgres REL_17_STABLE src/test/regress/sql/text.sql:40
+-- compare: multiset
+select quote_literal('abc''');
+
+-- id: window_12_select_row_number_over_order_by_unique2_from_tenk1_where_unique2_10_704ec8c5
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:45
+-- compare: ordered
+SELECT row_number() OVER (ORDER BY unique2) FROM tenk1 WHERE unique2 < 10;
+
+-- id: window_13_select_rank_over_partition_by_four_order_by_ten_as_rank_1_ten_four_from__d840992d
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:47
+-- compare: ordered
+SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10;
+
+-- id: window_14_select_dense_rank_over_partition_by_four_order_by_ten_ten_four_from_tenk_47e35a32
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:49
+-- compare: ordered
+SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten), ten, four FROM tenk1 WHERE unique2 < 10;
+
+-- id: window_17_select_ntile_3_over_order_by_ten_four_ten_four_from_tenk1_where_unique2__e6bcd4a4
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:55
+-- compare: ordered
+SELECT ntile(3) OVER (ORDER BY ten, four), ten, four FROM tenk1 WHERE unique2 < 10;
+
+-- id: window_44_select_ten_sum_unique1_sum_unique2_as_res_rank_over_order_by_sum_unique1_ae25f321
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:141
+-- compare: ordered
+select ten,
+  sum(unique1) + sum(unique2) as res,
+  rank() over (order by sum(unique1) + sum(unique2)) as rank
+from tenk1
+group by ten order by ten;
+
+-- id: window_255_select_rank_over_order_by_length_abc_c7614aa6
+-- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1092
+-- compare: ordered
+SELECT rank() OVER (ORDER BY length('abc'));

@@ -447,7 +447,7 @@ fn is_safe_identifier(value: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_lowercase() || ch.is_ascii_digit())
 }
 
-fn quote_literal(value: &str) -> String {
+pub(crate) fn quote_literal(value: &str) -> String {
     let needs_escape = value.contains('\\');
     let mut quoted = String::with_capacity(value.len() + 3);
     if needs_escape {
