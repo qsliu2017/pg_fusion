@@ -263,7 +263,7 @@ pub fn plan_builder_reorders_inner_joins_from_live_stats() {
     assert_eq!(built.scans.len(), 3);
     assert_eq!(
         bottom_join_on(&built.logical_plan).as_deref(),
-        Some("u.id = o.user_id")
+        Some("o.user_id = u.id")
     );
 
     let disabled = PlanBuilder::new()
@@ -313,9 +313,9 @@ pub fn plan_builder_join_reordering_uses_live_attnums_after_drop() {
     );
 
     assert_eq!(built.scans.len(), 2);
-    assert!(built
-        .logical_plan
-        .display_indent()
-        .to_string()
-        .contains("a.key = b.key"));
+    let rendered = built.logical_plan.display_indent().to_string();
+    assert!(
+        rendered.contains("a.key = b.key") || rendered.contains("b.key = a.key"),
+        "{rendered}"
+    );
 }
