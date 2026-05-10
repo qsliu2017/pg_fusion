@@ -210,21 +210,11 @@ Enable pg_fusion per session or transaction:
 SET pg_fusion.enable = on;
 ```
 
-For one-off scan profiling, enable detailed scan timing in the same session.
-This adds per-row callback timing and can slow fast scans, so keep it off for
-normal runs:
-
-```sql
-SET pg_fusion.scan_timing_detail = on;
-```
-
 For scoped experiments:
 
 ```sql
 BEGIN;
 SET LOCAL pg_fusion.enable = on;
--- Optional: only for scan latency profiling.
-SET LOCAL pg_fusion.scan_timing_detail = on;
 SELECT count(*) FROM my_table WHERE id > 100;
 COMMIT;
 ```
@@ -347,18 +337,11 @@ WHERE metric IN (
   'scan_page_fill_ns',
   'scan_page_prepare_ns',
   'scan_page_finish_ns',
-  'scan_page_snapshot_ns',
-  'scan_slot_drain_ns',
-  'scan_overflow_copy_ns',
-  'scan_page_retry_ns',
   'scan_page_retry_total',
-  'scan_fill_pre_drain_ns',
-  'scan_fill_post_drain_ns',
-  'scan_fill_overflow_encode_ns',
-  'scan_fill_emit_ns',
-  'scan_fill_unclassified_ns',
   'scan_fetch_calls_total',
   'scan_rows_encoded_total',
+  'scan_full_pages_total',
+  'scan_eof_pages_total',
   'scan_b2w_wait_ns',
   'scan_page_read_ns',
   'scan_batch_send_ns',
@@ -377,13 +360,12 @@ pages, not PostgreSQL `TupleTableSlot`. Backend and worker timings may overlap,
 so `backend_total_ns + worker_total_ns` is not expected to equal
 `query_total_ns`.
 
-To inspect backend scan latency, reset the metrics, enable detailed timing, run
-the query, then read only scan metrics:
+To inspect backend scan latency, reset the metrics, run the query, then read the
+always-on scan metrics:
 
 ```sql
 SELECT pg_fusion_metrics_reset();
 SET pg_fusion.enable = on;
-SET pg_fusion.scan_timing_detail = on;
 
 SELECT a FROM t2 WHERE a = 1;
 
@@ -393,22 +375,19 @@ WHERE metric LIKE 'scan_%'
 ORDER BY metric;
 ```
 
-The query-time `scan_timing_detail` setting is also propagated to dynamic scan
-workers, so parallel scan producers contribute to the same detailed scan
-metrics. `scan_timing_detail` uses coarse page/fetch timers only. It does not
-instrument slot-to-Arrow internals; use a flamegraph or profiler for deformation
-and page-write attribution.
+Scan timing metrics are intentionally coarse and cheap enough to remain always
+enabled. They do not instrument slot-to-Arrow internals; use a flamegraph or
+profiler for tuple deformation, detoast, and page-write attribution.
 
 Interpretation:
 
-- `scan_slot_drain_ns` is coarse PostgreSQL portal-drain time for emitted scan
-  pages. It includes PostgreSQL executor work and receiver callback work.
-- `scan_fill_pre_drain_ns`, `scan_fill_post_drain_ns`,
-  `scan_fill_overflow_encode_ns`, `scan_fill_emit_ns`, and
-  `scan_fill_unclassified_ns` split the page-fill bookkeeping time left after
-  snapshot, prepare, drain, finish, and retry timers.
-- `scan_fill_unclassified_ns` should stay small; if it dominates, add a finer
-  timer around the remaining source-page code path.
+- `scan_page_fill_ns` is the coarse backend page-fill timer for successful scan
+  pages. It includes PostgreSQL cursor/slot drain, tuple encoding, Arrow page
+  writes, page layout, and estimator work.
+- `scan_page_prepare_ns` and `scan_page_finish_ns` split the cheap setup/finalize
+  portions of emitted scan pages.
+- `scan_page_retry_total` counts estimator retry/backoff attempts that did not
+  emit a page.
 - `scan_eof_pages_total = 1` with one returned row means the scan emitted a
   partial page only after PostgreSQL reached EOF.
 - `scan_b2w_wait_ns` is backend stamp to worker scan-thread frame read.

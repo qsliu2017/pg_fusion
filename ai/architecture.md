@@ -168,12 +168,12 @@ wrap control rings for v1 metrics; scan/result page senders stamp page
 descriptors, and receivers use those stamps to measure backend-to-worker and
 worker-to-backend page handoff latency. Worker scan threads also split
 backend-to-worker latency into idle sleeps, page import, and DataFusion scan
-channel send/delivery time. Detailed scan timing is opt-in through
-`pg_fusion.scan_timing_detail`; it splits backend scan page fill time with
-coarse page/fetch timers. Slot-to-Arrow serialization internals are left to
-external profilers. Runtime filter counters track allocated/ready filters,
-pool exhaustion, build rows, probe rows, rejected rows, and rows that passed
-unfiltered because the filter was not ready for that probe.
+channel send/delivery time. Backend scan page timing is always-on and coarse:
+`scan_page_fill_ns` covers successful emitted page fills, with cheap
+prepare/finish buckets and a retry counter. Slot-to-Arrow serialization
+internals are left to external profilers. Runtime filter counters track
+allocated/ready filters, pool exhaustion, build rows, probe rows, rejected rows,
+and rows that passed unfiltered because the filter was not ready for that probe.
 
 Dynamic scan workers use CTID block-range chunking as the first parallel scan
 strategy. The leader backend scans one heap block range, additional dynamic

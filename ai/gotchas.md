@@ -55,9 +55,9 @@ importance: 0.7
   the owner and all probe handles to drop first. `TxError::Full` style control
   messages are intentionally not part of readiness; backend probes poll shared
   memory and pass rows unfiltered while the filter is not ready.
-- `pg_fusion.scan_timing_detail` uses coarse backend scan timers. It deliberately
-  avoids per-row slot encode breakdown because clock reads distort the hot path;
-  use flamegraphs for deformation and page-write detail.
+- Runtime metrics keep backend scan timing coarse and always-on. They
+  deliberately avoid per-row slot encode breakdown because clock reads distort
+  the hot path; use flamegraphs for deformation and page-write detail.
 - `plan_builder` validates subquery shapes after DataFusion logical
   optimization. Subqueries that decorrelate into ordinary relational operators
   can lower PostgreSQL leaf scans; subquery nodes that survive optimization

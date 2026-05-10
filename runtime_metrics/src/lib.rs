@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pool::PageDescriptor;
 
 const METRICS_MAGIC: u64 = 0x5047_4655_4D45_5431;
-const METRICS_VERSION: u32 = 9;
+const METRICS_VERSION: u32 = 10;
 const NO_STAMP: u64 = 0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,16 +86,7 @@ pub enum MetricId {
     ScanPageFillNs,
     ScanPagePrepareNs,
     ScanPageFinishNs,
-    ScanPageSnapshotNs,
-    ScanSlotDrainNs,
-    ScanOverflowCopyNs,
-    ScanPageRetryNs,
     ScanPageRetryTotal,
-    ScanFillPreDrainNs,
-    ScanFillPostDrainNs,
-    ScanFillOverflowEncodeNs,
-    ScanFillEmitNs,
-    ScanFillUnclassifiedNs,
     ScanFetchCallsTotal,
     ScanRowsEncodedTotal,
     ScanFullPagesTotal,
@@ -198,74 +189,11 @@ pub const METRIC_DESCRIPTORS: [MetricDescriptor; METRIC_COUNT] = [
         unit: MetricUnit::Nanoseconds,
     },
     MetricDescriptor {
-        id: MetricId::ScanPageSnapshotNs,
-        component: "scan",
-        metric: "scan_page_snapshot_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanSlotDrainNs,
-        component: "scan",
-        metric: "scan_slot_drain_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanOverflowCopyNs,
-        component: "scan",
-        metric: "scan_overflow_copy_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanPageRetryNs,
-        component: "scan",
-        metric: "scan_page_retry_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
         id: MetricId::ScanPageRetryTotal,
         component: "scan",
         metric: "scan_page_retry_total",
         kind: MetricKind::Counter,
         unit: MetricUnit::Count,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanFillPreDrainNs,
-        component: "scan",
-        metric: "scan_fill_pre_drain_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanFillPostDrainNs,
-        component: "scan",
-        metric: "scan_fill_post_drain_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanFillOverflowEncodeNs,
-        component: "scan",
-        metric: "scan_fill_overflow_encode_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanFillEmitNs,
-        component: "scan",
-        metric: "scan_fill_emit_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
-    },
-    MetricDescriptor {
-        id: MetricId::ScanFillUnclassifiedNs,
-        component: "scan",
-        metric: "scan_fill_unclassified_ns",
-        kind: MetricKind::Timer,
-        unit: MetricUnit::Nanoseconds,
     },
     MetricDescriptor {
         id: MetricId::ScanFetchCallsTotal,

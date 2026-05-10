@@ -92,7 +92,6 @@ fn run_scan_worker_main(job_id: usize) -> Result<(), String> {
     let mut backend_config = config.backend_service_config();
     backend_config.metrics = metrics;
     backend_config.runtime_filters = runtime_filters;
-    backend_config.scan_timing_detail = job.scan_timing_detail;
     let run_result = BackgroundWorker::transaction(|| {
         BackendService::run_standalone_scan_producer(StandaloneScanProducerInput {
             descriptor: job.descriptor,

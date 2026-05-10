@@ -36,7 +36,6 @@ pub(crate) static SCAN_BATCH_CHANNEL_CAPACITY: GucSetting<i32> = GucSetting::<i3
 pub(crate) static SCAN_IDLE_POLL_INTERVAL_US: GucSetting<i32> = GucSetting::<i32>::new(50);
 pub(crate) static ESTIMATOR_INITIAL_TAIL_BYTES_PER_ROW: GucSetting<i32> =
     GucSetting::<i32>::new(64);
-pub(crate) static SCAN_TIMING_DETAIL: GucSetting<bool> = GucSetting::<bool>::new(false);
 pub(crate) static JOIN_REORDERING: GucSetting<bool> = GucSetting::<bool>::new(true);
 const DEFAULT_RUNTIME_FILTER_ENABLE: bool = true;
 pub(crate) static RUNTIME_FILTER_ENABLE: GucSetting<bool> =
@@ -66,7 +65,6 @@ pub struct HostConfig {
     pub scan_batch_channel_capacity: u32,
     pub scan_idle_poll_interval_us: u32,
     pub estimator_initial_tail_bytes_per_row: u32,
-    pub scan_timing_detail: bool,
     pub join_reordering: bool,
     pub runtime_filter_enable: bool,
     pub runtime_filter_count: u32,
@@ -211,14 +209,6 @@ pub fn register_gucs() {
         &ESTIMATOR_INITIAL_TAIL_BYTES_PER_ROW,
     );
     GucRegistry::define_bool_guc(
-        c"pg_fusion.scan_timing_detail",
-        c"Enable detailed scan timing",
-        c"Measure backend scan page and fetch timing",
-        &SCAN_TIMING_DETAIL,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-    GucRegistry::define_bool_guc(
         c"pg_fusion.join_reordering",
         c"Enable statistics-based join reordering",
         c"Use PostgreSQL statistics and the pg_fusion join-order optimizer for eligible inner joins",
@@ -313,7 +303,6 @@ pub fn host_config() -> Result<HostConfig, HostConfigError> {
             "pg_fusion.estimator_initial_tail_bytes_per_row",
             ESTIMATOR_INITIAL_TAIL_BYTES_PER_ROW.get(),
         )?,
-        scan_timing_detail: SCAN_TIMING_DETAIL.get(),
         join_reordering: JOIN_REORDERING.get(),
         runtime_filter_enable: RUNTIME_FILTER_ENABLE.get(),
         runtime_filter_count: positive_u32(
@@ -360,7 +349,6 @@ impl HostConfig {
         config.estimator_default.initial_tail_bytes_per_row =
             self.estimator_initial_tail_bytes_per_row;
         config.diagnostics = DiagnosticsConfig::new(self.backend_log_level, self.log_path.clone());
-        config.scan_timing_detail = self.scan_timing_detail;
         config.join_reordering_enabled = self.join_reordering;
         config.runtime_filter_enabled = self.runtime_filter_enable;
         config
@@ -499,7 +487,6 @@ mod tests {
             scan_batch_channel_capacity: 9,
             scan_idle_poll_interval_us: 123,
             estimator_initial_tail_bytes_per_row: 33,
-            scan_timing_detail: true,
             join_reordering: false,
             runtime_filter_enable: true,
             runtime_filter_count: 16,
@@ -514,7 +501,6 @@ mod tests {
         assert_eq!(backend.scan_batch_channel_capacity, 9);
         assert_eq!(backend.scan_idle_poll_interval_us, 123);
         assert_eq!(backend.estimator_default.initial_tail_bytes_per_row, 33);
-        assert!(backend.scan_timing_detail);
         assert!(!backend.join_reordering_enabled);
         assert!(backend.runtime_filter_enabled);
         assert_eq!(backend.diagnostics.level, DiagnosticLogLevel::Trace);

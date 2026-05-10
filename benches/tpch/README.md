@@ -123,19 +123,18 @@ When a query is slow, reset runtime metrics and rerun the query manually:
 ```sql
 SELECT pg_fusion_metrics_reset();
 SET pg_fusion.enable = on;
-SET pg_fusion.scan_timing_detail = on;
 SELECT ...;
 SELECT *
 FROM pg_fusion_metrics()
 ORDER BY component, metric;
 ```
 
-`scan_slot_drain_ns` is coarse PostgreSQL portal-drain time and includes both
-executor work and receiver callback work, including slot-to-Arrow conversion.
-Use a flamegraph for deformation/page-write attribution. If the benchmark ratio
-is poor, inspect `scan_b2w_wait_ns`, `scan_batch_send_ns`,
-`scan_batch_delivery_ns`, and `scan_idle_sleep_ns` to separate page handoff,
-DataFusion channel backpressure, worker-local scan delivery, and idle polling.
+`scan_page_fill_ns` is the coarse backend scan-page timer and includes executor
+work, receiver callback work, and slot-to-Arrow conversion. Use a flamegraph for
+deformation/page-write attribution. If the benchmark ratio is poor, inspect
+`scan_b2w_wait_ns`, `scan_batch_send_ns`, `scan_batch_delivery_ns`, and
+`scan_idle_sleep_ns` to separate page handoff, DataFusion channel backpressure,
+worker-local scan delivery, and idle polling.
 
 ## Q05 Encoder Microbenchmark
 

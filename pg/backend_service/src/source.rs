@@ -26,7 +26,6 @@ pub(crate) struct SlotScanPageSource {
     single_row_drains: bool,
     estimator: Option<PageRowEstimator>,
     metrics: RuntimeMetrics,
-    scan_timing_detail: bool,
     runtime_filter_enabled: bool,
     runtime_filters: RuntimeFilterPool,
     session_epoch: u64,
@@ -36,46 +35,6 @@ pub(crate) struct SlotScanPageSource {
     session: Option<StreamingScanSession>,
     overflow_slot: *mut pg_sys::TupleTableSlot,
     pending_overflow: pg_sys::HeapTuple,
-}
-
-#[derive(Default)]
-struct ScanFillTiming {
-    page_prepare_ns: u64,
-    page_finish_ns: u64,
-    page_snapshot_ns: u64,
-    slot_drain_ns: u64,
-    page_retry_ns: u64,
-    fill_pre_drain_ns: u64,
-    fill_post_drain_ns: u64,
-    fill_overflow_encode_ns: u64,
-    fill_emit_ns: u64,
-}
-
-impl ScanFillTiming {
-    fn record_metrics(&self, metrics: RuntimeMetrics, fill_ns: u64) {
-        metrics.add(MetricId::ScanFillPreDrainNs, self.fill_pre_drain_ns);
-        metrics.add(MetricId::ScanFillPostDrainNs, self.fill_post_drain_ns);
-        metrics.add(
-            MetricId::ScanFillOverflowEncodeNs,
-            self.fill_overflow_encode_ns,
-        );
-        metrics.add(MetricId::ScanFillEmitNs, self.fill_emit_ns);
-
-        let classified_ns = self
-            .page_snapshot_ns
-            .saturating_add(self.page_prepare_ns)
-            .saturating_add(self.page_finish_ns)
-            .saturating_add(self.slot_drain_ns)
-            .saturating_add(self.page_retry_ns)
-            .saturating_add(self.fill_pre_drain_ns)
-            .saturating_add(self.fill_post_drain_ns)
-            .saturating_add(self.fill_overflow_encode_ns)
-            .saturating_add(self.fill_emit_ns);
-        metrics.add(
-            MetricId::ScanFillUnclassifiedNs,
-            fill_ns.saturating_sub(classified_ns),
-        );
-    }
 }
 
 impl SlotScanPageSource {
@@ -89,7 +48,6 @@ impl SlotScanPageSource {
         fetch_batch_rows: usize,
         estimator: Option<PageRowEstimator>,
         metrics: RuntimeMetrics,
-        scan_timing_detail: bool,
         runtime_filter_enabled: bool,
         runtime_filters: RuntimeFilterPool,
         session_epoch: u64,
@@ -109,7 +67,6 @@ impl SlotScanPageSource {
             single_row_drains,
             estimator,
             metrics,
-            scan_timing_detail,
             runtime_filter_enabled,
             runtime_filters,
             session_epoch,
@@ -155,11 +112,9 @@ impl SlotScanPageSource {
     fn fill_next_page_with_snapshot(
         &mut self,
         payload: &mut [u8],
-        timing: &mut ScanFillTiming,
     ) -> Result<SourcePageStatus, BackendServiceError> {
         loop {
             let metrics = self.metrics;
-            let retry_start = self.scan_timing_detail.then(|| metrics.now_ns());
             let estimated_rows_per_page =
                 estimate_rows_per_page(&self.estimator, self.fetch_batch_rows)?;
             let source_projection = &self.source_projection;
@@ -193,31 +148,20 @@ impl SlotScanPageSource {
             let needed_attrs = encoder.needed_attrs().max(runtime_filter_needed_attrs);
             let page_prepare_ns = self.metrics.now_ns().saturating_sub(prepare_start);
             let mut rows_written = 0usize;
-            let mut pending_overflow_encode_ns = 0_u64;
             let mut filter_stats = RuntimeFilterProbeStats::default();
 
             if !self.pending_overflow.is_null() {
-                let overflow_encode_start = self.scan_timing_detail.then(|| self.metrics.now_ns());
                 let overflow_status = append_pending_overflow(
                     self.overflow_slot,
                     &mut self.pending_overflow,
                     &mut encoder,
                 )?;
-                if let Some(start) = overflow_encode_start {
-                    let elapsed_ns = self.metrics.now_ns().saturating_sub(start);
-                    pending_overflow_encode_ns = elapsed_ns;
-                }
                 match overflow_status {
                     AppendStatus::Appended => {
                         rows_written += 1;
-                        timing.fill_overflow_encode_ns = timing
-                            .fill_overflow_encode_ns
-                            .saturating_add(pending_overflow_encode_ns);
                     }
                     AppendStatus::Full => {
-                        timing.page_retry_ns = timing
-                            .page_retry_ns
-                            .saturating_add(record_page_retry(metrics, retry_start));
+                        record_page_retry(metrics);
                         observe_empty_full_page(&mut self.estimator, estimated_rows_per_page)?;
                         continue;
                     }
@@ -232,17 +176,14 @@ impl SlotScanPageSource {
                     let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                     return Ok(record_finished_scan_page(
                         metrics,
-                        self.scan_timing_detail,
                         page_prepare_ns,
                         page_finish_ns,
                         MetricId::ScanFullPagesTotal,
                         encoded.row_count,
                         encoded.payload_len,
-                        timing,
                     ));
                 }
 
-                let pre_drain_start = self.scan_timing_detail.then(|| metrics.now_ns());
                 let remaining_rows = max_rows - rows_written;
                 let row_budget = if self.single_row_drains {
                     1
@@ -252,14 +193,6 @@ impl SlotScanPageSource {
                 // SAFETY: this backend-only callback is controlled by pg_fusion
                 // and returns expected failures through Result. A panic here is
                 // a bug, not a recoverable row-level PostgreSQL error.
-                let mut attempt_pre_drain_ns = 0_u64;
-                if let Some(start) = pre_drain_start {
-                    attempt_pre_drain_ns = metrics.now_ns().saturating_sub(start);
-                    timing.fill_pre_drain_ns = timing
-                        .fill_pre_drain_ns
-                        .saturating_add(attempt_pre_drain_ns);
-                }
-                let drain_start = self.scan_timing_detail.then(|| metrics.now_ns());
                 let drain_result = unsafe {
                     let append_slot = |slot: *mut pg_sys::TupleTableSlot| {
                         if needed_attrs > 0 && i32::from((*slot).tts_nvalid) < needed_attrs {
@@ -281,8 +214,6 @@ impl SlotScanPageSource {
                             max_rows,
                             slot,
                             &mut self.pending_overflow,
-                            self.scan_timing_detail,
-                            metrics,
                         )
                     };
                     session.drain_slots_without_unwind_guard::<BackendServiceError>(
@@ -290,14 +221,6 @@ impl SlotScanPageSource {
                         append_slot,
                     )
                 };
-                let mut attempt_slot_drain_ns = 0_u64;
-                if let Some(start) = drain_start {
-                    attempt_slot_drain_ns = metrics.now_ns().saturating_sub(start);
-                    metrics.add(MetricId::ScanSlotDrainNs, attempt_slot_drain_ns);
-                    timing.slot_drain_ns =
-                        timing.slot_drain_ns.saturating_add(attempt_slot_drain_ns);
-                }
-                let post_drain_start = self.scan_timing_detail.then(|| metrics.now_ns());
                 let drain = drain_result?;
                 filter_stats.record(metrics);
                 self.metrics.increment(MetricId::ScanFetchCallsTotal);
@@ -305,13 +228,6 @@ impl SlotScanPageSource {
                 let drain_stopped = drain.stopped;
                 let drain_eof = drain.eof;
                 let drain_rows_consumed = drain.rows_consumed;
-                let mut attempt_post_drain_ns = 0_u64;
-                if let Some(start) = post_drain_start {
-                    attempt_post_drain_ns = metrics.now_ns().saturating_sub(start);
-                    timing.fill_post_drain_ns = timing
-                        .fill_post_drain_ns
-                        .saturating_add(attempt_post_drain_ns);
-                }
 
                 if has_pending_overflow {
                     if rows_written > 0 {
@@ -324,27 +240,15 @@ impl SlotScanPageSource {
                         let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                         return Ok(record_finished_scan_page(
                             metrics,
-                            self.scan_timing_detail,
                             page_prepare_ns,
                             page_finish_ns,
                             MetricId::ScanFullPagesTotal,
                             encoded.row_count,
                             encoded.payload_len,
-                            timing,
                         ));
                     }
 
-                    timing.fill_pre_drain_ns = timing
-                        .fill_pre_drain_ns
-                        .saturating_sub(attempt_pre_drain_ns);
-                    timing.slot_drain_ns =
-                        timing.slot_drain_ns.saturating_sub(attempt_slot_drain_ns);
-                    timing.fill_post_drain_ns = timing
-                        .fill_post_drain_ns
-                        .saturating_sub(attempt_post_drain_ns);
-                    timing.page_retry_ns = timing
-                        .page_retry_ns
-                        .saturating_add(record_page_retry(metrics, retry_start));
+                    record_page_retry(metrics);
                     observe_empty_full_page(&mut self.estimator, estimated_rows_per_page)?;
                     break;
                 }
@@ -366,13 +270,11 @@ impl SlotScanPageSource {
                     let page_finish_ns = metrics.now_ns().saturating_sub(finish_start);
                     return Ok(record_finished_scan_page(
                         metrics,
-                        self.scan_timing_detail,
                         page_prepare_ns,
                         page_finish_ns,
                         MetricId::ScanEofPagesTotal,
                         encoded.row_count,
                         encoded.payload_len,
-                        timing,
                     ));
                 }
 
@@ -425,40 +327,21 @@ fn observe_empty_full_page(
 
 fn record_finished_scan_page(
     metrics: RuntimeMetrics,
-    scan_timing_detail: bool,
     page_prepare_ns: u64,
     page_finish_ns: u64,
     page_counter: MetricId,
     row_count: usize,
     payload_len: usize,
-    timing: &mut ScanFillTiming,
 ) -> SourcePageStatus {
-    timing.page_prepare_ns = timing.page_prepare_ns.saturating_add(page_prepare_ns);
-    timing.page_finish_ns = timing.page_finish_ns.saturating_add(page_finish_ns);
-
-    let emit_start = scan_timing_detail.then(|| metrics.now_ns());
     metrics.add(MetricId::ScanPagePrepareNs, page_prepare_ns);
     metrics.add(MetricId::ScanPageFinishNs, page_finish_ns);
     metrics.increment(page_counter);
     metrics.add(MetricId::ScanRowsEncodedTotal, row_count as u64);
-    let status = SourcePageStatus::Page { payload_len };
-    if let Some(start) = emit_start {
-        timing.fill_emit_ns = timing
-            .fill_emit_ns
-            .saturating_add(metrics.now_ns().saturating_sub(start));
-    }
-    status
+    SourcePageStatus::Page { payload_len }
 }
 
-fn record_page_retry(metrics: RuntimeMetrics, retry_start: Option<u64>) -> u64 {
-    if let Some(start) = retry_start {
-        let elapsed_ns = metrics.now_ns().saturating_sub(start);
-        metrics.add(MetricId::ScanPageRetryNs, elapsed_ns);
-        metrics.increment(MetricId::ScanPageRetryTotal);
-        elapsed_ns
-    } else {
-        0
-    }
+fn record_page_retry(metrics: RuntimeMetrics) {
+    metrics.increment(MetricId::ScanPageRetryTotal);
 }
 
 fn handle_append_slot_status(
@@ -468,8 +351,6 @@ fn handle_append_slot_status(
     max_rows: usize,
     slot: *mut pg_sys::TupleTableSlot,
     pending_overflow: &mut pg_sys::HeapTuple,
-    scan_timing_detail: bool,
-    metrics: RuntimeMetrics,
 ) -> Result<SlotSinkAction, BackendServiceError> {
     match status {
         AppendStatus::Appended => {
@@ -483,12 +364,7 @@ fn handle_append_slot_status(
                     *rows_written
                 )));
             }
-            let overflow_copy_start = scan_timing_detail.then(|| metrics.now_ns());
             *pending_overflow = unsafe { pg_sys::ExecCopySlotHeapTuple(slot) };
-            if let Some(start) = overflow_copy_start {
-                let elapsed_ns = metrics.now_ns().saturating_sub(start);
-                metrics.add(MetricId::ScanOverflowCopyNs, elapsed_ns);
-            }
             if (*pending_overflow).is_null() {
                 return Err(BackendServiceError::PageSource(
                     "ExecCopySlotHeapTuple returned null".into(),
@@ -640,24 +516,11 @@ impl BackendPageSource for SlotScanPageSource {
 
         let metrics = self.metrics;
         let fill_start = metrics.now_ns();
-        let mut inner_fill_ns = 0_u64;
-        let mut fill_timing = ScanFillTiming::default();
-        let result = with_registered_snapshot(self.snapshot, || {
-            let inner_start = self.scan_timing_detail.then(|| metrics.now_ns());
-            let result = self.fill_next_page_with_snapshot(block, &mut fill_timing);
-            if let Some(start) = inner_start {
-                inner_fill_ns = metrics.now_ns().saturating_sub(start);
-            }
-            result
-        });
+        let result =
+            with_registered_snapshot(self.snapshot, || self.fill_next_page_with_snapshot(block));
         if matches!(result, Ok(SourcePageStatus::Page { .. })) {
             let fill_ns = metrics.now_ns().saturating_sub(fill_start);
             metrics.add(MetricId::ScanPageFillNs, fill_ns);
-            if self.scan_timing_detail {
-                fill_timing.page_snapshot_ns = fill_ns.saturating_sub(inner_fill_ns);
-                metrics.add(MetricId::ScanPageSnapshotNs, fill_timing.page_snapshot_ns);
-                fill_timing.record_metrics(metrics, fill_ns);
-            }
         }
         result
     }

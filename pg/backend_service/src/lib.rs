@@ -88,7 +88,6 @@ pub struct BackendServiceConfig {
     pub scan_page_flags: u16,
     pub diagnostics: DiagnosticsConfig,
     pub metrics: RuntimeMetrics,
-    pub scan_timing_detail: bool,
     pub runtime_filter_enabled: bool,
     pub runtime_filters: RuntimeFilterPool,
 }
@@ -107,7 +106,6 @@ impl Default for BackendServiceConfig {
             scan_page_flags: 0,
             diagnostics: DiagnosticsConfig::default(),
             metrics: RuntimeMetrics::default(),
-            scan_timing_detail: false,
             runtime_filter_enabled: false,
             runtime_filters: RuntimeFilterPool::default(),
         }
@@ -223,7 +221,6 @@ pub struct ScanWorkerLaunchInput<'a> {
     pub scan_id: u64,
     pub spec: &'a PgScanSpec,
     pub leader_peer: BackendLeaseSlot,
-    pub scan_timing_detail: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,7 +739,6 @@ impl BackendService {
                         scan_id,
                         spec: spec.as_ref(),
                         leader_peer: scan_peer,
-                        scan_timing_detail: config.scan_timing_detail,
                     })?;
                     leader_ctid_range = output.leader_ctid_range.take();
                     producers.append(&mut output.workers);
@@ -997,7 +993,6 @@ impl BackendService {
                 fetch_batch_rows,
                 estimator,
                 execution.config.metrics,
-                execution.config.scan_timing_detail,
                 execution.config.runtime_filter_enabled,
                 execution.config.runtime_filters,
                 input.session_epoch,
@@ -1908,7 +1903,6 @@ fn standalone_page_source(
         normalize_scan_fetch_batch_rows(config.scan_fetch_batch_rows),
         estimator,
         config.metrics,
-        config.scan_timing_detail,
         config.runtime_filter_enabled,
         config.runtime_filters,
         session_epoch,

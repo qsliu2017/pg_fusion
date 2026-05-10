@@ -70,13 +70,10 @@ importance: 0.8
   allocations, ready publications, pool exhaustion, build rows, probed rows,
   rejected rows, and probe rows that passed unfiltered because a filter was not
   ready.
-- `pg_fusion.scan_timing_detail` enables diagnostic backend scan timing.
-  It splits `scan_page_fill_ns` into coarse slot drain, snapshot wrapper,
-  overflow-copy, retry, prepare, finish, and residual page-fill bookkeeping
-  buckets. It does not instrument slot-to-Arrow internals; use external
-  flamegraphs for deformation and page-write attribution. The query-time flag is
-  copied into dynamic scan worker jobs so leader and worker scan producers
-  contribute comparable diagnostics.
+- Backend scan timing is always on and intentionally coarse: `scan_page_fill_ns`
+  covers successful emitted page fills, with cheap prepare/finish buckets and a
+  retry counter. It does not instrument slot-to-Arrow internals; use external
+  flamegraphs for deformation, detoast, and page-write attribution.
 - The fast backend scan receiver keeps the Rust row callback monomorphized
   through `slot_scan`; the unavoidable indirect boundary is PostgreSQL's
   `DestReceiver.receiveSlot` function pointer.
