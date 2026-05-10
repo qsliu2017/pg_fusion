@@ -1,12 +1,12 @@
 use std::ptr::NonNull;
 
+use ::metrics::{RuntimeMetrics, RuntimeMetricsConfig};
 use control_transport::{TransportRegion, TransportRegionLayout};
+use filter::RuntimeFilterPool;
 use issuance::{IssuanceConfig, IssuancePool};
 use pgrx::pg_sys::AsPgCStr;
 use pgrx::prelude::*;
 use pool::{PagePool, PagePoolConfig};
-use runtime_filter::RuntimeFilterPool;
-use runtime_metrics::{RuntimeMetrics, RuntimeMetricsConfig};
 
 use crate::guc::host_config;
 use crate::scan_worker_job::{ScanWorkerJobRegistry, ScanWorkerJobRegistryHandle};

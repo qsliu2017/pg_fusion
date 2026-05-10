@@ -4,6 +4,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
+use ::worker::normalize_result_transport_schema;
 use arrow_schema::{Field, Schema, SchemaRef};
 use backend_service::{
     build_standalone_scan_descriptor, ActiveScanDriver, BackendService, BackendServiceError,
@@ -27,8 +29,7 @@ use pgrx::pg_sys::{
 use pgrx::prelude::*;
 use pgrx::{check_for_interrupts, pg_guard, PgRelation as PgrxRelation, PgTryBuilder};
 use pool::PagePool;
-use runtime_metrics::{MetricId, PageDirection, RuntimeMetrics};
-use runtime_protocol::{
+use protocol::{
     decode_runtime_message_family, decode_worker_execution_to_backend,
     decode_worker_scan_to_backend, encode_backend_execution_to_worker_into,
     encode_backend_scan_to_worker_into, encode_worker_scan_to_backend_into,
@@ -39,7 +40,6 @@ use runtime_protocol::{
 };
 use scan_node::PgScanSpec;
 use transfer::PageTx;
-use worker_runtime::normalize_result_transport_schema;
 
 use crate::diag;
 use crate::guc::host_config;
@@ -1360,9 +1360,9 @@ fn decode_primary_inbound(bytes: &[u8]) -> Result<PrimaryInbound, Box<dyn std::e
         Err(runtime_error)
             if matches!(
                 runtime_error,
-                runtime_protocol::DecodeError::InvalidMagic { .. }
-                    | runtime_protocol::DecodeError::UnsupportedVersion { .. }
-                    | runtime_protocol::DecodeError::TruncatedEnvelope { .. }
+                protocol::DecodeError::InvalidMagic { .. }
+                    | protocol::DecodeError::UnsupportedVersion { .. }
+                    | protocol::DecodeError::TruncatedEnvelope { .. }
             ) =>
         {
             Ok(PrimaryInbound::Issued(decode_issued_frame(bytes)?))
@@ -1988,7 +1988,7 @@ fn scan_peers_from_begin(begin: &BeginExecutionOutput) -> BTreeMap<u64, BackendL
     begin
         .scan_channels
         .iter()
-        .filter(|descriptor| descriptor.role == runtime_protocol::ProducerRole::Leader)
+        .filter(|descriptor| descriptor.role == protocol::ProducerRole::Leader)
         .map(|descriptor| {
             (
                 descriptor.scan_id,
@@ -2086,11 +2086,11 @@ unsafe fn tuple_desc_for_slots(node: *mut CustomScanState) -> pg_sys::TupleDesc 
 }
 
 fn truncate_scan_failure_message(message: &str) -> String {
-    if message.len() <= runtime_protocol::MAX_SCAN_FAILURE_MESSAGE_LEN {
+    if message.len() <= protocol::MAX_SCAN_FAILURE_MESSAGE_LEN {
         return message.to_string();
     }
 
-    let mut cutoff = runtime_protocol::MAX_SCAN_FAILURE_MESSAGE_LEN;
+    let mut cutoff = protocol::MAX_SCAN_FAILURE_MESSAGE_LEN;
     while !message.is_char_boundary(cutoff) {
         cutoff -= 1;
     }

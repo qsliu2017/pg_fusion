@@ -8,13 +8,13 @@ This crate owns the new pgrx host integration:
 - shared-memory bootstrap for the new transport/page stack
 - planner/custom-scan registration
 - background worker entrypoints
-- thin glue to `backend_service` and `worker_runtime`
+- thin glue to `backend_service` and `worker`
 
 Current scope:
 
 - backend-local `EXPLAIN`
 - custom scan callbacks on top of `backend_service`
-- worker bootstrap on top of `worker_runtime`
+- worker bootstrap on top of `worker`
 - page-backed worker result production and backend result ingress
 - pgrx smoke tests for simple `SELECT`, `EXPLAIN`, and heap-backed `SELECT`
 - a committed `pg_compat` PostgreSQL 17 compatibility corpus that compares

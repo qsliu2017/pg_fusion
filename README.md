@@ -16,11 +16,14 @@ projected back into PostgreSQL tuple slots.
   shared-memory bootstrap, background worker entrypoint.
 - `pg/backend_service/` - backend-side execution orchestration and scan page
   production.
-- `worker_runtime/` - DataFusion worker runtime and transport-backed scan/result
+- `runtime/worker/` - DataFusion worker runtime and transport-backed scan/result
   handling.
-- `runtime_protocol/` - typed control-plane protocol for backend/worker runtime
+- `runtime/protocol/` - typed control-plane protocol for backend/worker runtime
   messages.
-- `control_transport/` - shared-memory control rings and backend/worker leases.
+- `runtime/control_transport/` - shared-memory control rings and backend/worker
+  leases.
+- `runtime/filter/` - shared-memory runtime filters used by eligible joins.
+- `runtime/metrics/` - shared-memory runtime counters and page handoff stamps.
 - `page/pool/`, `page/transfer/`, `page/issuance/` - fixed-page ownership and
   page handoff infrastructure.
 - `page/arrow_layout/`, `page/import/`, `pg/slot_encoder/`, `pg/slot_import/` -

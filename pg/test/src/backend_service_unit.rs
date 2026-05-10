@@ -6,7 +6,7 @@ use datafusion_expr::logical_plan::{EmptyRelation, LogicalPlan};
 use issuance::{IssuanceConfig, IssuancePool, IssuedTx};
 use plan_flow::{BackendPlanError, BackendPlanRole, FlowId as PlanFlowId, PlanOpen};
 use pool::{PagePool, PagePoolConfig};
-use runtime_protocol::{
+use protocol::{
     decode_worker_scan_to_backend, encode_worker_scan_to_backend_into,
     encoded_len_worker_scan_to_backend, ExecutionFailureCode, ProducerDescriptorWire, ProducerRole,
     ScanFlowDescriptor, WorkerScanToBackend, WorkerScanToBackendRef,

@@ -1,0 +1,42 @@
+[package]
+name = "worker"
+version = "25.0.0"
+edition = "2021"
+description = "Worker-side runtime for the new PostgreSQL execution path"
+readme = "README.md"
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[dependencies]
+arrow_layout = { path = "../../page/arrow_layout", version = "25.0" }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+batch_encoder = { path = "../../page/batch_encoder", version = "25.0" }
+control_transport = { path = "../control_transport", version = "25.0" }
+datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-execution = { workspace = true }
+datafusion-expr = { workspace = true }
+datafusion-physical-expr = { workspace = true }
+df_functions = { path = "../../pg/df_functions", version = "25.0" }
+futures = "0.3"
+import = { path = "../../page/import", version = "25.0" }
+issuance = { path = "../../page/issuance", version = "25.0" }
+plan_flow = { path = "../../page/plan_flow", version = "25.0" }
+pool = { path = "../../page/pool", version = "25.0" }
+row_estimator = { path = "../../page/row_estimator", version = "25.0" }
+protocol = { path = "../protocol", version = "25.0" }
+metrics = { path = "../metrics", version = "25.0" }
+filter = { path = "../filter", version = "25.0" }
+rust-fsm = { version = "0.7", features = ["diagram"] }
+scan_flow = { path = "../../page/scan_flow", version = "25.0" }
+scan_node = { path = "../../pg/scan_node", version = "25.0" }
+thiserror = "2.0"
+tracing = "0.1"
+transfer = { path = "../../page/transfer", version = "25.0" }
+
+[dev-dependencies]
+libc = "0.2"
+scan_sql = { path = "../../pg/scan_sql", version = "25.0" }

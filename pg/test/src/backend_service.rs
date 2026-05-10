@@ -13,7 +13,7 @@ use pgrx::prelude::*;
 use plan_builder::{PlanBuildInput, PlanBuilder};
 use plan_flow::{FlowId as PlanFlowId, PlanOpen, WorkerPlanRole, WorkerStep};
 use pool::{PagePool, PagePoolConfig};
-use runtime_protocol::{
+use protocol::{
     decode_worker_scan_to_backend, encode_worker_scan_to_backend_into,
     encoded_len_worker_scan_to_backend, BackendExecutionToWorker as BackendToWorker,
     ExecutionFailureCode, ProducerDescriptorWire, ProducerRole, ScanChannelDescriptorWire,

@@ -1,5 +1,5 @@
+use ::metrics::{MetricValue, RuntimeMetrics};
 use pgrx::prelude::*;
-use runtime_metrics::{MetricValue, RuntimeMetrics};
 
 use crate::shmem::attach_runtime_metrics;
 

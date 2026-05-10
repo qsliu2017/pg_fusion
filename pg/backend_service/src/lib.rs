@@ -12,24 +12,24 @@ use control_transport::{
 };
 use datafusion_common::ScalarValue;
 use datafusion_expr::logical_plan::LogicalPlan;
+use filter::RuntimeFilterPool;
 use fsm::backend_execution_flow::StateMachine as BackendExecutionMachine;
 pub use fsm::{BackendExecutionAction, BackendExecutionEvent, BackendExecutionState};
 use issuance::{encode_issued_frame, IssuedTx};
+use metrics::{MetricId, PageDirection, RuntimeMetrics};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::{PgRelation as PgrxRelation, PgTryBuilder};
 use plan_builder::{PlanBuildInput, PlanBuilder};
 use plan_flow::{BackendPlanRole, BackendPlanStep, PlanOpen};
-use row_estimator::{EstimatorConfig, PageRowEstimator};
-use row_estimator_seed::{seed_estimator_config, ProjectedColumnRef};
-use runtime_filter::RuntimeFilterPool;
-use runtime_metrics::{MetricId, PageDirection, RuntimeMetrics};
-use runtime_protocol::{
+use protocol::{
     decode_worker_scan_to_backend, encode_backend_scan_to_worker_into, BackendExecutionToWorker,
     BackendLeaseSlotWire, BackendScanToWorker, ExecutionFailureCode, PlanFlowDescriptor,
     ProducerRole, ScanChannelDescriptorWire, ScanChannelSet, ScanFlowDescriptorRef,
     WorkerScanToBackendRef,
 };
+use row_estimator::{EstimatorConfig, PageRowEstimator};
+use row_estimator_seed::{seed_estimator_config, ProjectedColumnRef};
 use scan_flow::{
     BackendProducerRole, BackendProducerStep, BackendScanCoordinator, FlowId as ScanFlowId,
     LogicalTerminal, ProducerDescriptor, ProducerRoleKind, ScanOpen,
@@ -258,7 +258,7 @@ pub struct ScanWorkerLaunchOutput {
 pub struct BeginExecutionOutput {
     pub key: ExecutionKey,
     pub plan: PlanFlowDescriptor,
-    pub options: runtime_protocol::ExecutionOptionsWire,
+    pub options: protocol::ExecutionOptionsWire,
     pub scan_channels: Box<[ScanChannelDescriptorWire]>,
 }
 
@@ -786,7 +786,7 @@ impl BackendService {
                 page_kind: config.plan_page_kind,
                 page_flags: config.plan_page_flags,
             };
-            let options = runtime_protocol::ExecutionOptionsWire {
+            let options = protocol::ExecutionOptionsWire {
                 scan_batch_channel_capacity: config.scan_batch_channel_capacity,
                 scan_idle_poll_interval_us: config.scan_idle_poll_interval_us,
                 runtime_filter_enabled: config.runtime_filter_enabled,
@@ -2102,7 +2102,7 @@ fn send_standalone_scan_terminal(
     scan_lease: &mut BackendSlotLease,
     message: BackendScanToWorker<'_>,
 ) -> Result<(), BackendServiceError> {
-    let mut encoded = vec![0_u8; runtime_protocol::encoded_len_backend_scan_to_worker(message)];
+    let mut encoded = vec![0_u8; protocol::encoded_len_backend_scan_to_worker(message)];
     let written = encode_backend_scan_to_worker_into(message, &mut encoded).map_err(|err| {
         BackendServiceError::ProtocolViolation(format!(
             "failed to encode standalone scan terminal: {err}"
@@ -2157,7 +2157,7 @@ fn send_standalone_scan_failed(
 }
 
 fn truncate_scan_failure_message(message: &str) -> String {
-    const MAX_SCAN_FAILURE_BYTES: usize = runtime_protocol::MAX_SCAN_FAILURE_MESSAGE_LEN;
+    const MAX_SCAN_FAILURE_BYTES: usize = protocol::MAX_SCAN_FAILURE_MESSAGE_LEN;
     if message.len() <= MAX_SCAN_FAILURE_BYTES {
         return message.to_string();
     }

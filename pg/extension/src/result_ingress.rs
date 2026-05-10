@@ -242,6 +242,7 @@ pub(crate) mod debug_repro {
     use std::sync::Arc;
     use std::task::{Context, Poll};
 
+    use ::worker::{ResultPageProducer, ResultPageProducerConfig, ResultPageStep};
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
@@ -251,7 +252,6 @@ pub(crate) mod debug_repro {
     use pgrx::varlena::rust_str_to_text_p;
     use pool::{PagePool, PagePoolConfig};
     use transfer::PageTx;
-    use worker_runtime::{ResultPageProducer, ResultPageProducerConfig, ResultPageStep};
 
     #[derive(Debug)]
     struct TestStream {

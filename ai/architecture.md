@@ -20,11 +20,12 @@ page-backed Arrow batches.
   shared-memory bootstrap, and background worker entrypoint.
 - `pg/backend_service/`: backend execution state, scan coordination, and
   PostgreSQL slot-scan page production.
-- `worker_runtime/`: worker-side DataFusion runtime, physical scan integration,
+- `runtime/worker`: worker-side DataFusion runtime, physical scan integration,
   and result page production.
-- `runtime_protocol/`: typed backend/worker control-plane messages.
-- `control_transport/`: shared-memory control rings and backend/worker leases.
-- `runtime_filter`: shared-memory friendly runtime filters. The Bloom bitset
+- `runtime/protocol`: typed backend/worker control-plane messages.
+- `runtime/control_transport`: shared-memory control rings and backend/worker
+  leases.
+- `runtime/filter`: shared-memory friendly runtime filters. The Bloom bitset
   layer is separate from the shared-memory pool/lifecycle layer: builders
   acquire an exclusive generation before clearing/inserting, publish `Ready`
   with a CAS, and probes only reject rows for a matching ready generation.
@@ -33,7 +34,7 @@ page-backed Arrow batches.
   probes have exited, preserving the no-false-negative property.
 - `page/pool`, `page/transfer`, `page/issuance`: fixed-page ownership,
   transfer, and issued-frame flow.
-- `runtime_metrics`: shared-memory runtime counters and page-slot handoff
+- `runtime/metrics`: shared-memory runtime counters and page-slot handoff
   stamps exposed through SQL.
 - `page/arrow_layout`, `page/row_encoder`, `page/import`,
   `pg/slot_encoder`, `pg/slot_import`: page-backed Arrow layout,
@@ -177,7 +178,7 @@ and rows that passed unfiltered because the filter was not ready for that probe.
 
 Dynamic scan workers use CTID block-range chunking as the first parallel scan
 strategy. The leader backend scans one heap block range, additional dynamic
-background workers scan disjoint ranges, and `worker_runtime` fans all producer
+background workers scan disjoint ranges, and `runtime/worker` fans all producer
 streams into one logical `PgScanExec`. The query-wide worker budget is assigned
 before execution starts; if PostgreSQL cannot launch more dynamic workers at
 runtime, pg_fusion cancels any partially launched producers for that scan and

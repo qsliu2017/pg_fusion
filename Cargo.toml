@@ -2,10 +2,10 @@
 members = [
   "join_order",
   "lockfree",
-  "control_transport",
-  "runtime_filter",
-  "runtime_metrics",
-  "runtime_protocol",
+  "runtime/control_transport",
+  "runtime/filter",
+  "runtime/metrics",
+  "runtime/protocol",
   "page/pool",
   "page/transfer",
   "page/arrow_layout",
@@ -29,7 +29,7 @@ members = [
   "pg/slot_encoder",
   "pg/slot_import",
   "pg/extension",
-  "worker_runtime",
+  "runtime/worker",
   "pg/test",
 ]
 resolver = "2"

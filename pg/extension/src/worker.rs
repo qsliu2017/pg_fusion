@@ -2,6 +2,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
+use ::worker::{
+    DecodedInbound, ResultPageEmitter, ResultPageProducerConfig, ResultPageStep,
+    ScanIngressProvider, TransportScanBatchSource, TransportWorkerRuntime, WorkerRuntimeCore,
+    WorkerRuntimeError, WorkerRuntimeStep,
+};
 use backend_service::{BackendService, StandaloneScanProducerInput};
 use control_transport::WorkerTransport;
 use control_transport::{BackendLeaseSlot, BackendSlotLease};
@@ -11,15 +17,9 @@ use issuance::{encode_issued_frame, IssuancePool, IssuedRx, IssuedTx};
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
 use pool::PagePool;
-use runtime_metrics::{MetricId, PageDirection, RuntimeMetrics};
-use runtime_protocol::{ExecutionFailureCode, WorkerExecutionToBackend};
+use protocol::{ExecutionFailureCode, WorkerExecutionToBackend};
 use tracing::{debug, info, trace, warn, Level};
 use transfer::PageTx;
-use worker_runtime::{
-    DecodedInbound, ResultPageEmitter, ResultPageProducerConfig, ResultPageStep,
-    ScanIngressProvider, TransportScanBatchSource, TransportWorkerRuntime, WorkerRuntimeCore,
-    WorkerRuntimeError, WorkerRuntimeStep,
-};
 
 use crate::guc::host_config;
 use crate::logging::init_tracing_file_logger;
@@ -349,7 +349,7 @@ fn handle_steps(
                     session_epoch, "worker observed execution cancel"
                 );
                 plan_rx.take();
-                if runtime.state() == worker_runtime::fsm::WorkerExecutionState::Terminal {
+                if runtime.state() == ::worker::fsm::WorkerExecutionState::Terminal {
                     runtime.cleanup()?;
                     info!(
                         component = "worker",
@@ -370,7 +370,7 @@ fn handle_steps(
                     "worker observed execution failure transition"
                 );
                 plan_rx.take();
-                if runtime.state() == worker_runtime::fsm::WorkerExecutionState::Terminal {
+                if runtime.state() == ::worker::fsm::WorkerExecutionState::Terminal {
                     runtime.cleanup()?;
                     info!(
                         component = "worker",
@@ -384,7 +384,7 @@ fn handle_steps(
                     session_epoch, "worker observed execution complete transition"
                 );
                 plan_rx.take();
-                if runtime.state() == worker_runtime::fsm::WorkerExecutionState::Terminal {
+                if runtime.state() == ::worker::fsm::WorkerExecutionState::Terminal {
                     runtime.cleanup()?;
                     info!(
                         component = "worker",

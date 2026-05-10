@@ -34,14 +34,14 @@ import = { path = "../../page/import", version = "25.0" }
 issuance = { path = "../../page/issuance", version = "25.0" }
 backend_service = { path = "../backend_service", version = "25.0", features = ["pg_test"] }
 plan_flow = { path = "../../page/plan_flow", version = "25.0" }
-runtime_protocol = { path = "../../runtime_protocol", version = "25.0" }
+protocol = { path = "../../runtime/protocol", version = "25.0" }
 slot_encoder = { path = "../slot_encoder", version = "25.0" }
 slot_import = { path = "../slot_import", version = "25.0" }
 scan_sql = { path = "../scan_sql", version = "25.0" }
 slot_scan = { path = "../slot_scan", version = "25.0" }
 row_estimator = { path = "../../page/row_estimator", version = "25.0" }
 row_estimator_seed = { path = "../row_estimator_seed", version = "25.0" }
-control_transport = { path = "../../control_transport", version = "25.0" }
+control_transport = { path = "../../runtime/control_transport", version = "25.0" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 serde_json = "1.0"

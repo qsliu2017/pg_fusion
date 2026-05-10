@@ -2,7 +2,7 @@
 id: comp-host-runtime-0001
 type: fact
 scope: host_runtime
-tags: ["pgrx", "datafusion", "shared-memory", "runtime_protocol", "slot_scan"]
+tags: ["pgrx", "datafusion", "shared-memory", "protocol", "slot_scan"]
 updated_at: "2026-05-02"
 importance: 0.8
 ---
@@ -10,7 +10,7 @@ importance: 0.8
 # Component: Host Runtime
 
 - `pg/extension` is the active pgrx extension crate.
-- Backend control uses `runtime_protocol` messages over `control_transport`.
+- Backend control uses `protocol` messages over `control_transport`.
 - Backend scan production uses PostgreSQL `slot_scan` plus `slot_encoder` to
   stream Arrow layout pages to the worker.
 - Backend-to-worker scan control ring `Full` is scan-stream backpressure. The
@@ -36,7 +36,7 @@ importance: 0.8
   `0`. PostgreSQL scan producers remain ordinary backend/scan-worker threads:
   they communicate through shared-memory scan transport and never call
   PostgreSQL APIs from Tokio tasks.
-- Worker execution lives in `worker_runtime` and consumes scan pages as Arrow
+- Worker execution lives in `runtime/worker` and consumes scan pages as Arrow
   batches through `page/import`. Transport scan streams use a bounded
   DataFusion batch channel and short idle polling interval so scan threads can
   absorb minor downstream polling gaps without sleeping for millisecond-scale
