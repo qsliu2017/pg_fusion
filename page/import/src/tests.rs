@@ -6,8 +6,10 @@ use arrow_array::{
 };
 use arrow_layout::{init_block, BlockMut, BlockRef, ByteView, LayoutPlan, ViewWriteStatus};
 use arrow_schema::{DataType, Field, Schema};
+#[cfg(feature = "slot-encoder-tests")]
 use pgrx_pg_sys as pg_sys;
 use pool::{PagePool, PagePoolConfig, RegionLayout};
+#[cfg(feature = "slot-encoder-tests")]
 use slot_encoder::{AppendStatus, PageBatchEncoder};
 use std::alloc::{alloc, dealloc, Layout};
 use std::io::Write;
@@ -73,6 +75,7 @@ fn send_page(pool: PagePool, kind: u16, flags: u16, payload: &[u8]) -> ReceivedP
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "slot-encoder-tests")]
 struct TestAttr {
     oid: pg_sys::Oid,
     attlen: i16,
@@ -80,12 +83,14 @@ struct TestAttr {
     attalign: u8,
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 struct OwnedTupleDesc {
     ptr: pg_sys::TupleDesc,
     base: NonNull<u8>,
     layout: Layout,
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 impl OwnedTupleDesc {
     fn new(attrs: &[TestAttr]) -> Self {
         let size = std::mem::size_of::<pg_sys::TupleDescData>()
@@ -115,12 +120,14 @@ impl OwnedTupleDesc {
     }
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 impl Drop for OwnedTupleDesc {
     fn drop(&mut self) {
         unsafe { dealloc(self.base.as_ptr(), self.layout) };
     }
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 struct OwnedSlot {
     slot: Box<pg_sys::TupleTableSlot>,
     values: Vec<pg_sys::Datum>,
@@ -128,6 +135,7 @@ struct OwnedSlot {
     _cells: Vec<MockCell>,
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 impl OwnedSlot {
     fn from_cells(tupdesc: pg_sys::TupleDesc, mut cells: Vec<MockCell>) -> Self {
         let mut values = Vec::with_capacity(cells.len());
@@ -158,6 +166,7 @@ impl OwnedSlot {
     }
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 enum MockCell {
     Null,
     Bool(bool),
@@ -165,6 +174,7 @@ enum MockCell {
     Uuid(Box<[u8; 16]>),
 }
 
+#[cfg(feature = "slot-encoder-tests")]
 impl MockCell {
     fn datum(&mut self) -> (pg_sys::Datum, bool) {
         match self {
@@ -652,6 +662,7 @@ fn rejects_view_offset_before_allocated_tail() {
 }
 
 #[test]
+#[cfg(feature = "slot-encoder-tests")]
 fn imports_slot_encoder_produced_payload() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("b", DataType::Boolean, true),

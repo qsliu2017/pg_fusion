@@ -14,10 +14,13 @@ arrow-array = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 arrow_layout = { path = "../arrow_layout", version = "25.0" }
+pgrx-pg-sys = { workspace = true, optional = true }
+slot_encoder = { path = "../../pg/slot_encoder", version = "25.0", optional = true }
 transfer = { path = "../transfer", version = "25.0" }
 thiserror = "2.0"
 
+[features]
+slot-encoder-tests = ["dep:pgrx-pg-sys", "dep:slot_encoder"]
+
 [dev-dependencies]
 pool = { path = "../pool", version = "25.0" }
-slot_encoder = { path = "../../pg/slot_encoder", version = "25.0" }
-pgrx-pg-sys = { workspace = true }
