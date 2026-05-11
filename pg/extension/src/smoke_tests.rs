@@ -236,6 +236,25 @@ pub(crate) fn explain_smoke() {
             && verbose_heap_explain.contains("PgFusion Producers:"),
         "verbose heap EXPLAIN should render pg_fusion scan details: {verbose_heap_explain}"
     );
+    assert!(
+        verbose_heap_explain.contains("sql=\"SELECT"),
+        "verbose heap EXPLAIN should keep compiled scan SQL: {verbose_heap_explain}"
+    );
+    assert!(
+        !verbose_heap_explain.contains("scan_id=")
+            && !verbose_heap_explain.contains("table_oid=")
+            && !verbose_heap_explain.contains("planner_fetch_hint=")
+            && !verbose_heap_explain.contains("output_schema="),
+        "verbose heap EXPLAIN should omit internal scan metadata: {verbose_heap_explain}"
+    );
+    assert!(
+        verbose_heap_explain.contains("Output: id, payload"),
+        "verbose heap EXPLAIN should keep nested PostgreSQL verbose output: {verbose_heap_explain}"
+    );
+    assert!(
+        verbose_heap_explain.contains("PgFusion Producer 0: leader"),
+        "verbose heap EXPLAIN should keep producer diagnostics: {verbose_heap_explain}"
+    );
 }
 
 pub(crate) fn planner_catalog_bypass_smoke() {

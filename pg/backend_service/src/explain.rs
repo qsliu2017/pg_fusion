@@ -183,12 +183,6 @@ impl ExplainPgScanExec {
             params.push(format!("local_row_cap={cap}"));
         }
         if verbose {
-            params.push(format!("scan_id={}", self.spec.scan_id.get()));
-            params.push(format!("table_oid={}", self.spec.table_oid));
-            if let Some(hint) = self.spec.fetch_hints.planner_fetch_hint {
-                params.push(format!("planner_fetch_hint={hint}"));
-            }
-            params.push(format!("output_schema={:?}", self.output_schema));
             params.push(format!("sql=\"{}\"", self.spec.compiled_scan.sql));
         }
         if !params.is_empty() {

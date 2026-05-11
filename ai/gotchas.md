@@ -3,7 +3,7 @@ id: gotchas-0001
 type: gotcha
 scope: repo
 tags: ["shm", "pgrx", "slot_scan", "arrow", "testing"]
-updated_at: "2026-05-02"
+updated_at: "2026-05-11"
 importance: 0.7
 ---
 
@@ -18,7 +18,10 @@ importance: 0.7
 - `CustomScan.custom_scan_tlist` must describe the scan tuple with terminal
   expressions, not the same `INDEX_VAR` entries used by `plan.targetlist`.
   Sharing the lists makes PostgreSQL `EXPLAIN VERBOSE` recursively deparse
-  custom scan output until it hits `max_stack_depth`.
+  custom scan output until it hits `max_stack_depth`. The current NULL
+  constants can surface as `Output: NULL::...` in PostgreSQL's top-level custom
+  scan verbose output; do not replace them without preserving the non-recursive
+  deparse behavior.
 - `slot_scan` should execute trusted compiler-generated scan SQL. SQL safety and
   expression pushdown policy belong in `scan_sql`.
 - PostgreSQL-bound crates should not be included in standalone `cargo test` or

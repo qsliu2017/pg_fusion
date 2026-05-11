@@ -3,7 +3,7 @@ id: comp-host-runtime-0001
 type: fact
 scope: host_runtime
 tags: ["pgrx", "datafusion", "shared-memory", "protocol", "slot_scan"]
-updated_at: "2026-05-02"
+updated_at: "2026-05-11"
 importance: 0.8
 ---
 
@@ -79,9 +79,11 @@ importance: 0.8
   `DestReceiver.receiveSlot` function pointer.
 - `EXPLAIN` stays backend-local: `backend_service` lowers the planned query to
   a DataFusion physical plan, renders PostgreSQL scan leaves with present
-  soft-limit/fetch-hint metadata, and prints the nested multiline `slot_scan`
-  plan directly below the leaf. Scan leaves also render pg_fusion's planned
-  dynamic scan producers and, for `EXPLAIN ANALYZE`, the producer set installed
-  during execution.
+  soft-limit/local-row-cap metadata, and prints the nested multiline
+  `slot_scan` plan directly below the leaf. `EXPLAIN VERBOSE` also includes the
+  compiled scan SQL but omits internal scan ids, table oids, planner fetch
+  hints, and raw Arrow schema debug dumps. Scan leaves also render pg_fusion's
+  planned dynamic scan producers and, for `EXPLAIN ANALYZE`, the producer set
+  installed during execution.
 - The retired raw heap page stack (`executor`, `scan`, `storage`, `protocol`,
   `common`) is no longer part of the workspace.

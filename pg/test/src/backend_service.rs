@@ -2,8 +2,8 @@ use arrow_array::{Int32Array, StringViewArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use backend_service::{
     ActiveScanDriver, BackendService, BackendServiceConfig, BackendServiceError,
-    BeginExecutionOutput, ExecutionKey, ExplainInput, OpenScanInput, ScanStreamStep,
-    ScanYieldReason, StartExecutionInput,
+    BeginExecutionOutput, ExecutionKey, ExplainInput, ExplainRenderOptions, OpenScanInput,
+    ScanStreamStep, ScanYieldReason, StartExecutionInput,
 };
 use control_transport::{BackendLeaseId, BackendLeaseSlot, TransportRegion, TransportRegionLayout};
 use datafusion_common::ScalarValue;
@@ -246,6 +246,34 @@ pub fn backend_service_render_explain_uses_physical_plan_and_pg_leaf() {
         rendered.contains("PostgreSQL Scan:")
             && rendered.contains("(soft_limit=1, local_row_cap=1)"),
         "expected scan limits in parentheses in leaf explain: {rendered}"
+    );
+
+    let verbose_rendered = BackendService::render_explain(ExplainInput {
+        sql: &sql,
+        params: Vec::new(),
+        options: ExplainRenderOptions {
+            verbose: true,
+            ..Default::default()
+        },
+        config: BackendServiceConfig::default(),
+        scan_worker_launcher: None,
+        actual_scan_parallelism: Default::default(),
+    })
+    .expect("render verbose physical explain");
+    assert!(
+        verbose_rendered.contains("PostgreSQL Scan:") && verbose_rendered.contains("sql=\"SELECT"),
+        "verbose explain should keep compiled scan SQL: {verbose_rendered}"
+    );
+    assert!(
+        !verbose_rendered.contains("scan_id=")
+            && !verbose_rendered.contains("table_oid=")
+            && !verbose_rendered.contains("planner_fetch_hint=")
+            && !verbose_rendered.contains("output_schema="),
+        "verbose explain should omit internal scan metadata: {verbose_rendered}"
+    );
+    assert!(
+        verbose_rendered.contains("Output:"),
+        "verbose explain should keep nested PostgreSQL verbose output: {verbose_rendered}"
     );
 }
 
