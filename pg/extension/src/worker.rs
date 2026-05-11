@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::ffi::CStr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,13 +8,12 @@ use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
 use ::worker::{
     DecodedInbound, ResultPageEmitter, ResultPageProducerConfig, ResultPageStep,
     ScanIngressProvider, TransportScanBatchSource, TransportWorkerRuntime, WorkerRuntimeCore,
-    WorkerRuntimeError, WorkerRuntimeStep,
+    WorkerRuntimeError, WorkerRuntimeStep, WorkerSpillRuntime,
 };
 use backend_service::{BackendService, StandaloneScanProducerInput};
 use control_transport::WorkerTransport;
 use control_transport::{BackendLeaseSlot, BackendSlotLease};
 use datafusion::physical_plan::{execute_stream, ExecutionPlan};
-use datafusion_execution::TaskContext;
 use issuance::{encode_issued_frame, IssuancePool, IssuedRx, IssuedTx};
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
@@ -141,7 +142,11 @@ fn run_worker_main() -> Result<(), WorkerRuntimeError> {
     let metrics = attach_runtime_metrics();
     let runtime_filters = attach_runtime_filters();
 
+    let spill_cluster_id = worker_spill_cluster_id();
     let mut worker_config = config.worker_runtime_config();
+    worker_config.spill = worker_config
+        .spill
+        .with_cluster_namespace(&spill_cluster_id);
     worker_config.metrics = metrics;
     worker_config.runtime_filter_pool = runtime_filters;
     let scan_transport = WorkerTransport::attach(&scan_region)?;
@@ -150,97 +155,224 @@ fn run_worker_main() -> Result<(), WorkerRuntimeError> {
         component = "worker",
         worker_pid, "attached dedicated scan transport region"
     );
-    scan_transport.activate_generation(worker_pid)?;
+    let scan_generation = scan_transport.activate_generation(worker_pid)?;
     debug!(
         component = "worker",
-        worker_pid, "activated dedicated scan transport generation"
+        worker_pid, scan_generation, "activated dedicated scan transport generation"
     );
-    let mut transport = TransportWorkerRuntime::attach(&control_region, &worker_config)?;
-    debug!(
-        component = "worker",
-        worker_pid, "attached primary control transport region"
-    );
-    transport.activate_generation(worker_pid)?;
-    debug!(
-        component = "worker",
-        worker_pid, "activated primary control transport generation"
-    );
+    let run_result = (|| -> Result<(), WorkerRuntimeError> {
+        let mut transport = TransportWorkerRuntime::attach(&control_region, &worker_config)?;
+        debug!(
+            component = "worker",
+            worker_pid, "attached primary control transport region"
+        );
+        let control_generation = transport.activate_generation(worker_pid)?;
+        debug!(
+            component = "worker",
+            worker_pid, control_generation, "activated primary control transport generation"
+        );
 
-    let scan_source = Arc::new(TransportScanBatchSource::new_with_metrics(
-        scan_region,
-        config.scan_backend_to_worker_capacity,
-        Arc::new(SharedScanIngress {
-            page_pool,
-            issuance_pool,
-        }),
-        metrics,
-    )?);
-    let mut runtime = WorkerRuntimeCore::new(worker_config, scan_source);
-    let mut plan_rx: Option<IssuedRx> = None;
-    let df_runtime = build_datafusion_runtime()?;
-    debug!(component = "worker", "worker entering main poll loop");
-
-    while BackgroundWorker::wait_latch(Some(POLL_INTERVAL)) {
-        let mut ready_cursor = 0;
-        while let Some(peer) = transport.next_ready_backend_lease(&mut ready_cursor) {
-            if tracing::enabled!(Level::TRACE) {
-                trace!(
+        let control_result = (|| -> Result<(), WorkerRuntimeError> {
+            let mut spill_runtime = WorkerSpillRuntime::new(
+                worker_config.spill.clone(),
+                worker_pid,
+                control_generation,
+            )?;
+            if let (Some(memory_limit_bytes), Some(active_dir)) = (
+                spill_runtime.config().memory_limit_bytes,
+                spill_runtime.active_dir(),
+            ) {
+                info!(
                     component = "worker",
-                    peer = ?peer,
-                    state = ?runtime.state(),
-                    "worker polling ready backend peer"
+                    worker_pid,
+                    control_generation,
+                    memory_limit_bytes,
+                    spill_cluster = %spill_cluster_id,
+                    spill_dir = %active_dir.display(),
+                    "enabled DataFusion worker spill"
                 );
             }
-            let mut steps = VecDeque::new();
-            transport.recv_peer_frames(peer, |bytes| {
-                let decoded = WorkerRuntimeCore::decode_inbound(bytes)?;
-                let step = match decoded {
-                    DecodedInbound::Control(message) => {
-                        runtime.accept_backend_control(peer, message)?
-                    }
-                    DecodedInbound::IssuedFrame(frame) => {
-                        let rx = plan_rx.as_ref().ok_or_else(|| {
-                            WorkerRuntimeError::ProtocolViolation(
-                                "received a plan frame before opening plan ingress".into(),
-                            )
-                        })?;
-                        runtime.accept_issued_plan_frame(peer, rx, &frame)?
-                    }
-                };
-                if matches!(step, WorkerRuntimeStep::PlanOpened { .. }) {
-                    plan_rx = Some(IssuedRx::new(
-                        transfer::PageRx::new(page_pool),
-                        issuance_pool,
-                    ));
-                }
-                steps.push_back(step);
-                Ok(())
-            })?;
 
-            handle_steps(
-                &mut transport,
-                &mut runtime,
-                &df_runtime,
-                &config,
-                page_pool,
-                issuance_pool,
-                &mut plan_rx,
+            let scan_source = Arc::new(TransportScanBatchSource::new_with_metrics(
+                scan_region,
+                config.scan_backend_to_worker_capacity,
+                Arc::new(SharedScanIngress {
+                    page_pool,
+                    issuance_pool,
+                }),
                 metrics,
-                steps,
-            )?;
-        }
-    }
+            )?);
+            let mut runtime = WorkerRuntimeCore::new(worker_config, scan_source);
+            let mut plan_rx: Option<IssuedRx> = None;
+            let df_runtime = build_datafusion_runtime()?;
+            debug!(component = "worker", "worker entering main poll loop");
 
-    transport.deactivate_generation()?;
-    scan_transport.deactivate_generation()?;
+            while BackgroundWorker::wait_latch(Some(POLL_INTERVAL)) {
+                let mut ready_cursor = 0;
+                while let Some(peer) = transport.next_ready_backend_lease(&mut ready_cursor) {
+                    if tracing::enabled!(Level::TRACE) {
+                        trace!(
+                            component = "worker",
+                            peer = ?peer,
+                            state = ?runtime.state(),
+                            "worker polling ready backend peer"
+                        );
+                    }
+                    let mut steps = VecDeque::new();
+                    transport.recv_peer_frames(peer, |bytes| {
+                        let decoded = WorkerRuntimeCore::decode_inbound(bytes)?;
+                        let step = match decoded {
+                            DecodedInbound::Control(message) => {
+                                runtime.accept_backend_control(peer, message)?
+                            }
+                            DecodedInbound::IssuedFrame(frame) => {
+                                let rx = plan_rx.as_ref().ok_or_else(|| {
+                                    WorkerRuntimeError::ProtocolViolation(
+                                        "received a plan frame before opening plan ingress".into(),
+                                    )
+                                })?;
+                                runtime.accept_issued_plan_frame(peer, rx, &frame)?
+                            }
+                        };
+                        if matches!(step, WorkerRuntimeStep::PlanOpened { .. }) {
+                            plan_rx = Some(IssuedRx::new(
+                                transfer::PageRx::new(page_pool),
+                                issuance_pool,
+                            ));
+                        }
+                        steps.push_back(step);
+                        Ok(())
+                    })?;
+
+                    handle_steps(
+                        &mut transport,
+                        &mut runtime,
+                        &df_runtime,
+                        &mut spill_runtime,
+                        &config,
+                        page_pool,
+                        issuance_pool,
+                        &mut plan_rx,
+                        metrics,
+                        steps,
+                    )?;
+                }
+            }
+
+            Ok(())
+        })();
+
+        finish_with_deactivation(
+            control_result,
+            transport.deactivate_generation(),
+            "primary control transport",
+        )
+    })();
+
+    finish_with_deactivation(
+        run_result,
+        scan_transport.deactivate_generation().map_err(Into::into),
+        "dedicated scan transport",
+    )?;
     info!(component = "worker", "worker stopped cleanly");
     Ok(())
+}
+
+fn finish_with_deactivation(
+    result: Result<(), WorkerRuntimeError>,
+    deactivate: Result<u64, WorkerRuntimeError>,
+    transport: &'static str,
+) -> Result<(), WorkerRuntimeError> {
+    match (result, deactivate) {
+        (Ok(()), Ok(_)) => Ok(()),
+        (Ok(()), Err(err)) => Err(err),
+        (Err(err), Ok(_)) => Err(err),
+        (Err(err), Err(deactivate_err)) => {
+            warn!(
+                component = "worker",
+                transport,
+                error = %deactivate_err,
+                "failed to deactivate worker transport after error"
+            );
+            Err(err)
+        }
+    }
+}
+
+fn worker_spill_cluster_id() -> String {
+    let data_dir = postgres_data_dir_path().unwrap_or_else(|| PathBuf::from("unknown"));
+    let normalized = std::fs::canonicalize(&data_dir).unwrap_or(data_dir);
+    format!("{:016x}", fnv1a64(normalized.to_string_lossy().as_bytes()))
+}
+
+fn postgres_data_dir_path() -> Option<PathBuf> {
+    let data_dir = unsafe { pgrx::pg_sys::DataDir };
+    if data_dir.is_null() {
+        return None;
+    }
+    let path = unsafe { CStr::from_ptr(data_dir) }
+        .to_string_lossy()
+        .into_owned();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3_u64);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deactivation_helper_preserves_primary_failure() {
+        let err = finish_with_deactivation(
+            Err(protocol_error("startup failed")),
+            Err(protocol_error("deactivation failed")),
+            "test transport",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "runtime protocol violation: startup failed"
+        );
+    }
+
+    #[test]
+    fn deactivation_helper_reports_cleanup_failure_on_clean_run() {
+        let err = finish_with_deactivation(
+            Ok(()),
+            Err(protocol_error("deactivation failed")),
+            "test transport",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "runtime protocol violation: deactivation failed"
+        );
+    }
+
+    fn protocol_error(message: &str) -> WorkerRuntimeError {
+        WorkerRuntimeError::ProtocolViolation(message.into())
+    }
 }
 
 fn handle_steps(
     transport: &mut TransportWorkerRuntime,
     runtime: &mut WorkerRuntimeCore,
     df_runtime: &tokio::runtime::Runtime,
+    spill_runtime: &mut WorkerSpillRuntime,
     config: &crate::HostConfig,
     page_pool: PagePool,
     issuance_pool: IssuancePool,
@@ -293,6 +425,7 @@ fn handle_steps(
                     .and_then(|plan| {
                         df_runtime.block_on(execute_physical_plan(
                             transport,
+                            spill_runtime,
                             config,
                             page_pool,
                             issuance_pool,
@@ -409,6 +542,7 @@ fn build_datafusion_runtime() -> Result<tokio::runtime::Runtime, WorkerRuntimeEr
 
 async fn execute_physical_plan(
     transport: &mut TransportWorkerRuntime,
+    spill_runtime: &mut WorkerSpillRuntime,
     config: &crate::HostConfig,
     page_pool: PagePool,
     issuance_pool: IssuancePool,
@@ -417,63 +551,68 @@ async fn execute_physical_plan(
     session_epoch: u64,
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<(), WorkerRuntimeError> {
-    let stream = execute_stream(plan, Arc::new(TaskContext::default()))?;
-    let page_tx = PageTx::new(page_pool);
-    let payload_capacity = u32::try_from(page_tx.payload_capacity()).map_err(|_| {
-        WorkerRuntimeError::ProtocolViolation("result payload capacity exceeds u32".into())
-    })?;
-    let mut producer = ResultPageEmitter::new(
-        stream,
-        IssuedTx::new(page_tx, issuance_pool),
-        payload_capacity,
-        ResultPageProducerConfig {
-            estimator: row_estimator::EstimatorConfig {
-                initial_tail_bytes_per_row: config.estimator_initial_tail_bytes_per_row,
+    let spill_dir = spill_runtime.execution_dir(peer, session_epoch)?;
+    {
+        let task_ctx = spill_runtime.task_context(&spill_dir)?;
+        let stream = execute_stream(plan, task_ctx)?;
+        let page_tx = PageTx::new(page_pool);
+        let payload_capacity = u32::try_from(page_tx.payload_capacity()).map_err(|_| {
+            WorkerRuntimeError::ProtocolViolation("result payload capacity exceeds u32".into())
+        })?;
+        let mut producer = ResultPageEmitter::new(
+            stream,
+            IssuedTx::new(page_tx, issuance_pool),
+            payload_capacity,
+            ResultPageProducerConfig {
+                estimator: row_estimator::EstimatorConfig {
+                    initial_tail_bytes_per_row: config.estimator_initial_tail_bytes_per_row,
+                },
+                metrics,
+                ..ResultPageProducerConfig::default()
             },
-            metrics,
-            ..ResultPageProducerConfig::default()
-        },
-    )?;
+        )?;
 
-    loop {
-        match producer.next_step_async().await? {
-            Some(ResultPageStep::OutboundPage(outbound)) => {
-                trace!(
-                    component = "worker",
-                    session_epoch,
-                    peer = ?peer,
-                    "worker produced one result page"
-                );
-                let descriptor = outbound.descriptor();
-                let payload_len = outbound.payload_len();
-                let frame = encode_issued_frame(outbound.frame()).map_err(|err| {
-                    WorkerRuntimeError::ProtocolViolation(format!(
-                        "failed to encode result page frame: {err}"
-                    ))
-                })?;
-                transport.send_peer_bytes(peer, &frame)?;
-                metrics.stamp_page(PageDirection::WorkerToBackend, descriptor, payload_len);
-                metrics.increment(MetricId::WorkerResultPagesTotal);
-                metrics.add(MetricId::WorkerResultBytesSentTotal, payload_len as u64);
-                outbound.mark_sent();
+        loop {
+            match producer.next_step_async().await? {
+                Some(ResultPageStep::OutboundPage(outbound)) => {
+                    trace!(
+                        component = "worker",
+                        session_epoch,
+                        peer = ?peer,
+                        "worker produced one result page"
+                    );
+                    let descriptor = outbound.descriptor();
+                    let payload_len = outbound.payload_len();
+                    let frame = encode_issued_frame(outbound.frame()).map_err(|err| {
+                        WorkerRuntimeError::ProtocolViolation(format!(
+                            "failed to encode result page frame: {err}"
+                        ))
+                    })?;
+                    transport.send_peer_bytes(peer, &frame)?;
+                    metrics.stamp_page(PageDirection::WorkerToBackend, descriptor, payload_len);
+                    metrics.increment(MetricId::WorkerResultPagesTotal);
+                    metrics.add(MetricId::WorkerResultBytesSentTotal, payload_len as u64);
+                    outbound.mark_sent();
+                }
+                Some(ResultPageStep::CloseFrame(frame)) => {
+                    debug!(
+                        component = "worker",
+                        session_epoch,
+                        peer = ?peer,
+                        "worker produced terminal result close frame"
+                    );
+                    let frame = encode_issued_frame(frame).map_err(|err| {
+                        WorkerRuntimeError::ProtocolViolation(format!(
+                            "failed to encode result close frame: {err}"
+                        ))
+                    })?;
+                    transport.send_peer_bytes(peer, &frame)?;
+                }
+                None => break,
             }
-            Some(ResultPageStep::CloseFrame(frame)) => {
-                debug!(
-                    component = "worker",
-                    session_epoch,
-                    peer = ?peer,
-                    "worker produced terminal result close frame"
-                );
-                let frame = encode_issued_frame(frame).map_err(|err| {
-                    WorkerRuntimeError::ProtocolViolation(format!(
-                        "failed to encode result close frame: {err}"
-                    ))
-                })?;
-                transport.send_peer_bytes(peer, &frame)?;
-            }
-            None => break,
         }
     }
+    spill_dir.cleanup()?;
 
     Ok(())
 }

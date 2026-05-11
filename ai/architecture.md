@@ -147,6 +147,13 @@ page-backed Arrow batches.
    columns. Scan production remains on PostgreSQL backend/scan-worker threads;
    Tokio only drives DataFusion planning, multi-partition root collection, and
    result-stream polling.
+   If `pg_fusion.worker_memory_limit_mb` is positive, execution uses a
+   worker-owned DataFusion `RuntimeEnv` with a finite memory pool and
+   per-execution OS spill directory below a cluster-scoped worker spill root.
+   The worker garbage-collects pg_fusion-marked stale spill directories in that
+   cluster namespace at generation startup; disabled spill does not create
+   directories or run garbage collection. v1 spill is independent of PostgreSQL
+   temp-file accounting.
 6. Backend imports result pages with `slot_import` and projects rows into
    PostgreSQL tuple slots. Result transport supports Decimal128 fixed-width
    pages for PostgreSQL `numeric` outputs produced by worker-side expressions

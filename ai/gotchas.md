@@ -69,6 +69,16 @@ importance: 0.7
   `execute_stream` inside its Tokio runtime. Calling `ExecutionPlan::execute(0,
   ...)` directly only drains partition `0` and breaks multi-partition roots
   such as `UNION`.
+- Worker DataFusion spill is OS-path spill owned by pg_fusion. It is enabled
+  only when `pg_fusion.worker_memory_limit_mb > 0`, creates per-execution
+  directories below a cluster-scoped worker spill root, and relies on worker
+  cleanup plus next-incarnation garbage collection. Startup cleanup must stay
+  limited to pg_fusion-marked directories in the same cluster namespace; disabled
+  spill must not create directories or run spill garbage collection. It does not
+  honor PostgreSQL `temp_tablespaces`, `temp_file_limit`, or ResourceOwner
+  semantics. In DataFusion 44, sorts, row hash aggregates, and
+  `SortMergeJoinExec` buffered sides can spill; ordinary `HashJoinExec` cannot
+  and will report resources exhausted under the finite memory pool.
 - DataFusion clones ordinary CTE plans at each reference. `plan_builder`
   rewrites non-recursive multi-use CTEs before SQL planning so references become
   `PgCteRefNode` reads over one materialized producer. Keep this path for

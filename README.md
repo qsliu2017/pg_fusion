@@ -112,6 +112,8 @@ shared_preload_libraries = 'pg_fusion'
 pg_fusion.worker_threads = 0
 pg_fusion.log_path = '/tmp/pg_fusion.log'
 pg_fusion.worker_log_filter = 'warn'
+pg_fusion.worker_memory_limit_mb = 0
+pg_fusion.worker_spill_directory = ''
 
 # Primary backend <-> worker control transport.
 pg_fusion.control_slot_count = 64
@@ -150,6 +152,19 @@ bytes in each direction; the worker-to-backend scan ring carries `OpenScan`
 messages that include the full scan producer set used by dynamic scan workers.
 The issued-page permit pool is sized from `pg_fusion.page_count`, so each
 shared page can have one outstanding issued handoff.
+
+`pg_fusion.worker_memory_limit_mb = 0` keeps DataFusion on its default
+unbounded runtime. Setting it above `0` enables a finite DataFusion memory pool
+and worker-owned OS temporary spill files. `pg_fusion.worker_spill_directory`
+may point at an absolute spill root; empty uses the OS temp directory under
+`pg_fusion/spill`. The worker treats that setting as a base directory and uses
+`<base>/cluster-<cluster-id>/worker-<pid>-gen-<generation>/exec-...` for
+per-query spill files. It removes query directories on completion/failure and
+removes only pg_fusion-marked stale worker incarnation directories inside the
+same cluster namespace on the next worker start. When the memory limit is `0`,
+the worker does not create spill directories or run spill garbage collection.
+This v1 spill path is pg_fusion-owned OS temp storage; it does not use
+PostgreSQL `temp_tablespaces`, `temp_file_limit`, or `ResourceOwner` cleanup.
 
 `pg_fusion.scan_batch_channel_capacity` and
 `pg_fusion.scan_idle_poll_interval_us` are `Userset` GUCs despite being shown in

@@ -31,6 +31,7 @@ use crate::runtime_filter_plan::install_runtime_filters;
 use crate::scan_exec::{
     ScanBatchSource, ScanProducerPeer, WorkerPgScanExec, WorkerPgScanExecFactory, WorkerScanTuning,
 };
+use crate::spill::WorkerSpillConfig;
 
 /// Static configuration for one worker-side runtime instance.
 #[derive(Clone, Debug)]
@@ -45,6 +46,8 @@ pub struct WorkerRuntimeConfig {
     pub runtime_filter_pool: RuntimeFilterPool,
     /// Shared runtime metrics sink.
     pub metrics: RuntimeMetrics,
+    /// Worker-owned DataFusion spill configuration.
+    pub spill: WorkerSpillConfig,
 }
 
 impl Default for WorkerRuntimeConfig {
@@ -55,6 +58,7 @@ impl Default for WorkerRuntimeConfig {
             scan_page_flags: 0,
             runtime_filter_pool: RuntimeFilterPool::default(),
             metrics: RuntimeMetrics::default(),
+            spill: WorkerSpillConfig::default(),
         }
     }
 }

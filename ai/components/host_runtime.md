@@ -36,6 +36,16 @@ importance: 0.8
   `0`. PostgreSQL scan producers remain ordinary backend/scan-worker threads:
   they communicate through shared-memory scan transport and never call
   PostgreSQL APIs from Tokio tasks.
+- Worker-side DataFusion spill is opt-in through Postmaster GUC
+  `pg_fusion.worker_memory_limit_mb`. `0` preserves the default unbounded
+  DataFusion runtime; positive values use a finite `FairSpillPool` and
+  per-execution OS temp directories under a cluster-scoped worker spill root.
+  The primary worker marks owned worker-incarnation directories, removes stale
+  marked directories in the same cluster namespace on startup, and removes
+  execution directories on success, failure, or cancel. Disabled spill does not
+  create directories or run spill garbage collection. This is not PostgreSQL
+  `BufFile` storage and does not honor `temp_tablespaces`, `temp_file_limit`,
+  or ResourceOwner cleanup.
 - Worker execution lives in `runtime/worker` and consumes scan pages as Arrow
   batches through `page/import`. Transport scan streams use a bounded
   DataFusion batch channel and short idle polling interval so scan threads can

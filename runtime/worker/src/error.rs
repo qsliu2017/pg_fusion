@@ -44,6 +44,13 @@ pub enum WorkerRuntimeError {
     Import(#[from] import::ImportError),
     #[error("DataFusion failed: {0}")]
     DataFusion(#[from] datafusion_common::DataFusionError),
+    #[error("failed to {action} spill path {path}: {source}", path = path.display())]
+    SpillIo {
+        action: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("worker execution FSM rejected transition: {0}")]
     StateMachine(String),
     #[error("cannot {action} while worker execution is in state {state:?}")]

@@ -1,4 +1,6 @@
-use ::worker::WorkerRuntimeConfig;
+use std::path::PathBuf;
+
+use ::worker::{WorkerRuntimeConfig, WorkerSpillConfig};
 use backend_service::{BackendServiceConfig, DiagnosticLogLevel, DiagnosticsConfig};
 use control_transport::TransportRegionLayout;
 use filter::{BloomParams, RuntimeFilterPoolConfig};
@@ -15,6 +17,9 @@ pub(crate) static LOG_PATH: GucSetting<Option<std::ffi::CString>> =
 pub(crate) static WORKER_LOG_FILTER: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"warn"));
 pub(crate) static BACKEND_LOG_LEVEL: GucSetting<i32> = GucSetting::<i32>::new(0);
+pub(crate) static WORKER_MEMORY_LIMIT_MB: GucSetting<i32> = GucSetting::<i32>::new(0);
+pub(crate) static WORKER_SPILL_DIRECTORY: GucSetting<Option<std::ffi::CString>> =
+    GucSetting::<Option<std::ffi::CString>>::new(Some(c""));
 
 pub(crate) static CONTROL_SLOT_COUNT: GucSetting<i32> = GucSetting::<i32>::new(64);
 pub(crate) static CONTROL_BACKEND_TO_WORKER_CAPACITY: GucSetting<i32> =
@@ -53,6 +58,8 @@ pub struct HostConfig {
     pub log_path: String,
     pub worker_log_filter: String,
     pub backend_log_level: DiagnosticLogLevel,
+    pub worker_memory_limit_bytes: Option<usize>,
+    pub worker_spill_directory: Option<PathBuf>,
     pub control_slot_count: u32,
     pub control_backend_to_worker_capacity: usize,
     pub control_worker_to_backend_capacity: usize,
@@ -76,6 +83,12 @@ pub struct HostConfig {
 pub enum HostConfigError {
     #[error("GUC {name} must be positive, got {actual}")]
     NonPositive { name: &'static str, actual: i32 },
+    #[error("GUC {name} must be non-negative, got {actual}")]
+    Negative { name: &'static str, actual: i32 },
+    #[error("GUC pg_fusion.worker_memory_limit_mb is too large, got {actual}")]
+    WorkerMemoryLimitTooLarge { actual: u32 },
+    #[error("GUC pg_fusion.worker_spill_directory must be absolute when set, got {path}")]
+    RelativeWorkerSpillDirectory { path: String },
     #[error("scan backend-to-worker capacity must be at least {required}, got {actual}")]
     ScanInboundCapacityTooSmall { required: usize, actual: usize },
     #[error("scan worker-to-backend capacity must be at least {required}, got {actual}")]
@@ -129,6 +142,24 @@ pub fn register_gucs() {
         0,
         2,
         GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_fusion.worker_memory_limit_mb",
+        c"Worker DataFusion memory limit",
+        c"DataFusion worker memory limit in MiB; 0 keeps the default unbounded runtime and disables worker spill",
+        &WORKER_MEMORY_LIMIT_MB,
+        0,
+        i32::MAX,
+        GucContext::Postmaster,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"pg_fusion.worker_spill_directory",
+        c"Worker DataFusion spill directory",
+        c"Absolute root directory for worker-owned DataFusion spill files; empty uses the operating system temp directory",
+        &WORKER_SPILL_DIRECTORY,
+        GucContext::Postmaster,
         GucFlags::default(),
     );
 
@@ -273,6 +304,11 @@ pub fn host_config() -> Result<HostConfig, HostConfigError> {
         log_path: extension_log_path(),
         worker_log_filter: string_setting(&WORKER_LOG_FILTER, "warn"),
         backend_log_level: backend_log_level(),
+        worker_memory_limit_bytes: worker_memory_limit_bytes(nonnegative_u32(
+            "pg_fusion.worker_memory_limit_mb",
+            WORKER_MEMORY_LIMIT_MB.get(),
+        )?)?,
+        worker_spill_directory: worker_spill_directory()?,
         control_slot_count: positive_u32("pg_fusion.control_slot_count", CONTROL_SLOT_COUNT.get())?,
         control_backend_to_worker_capacity: positive_usize(
             "pg_fusion.control_backend_to_worker_capacity",
@@ -377,6 +413,10 @@ impl HostConfig {
     pub fn worker_runtime_config(&self) -> WorkerRuntimeConfig {
         WorkerRuntimeConfig {
             control_frame_capacity: self.control_backend_to_worker_capacity,
+            spill: WorkerSpillConfig::new(
+                self.worker_memory_limit_bytes,
+                self.worker_spill_directory.clone(),
+            ),
             ..WorkerRuntimeConfig::default()
         }
     }
@@ -458,6 +498,42 @@ fn positive_usize(name: &'static str, actual: i32) -> Result<usize, HostConfigEr
     Ok(actual as usize)
 }
 
+fn nonnegative_u32(name: &'static str, actual: i32) -> Result<u32, HostConfigError> {
+    if actual < 0 {
+        return Err(HostConfigError::Negative { name, actual });
+    }
+    Ok(actual as u32)
+}
+
+fn worker_memory_limit_bytes(memory_limit_mb: u32) -> Result<Option<usize>, HostConfigError> {
+    if memory_limit_mb == 0 {
+        return Ok(None);
+    }
+    (memory_limit_mb as usize)
+        .checked_mul(1024 * 1024)
+        .map(Some)
+        .ok_or(HostConfigError::WorkerMemoryLimitTooLarge {
+            actual: memory_limit_mb,
+        })
+}
+
+fn worker_spill_directory() -> Result<Option<PathBuf>, HostConfigError> {
+    normalize_worker_spill_directory(string_setting(&WORKER_SPILL_DIRECTORY, ""))
+}
+
+fn normalize_worker_spill_directory(raw: String) -> Result<Option<PathBuf>, HostConfigError> {
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(HostConfigError::RelativeWorkerSpillDirectory {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(Some(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +551,8 @@ mod tests {
             log_path: "/tmp/pg_fusion.log".into(),
             worker_log_filter: "warn".into(),
             backend_log_level: DiagnosticLogLevel::Trace,
+            worker_memory_limit_bytes: Some(128 * 1024 * 1024),
+            worker_spill_directory: Some(PathBuf::from("/tmp/pg_fusion_spill")),
             control_slot_count: 8,
             control_backend_to_worker_capacity: 4096,
             control_worker_to_backend_capacity: 4096,
@@ -506,11 +584,37 @@ mod tests {
         assert_eq!(backend.diagnostics.level, DiagnosticLogLevel::Trace);
         assert_eq!(backend.diagnostics.log_path.as_ref(), "/tmp/pg_fusion.log");
         assert_eq!(worker.control_frame_capacity, 4096);
+        assert_eq!(worker.spill.memory_limit_bytes, Some(128 * 1024 * 1024));
+        assert_eq!(worker.spill.root, PathBuf::from("/tmp/pg_fusion_spill"));
         assert_eq!(config.runtime_filter_pool_config().slot_count(), 16);
         assert_eq!(
             config.runtime_filter_pool_config().params().bit_count(),
             4096
         );
         assert_eq!(config.runtime_filter_pool_config().params().hash_count(), 3);
+    }
+
+    #[test]
+    fn worker_memory_limit_zero_disables_spill() {
+        assert_eq!(worker_memory_limit_bytes(0).unwrap(), None);
+        assert_eq!(
+            worker_memory_limit_bytes(64).unwrap(),
+            Some(64 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn worker_spill_directory_must_be_absolute_when_set() {
+        assert_eq!(normalize_worker_spill_directory("".into()).unwrap(), None);
+        assert_eq!(
+            normalize_worker_spill_directory("/tmp/pg_fusion_spill".into()).unwrap(),
+            Some(PathBuf::from("/tmp/pg_fusion_spill"))
+        );
+        assert_eq!(
+            normalize_worker_spill_directory("relative/path".into()).unwrap_err(),
+            HostConfigError::RelativeWorkerSpillDirectory {
+                path: "relative/path".into()
+            }
+        );
     }
 }
