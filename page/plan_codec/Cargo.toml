@@ -14,7 +14,7 @@ bytes = "1"
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
-datafusion-proto = "53.1"
+datafusion-proto = { workspace = true }
 df_functions = { path = "../../pg/df_functions", version = "25.0" }
 prost = "0.14"
 rmp = "0.8"
