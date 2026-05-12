@@ -69,6 +69,11 @@ importance: 0.8
   matching generation is `Ready`.
 - Results return as issued Arrow pages and are projected into PostgreSQL tuple
   slots through `pg/slot_import`.
+- Worker-originated execution failures send a bounded UTF-8 detail string in
+  `WorkerExecutionToBackend::FailExecution`, and the backend includes that text
+  in the SQL-facing `pg_fusion execution failed` error. Do not collapse these
+  failures back to `detail=None`; the worker log is diagnostic backup, not the
+  primary user-visible error channel.
 - The issuance permit pool is sized from `pg_fusion.page_count`; there is no
   separate host GUC for permit count.
 - Runtime metrics are global shared-memory counters exposed by

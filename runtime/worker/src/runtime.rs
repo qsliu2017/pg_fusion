@@ -865,11 +865,11 @@ impl TransportWorkerRuntime {
         peer: BackendLeaseSlot,
         message: WorkerToBackend,
     ) -> Result<CommitOutcome, WorkerRuntimeError> {
-        let written = encoded_len_worker_execution_to_backend(message);
+        let written = encoded_len_worker_execution_to_backend(&message);
         if written > self.scratch.len() {
             return Err(WorkerRuntimeError::ControlFrameTooLarge);
         }
-        let written = encode_worker_execution_to_backend_into(message, &mut self.scratch)?;
+        let written = encode_worker_execution_to_backend_into(&message, &mut self.scratch)?;
         let mut slot = self.transport.slot_for_backend_lease(peer)?;
         let mut tx = slot.to_backend_tx()?;
         Ok(tx.send_frame(&self.scratch[..written])?)

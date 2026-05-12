@@ -18,6 +18,8 @@ pub enum EncodeError {
     TooManyScanChannels { count: usize },
     #[error("scan failure message is too long: {actual} bytes exceeds maximum {maximum}")]
     ScanFailureMessageTooLong { actual: usize, maximum: usize },
+    #[error("execution failure detail is too long: {actual} bytes exceeds maximum {maximum}")]
+    ExecutionFailureDetailTooLong { actual: usize, maximum: usize },
     #[error("MsgPack encoding failed: {0}")]
     MsgPack(String),
     #[error("runtime envelope encoding failed: {0}")]

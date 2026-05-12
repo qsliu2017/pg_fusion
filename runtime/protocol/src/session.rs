@@ -44,6 +44,13 @@ pub const MIN_SCAN_WORKER_TO_BACKEND_RING_CAPACITY: usize = 256;
 /// - remaining text budget = `220`
 pub const MAX_SCAN_FAILURE_MESSAGE_LEN: usize = 220;
 
+/// Maximum UTF-8 byte length allowed for worker execution failure details.
+///
+/// Primary control slots default to 8192 bytes. Keeping execution failure
+/// details bounded leaves room for the runtime envelope and fixed fields while
+/// still preserving the actionable DataFusion/PostgreSQL error text.
+pub const MAX_EXECUTION_FAILURE_DETAIL_LEN: usize = 2048;
+
 /// How an incoming `session_epoch` compares to the local current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionDisposition {

@@ -59,8 +59,8 @@ fn encode_backend(message: BackendExecutionToWorker<'_>) -> Vec<u8> {
 }
 
 fn encode_worker_execution(message: WorkerExecutionToBackend) -> Vec<u8> {
-    let mut buf = vec![0u8; encoded_len_worker_execution_to_backend(message)];
-    let len = encode_worker_execution_to_backend_into(message, &mut buf).expect("encode");
+    let mut buf = vec![0u8; encoded_len_worker_execution_to_backend(&message)];
+    let len = encode_worker_execution_to_backend_into(&message, &mut buf).expect("encode");
     assert_eq!(len, buf.len());
     buf
 }
@@ -644,6 +644,45 @@ fn worker_fail_execution_round_trips_without_detail() {
 }
 
 #[test]
+fn worker_fail_execution_round_trips_with_detail() {
+    let message = WorkerExecutionToBackend::FailExecution {
+        session_epoch: 12,
+        code: ExecutionFailureCode::Internal,
+        detail: Some("DataFusion failed: resources exhausted".into()),
+    };
+    let encoded = encode_worker_execution(message);
+    let decoded = decode_worker_execution_to_backend(&encoded).expect("decode");
+    assert_eq!(
+        decoded,
+        WorkerExecutionToBackend::FailExecution {
+            session_epoch: 12,
+            code: ExecutionFailureCode::Internal,
+            detail: Some("DataFusion failed: resources exhausted".into()),
+        }
+    );
+}
+
+#[test]
+fn worker_fail_execution_rejects_too_long_detail() {
+    let detail = "x".repeat(MAX_EXECUTION_FAILURE_DETAIL_LEN + 1);
+    let message = WorkerExecutionToBackend::FailExecution {
+        session_epoch: 12,
+        code: ExecutionFailureCode::Internal,
+        detail: Some(detail),
+    };
+    let mut buf = vec![0_u8; MAX_EXECUTION_FAILURE_DETAIL_LEN + 64];
+    let err = encode_worker_execution_to_backend_into(&message, &mut buf)
+        .expect_err("too long execution failure detail");
+    assert_eq!(
+        err,
+        EncodeError::ExecutionFailureDetailTooLong {
+            actual: MAX_EXECUTION_FAILURE_DETAIL_LEN + 1,
+            maximum: MAX_EXECUTION_FAILURE_DETAIL_LEN,
+        }
+    );
+}
+
+#[test]
 fn encoded_len_matches_written_backend_message() {
     let message = BackendExecutionToWorker::CancelExecution { session_epoch: 3 };
     let expected = encoded_len_backend_execution_to_worker(message);
@@ -655,9 +694,9 @@ fn encoded_len_matches_written_backend_message() {
 #[test]
 fn encoded_len_matches_written_worker_execution_message() {
     let message = WorkerExecutionToBackend::CompleteExecution { session_epoch: 5 };
-    let expected = encoded_len_worker_execution_to_backend(message);
+    let expected = encoded_len_worker_execution_to_backend(&message);
     let mut buf = vec![0u8; expected];
-    let actual = encode_worker_execution_to_backend_into(message, &mut buf).expect("encode");
+    let actual = encode_worker_execution_to_backend_into(&message, &mut buf).expect("encode");
     assert_eq!(actual, expected);
 }
 

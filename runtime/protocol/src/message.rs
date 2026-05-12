@@ -151,7 +151,7 @@ impl BackendExecutionToWorkerRef<'_> {
 }
 
 /// Execution-level worker-to-backend control sent only on the primary slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerExecutionToBackend {
     /// Mark one execution as complete.
     CompleteExecution { session_epoch: u64 },
@@ -159,16 +159,16 @@ pub enum WorkerExecutionToBackend {
     FailExecution {
         session_epoch: u64,
         code: ExecutionFailureCode,
-        detail: Option<u64>,
+        detail: Option<String>,
     },
 }
 
 impl WorkerExecutionToBackend {
     /// Return the `session_epoch` targeted by this message.
-    pub fn session_epoch(self) -> u64 {
+    pub fn session_epoch(&self) -> u64 {
         match self {
             Self::CompleteExecution { session_epoch }
-            | Self::FailExecution { session_epoch, .. } => session_epoch,
+            | Self::FailExecution { session_epoch, .. } => *session_epoch,
         }
     }
 }

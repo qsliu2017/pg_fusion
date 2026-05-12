@@ -18,9 +18,10 @@ use crate::message::{
     WorkerExecutionToBackend, WorkerScanToBackend, WorkerScanToBackendRef,
 };
 use crate::msgpack::{
-    encode_into_with_len, encoded_len_with, read_optional_u64_from, read_str_from, read_u16_from,
-    read_u32_from, read_u64_from, read_u8_from, write_optional_u64_to, write_str_to, write_u16_to,
-    write_u32_to, write_u64_to, write_u8_to,
+    encode_into_with_len, encoded_len_with, read_optional_str_from, read_optional_u64_from,
+    read_str_from, read_u16_from, read_u32_from, read_u64_from, read_u8_from,
+    write_optional_str_to, write_optional_u64_to, write_str_to, write_u16_to, write_u32_to,
+    write_u64_to, write_u8_to,
 };
 use crate::scan::{
     write_producer_slice_to, write_scan_channel_slice_to, PlanFlowDescriptor, ScanFlowDescriptorRef,
@@ -34,7 +35,7 @@ pub fn encoded_len_backend_execution_to_worker(message: BackendExecutionToWorker
 }
 
 /// Return the exact encoded length of one worker-execution control message.
-pub fn encoded_len_worker_execution_to_backend(message: WorkerExecutionToBackend) -> usize {
+pub fn encoded_len_worker_execution_to_backend(message: &WorkerExecutionToBackend) -> usize {
     try_encoded_len_worker_execution_to_backend(message)
         .expect("protocol worker execution length must fit into usize")
 }
@@ -65,7 +66,7 @@ pub fn encode_backend_execution_to_worker_into(
 
 /// Encode one worker-execution control message into `out`.
 pub fn encode_worker_execution_to_backend_into(
-    message: WorkerExecutionToBackend,
+    message: &WorkerExecutionToBackend,
     out: &mut [u8],
 ) -> Result<usize, EncodeError> {
     encode_into_with_len(
@@ -174,7 +175,7 @@ pub fn decode_worker_execution_to_backend(
         WORKER_EXECUTION_FAIL_TAG => WorkerExecutionToBackend::FailExecution {
             session_epoch,
             code: ExecutionFailureCode::try_from(read_u8_from(&mut source)?)?,
-            detail: read_optional_u64_from(&mut source)?,
+            detail: read_optional_str_from(&mut source)?.map(ToOwned::to_owned),
         },
         actual => return Err(DecodeError::UnexpectedTag { actual }),
     };
@@ -254,7 +255,7 @@ fn try_encoded_len_backend_execution_to_worker(
 }
 
 fn try_encoded_len_worker_execution_to_backend(
-    message: WorkerExecutionToBackend,
+    message: &WorkerExecutionToBackend,
 ) -> Result<usize, EncodeError> {
     encoded_len_with(|sink| encode_worker_execution_to_backend_to(message, sink))
 }
@@ -323,7 +324,7 @@ fn encode_backend_execution_to_worker_to<W: std::io::Write>(
 }
 
 fn encode_worker_execution_to_backend_to<W: std::io::Write>(
-    message: WorkerExecutionToBackend,
+    message: &WorkerExecutionToBackend,
     sink: &mut W,
 ) -> Result<(), EncodeError> {
     match message {
@@ -333,21 +334,29 @@ fn encode_worker_execution_to_backend_to<W: std::io::Write>(
                 RuntimeMessageFamily::WorkerExecutionToBackend,
                 WORKER_EXECUTION_COMPLETE_TAG,
             )?;
-            write_u64_to(sink, session_epoch)?;
+            write_u64_to(sink, *session_epoch)?;
         }
         WorkerExecutionToBackend::FailExecution {
             session_epoch,
             code,
             detail,
         } => {
+            if let Some(detail) = detail {
+                if detail.len() > crate::MAX_EXECUTION_FAILURE_DETAIL_LEN {
+                    return Err(EncodeError::ExecutionFailureDetailTooLong {
+                        actual: detail.len(),
+                        maximum: crate::MAX_EXECUTION_FAILURE_DETAIL_LEN,
+                    });
+                }
+            }
             write_runtime_header_to(
                 sink,
                 RuntimeMessageFamily::WorkerExecutionToBackend,
                 WORKER_EXECUTION_FAIL_TAG,
             )?;
-            write_u64_to(sink, session_epoch)?;
-            write_u8_to(sink, code as u8)?;
-            write_optional_u64_to(sink, detail)?;
+            write_u64_to(sink, *session_epoch)?;
+            write_u8_to(sink, *code as u8)?;
+            write_optional_str_to(sink, detail.as_deref())?;
         }
     }
     Ok(())

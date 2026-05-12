@@ -35,8 +35,8 @@ use protocol::{
     encode_backend_scan_to_worker_into, encode_worker_scan_to_backend_into,
     encoded_len_backend_execution_to_worker, encoded_len_backend_scan_to_worker,
     encoded_len_worker_scan_to_backend, BackendExecutionToWorker, BackendScanToWorker,
-    ProducerRole, RuntimeMessageFamily, ScanChannelDescriptorWire, WorkerExecutionToBackend,
-    WorkerScanToBackend, WorkerScanToBackendRef,
+    ExecutionFailureCode, ProducerRole, RuntimeMessageFamily, ScanChannelDescriptorWire,
+    WorkerExecutionToBackend, WorkerScanToBackend, WorkerScanToBackendRef,
 };
 use scan_node::PgScanSpec;
 use transfer::PageTx;
@@ -824,12 +824,14 @@ fn handle_primary_control(
                     host_state_snapshot(state)
                 )
             });
-            let _ = BackendService::accept_fail_execution(slot_id, session_epoch, code, detail)?;
+            let _ = BackendService::accept_fail_execution(slot_id, session_epoch, code, None)?;
             state.execution_key = None;
             state.active_drivers.clear();
             state.pending_complete_session_epoch = None;
-            state.terminal_error = Some(format!(
-                "worker failed execution session_epoch={session_epoch} code={code:?} detail={detail:?}"
+            state.terminal_error = Some(worker_execution_failure_message(
+                session_epoch,
+                code,
+                detail.as_deref(),
             ));
             host_diag(DiagnosticLogLevel::Basic, || {
                 format!(
@@ -841,6 +843,19 @@ fn handle_primary_control(
         }
     }
     Ok(())
+}
+
+fn worker_execution_failure_message(
+    session_epoch: u64,
+    code: ExecutionFailureCode,
+    detail: Option<&str>,
+) -> String {
+    match detail.filter(|detail| !detail.is_empty()) {
+        Some(detail) => {
+            format!("worker failed execution session_epoch={session_epoch} code={code:?}: {detail}")
+        }
+        None => format!("worker failed execution session_epoch={session_epoch} code={code:?}"),
+    }
 }
 
 fn poll_scan_peers(state: &mut HostScanState) -> Result<bool, BackendServiceError> {
@@ -2202,5 +2217,25 @@ mod tests {
 
         assert_eq!(worker_count(&budgets, 1), 1);
         assert_eq!(worker_count(&budgets, 2), 3);
+    }
+
+    #[test]
+    fn worker_failure_message_includes_detail_text() {
+        assert_eq!(
+            worker_execution_failure_message(
+                42,
+                ExecutionFailureCode::Internal,
+                Some("DataFusion failed: resources exhausted"),
+            ),
+            "worker failed execution session_epoch=42 code=Internal: DataFusion failed: resources exhausted"
+        );
+    }
+
+    #[test]
+    fn worker_failure_message_omits_empty_detail() {
+        assert_eq!(
+            worker_execution_failure_message(42, ExecutionFailureCode::Internal, Some("")),
+            "worker failed execution session_epoch=42 code=Internal"
+        );
     }
 }

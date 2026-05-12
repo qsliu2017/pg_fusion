@@ -81,6 +81,26 @@ pub(crate) fn write_optional_u64_to<W: Write>(
     }
 }
 
+pub(crate) fn write_optional_str_to<W: Write>(
+    sink: &mut W,
+    value: Option<&str>,
+) -> Result<(), EncodeError> {
+    match value {
+        Some(value) => write_str_to(sink, value),
+        None => write_nil_to(sink),
+    }
+}
+
+pub(crate) fn read_optional_str_from<'a>(
+    source: &mut &'a [u8],
+) -> Result<Option<&'a str>, DecodeError> {
+    if source.first() == Some(&0xc0) {
+        *source = &source[1..];
+        return Ok(None);
+    }
+    read_str_from(source).map(Some)
+}
+
 pub(crate) fn read_optional_u64_from(source: &mut &[u8]) -> Result<Option<u64>, DecodeError> {
     match read_marker(source).map_err(|error| DecodeError::MsgPack(format!("{error:?}")))? {
         Marker::Null => Ok(None),

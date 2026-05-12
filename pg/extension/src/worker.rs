@@ -18,7 +18,10 @@ use issuance::{encode_issued_frame, IssuancePool, IssuedRx, IssuedTx};
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
 use pool::PagePool;
-use protocol::{ExecutionFailureCode, WorkerExecutionToBackend};
+use protocol::{
+    ExecutionFailureCode, WorkerExecutionToBackend, MAX_EXECUTION_FAILURE_DETAIL_LEN,
+    RUNTIME_ENVELOPE_HEADER_LEN,
+};
 use tracing::{debug, info, trace, warn, Level};
 use transfer::PageTx;
 
@@ -329,6 +332,50 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+fn worker_execution_failure_detail(
+    err: &WorkerRuntimeError,
+    control_frame_capacity: usize,
+) -> Option<String> {
+    let max_len = control_frame_capacity
+        .saturating_sub(worker_failure_detail_fixed_overhead())
+        .min(MAX_EXECUTION_FAILURE_DETAIL_LEN);
+    if max_len == 0 {
+        return None;
+    }
+    Some(truncate_utf8(&err.to_string(), max_len))
+}
+
+fn worker_failure_detail_fixed_overhead() -> usize {
+    RUNTIME_ENVELOPE_HEADER_LEN + 32
+}
+
+fn truncate_utf8(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        return value.to_string();
+    }
+
+    const SUFFIX: &str = "... [truncated]";
+    if max_len <= SUFFIX.len() {
+        return value
+            .char_indices()
+            .map(|(idx, ch)| (idx, ch.len_utf8()))
+            .take_while(|(idx, len)| idx + len <= max_len)
+            .map(|(idx, len)| &value[idx..idx + len])
+            .collect();
+    }
+
+    let prefix_len = max_len - SUFFIX.len();
+    let mut end = 0;
+    for (idx, ch) in value.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > prefix_len {
+            break;
+        }
+        end = next;
+    }
+    format!("{}{}", &value[..end], SUFFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +412,17 @@ mod tests {
 
     fn protocol_error(message: &str) -> WorkerRuntimeError {
         WorkerRuntimeError::ProtocolViolation(message.into())
+    }
+
+    #[test]
+    fn worker_failure_detail_truncates_to_frame_budget() {
+        let err = protocol_error("abcdefghijklmnopqrstuvwxyz");
+        let detail =
+            worker_execution_failure_detail(&err, worker_failure_detail_fixed_overhead() + 20)
+                .unwrap();
+
+        assert!(detail.len() <= 20);
+        assert!(detail.ends_with("... [truncated]"));
     }
 }
 
@@ -454,6 +512,10 @@ fn handle_steps(
                         steps.push_back(runtime.mark_execution_complete()?);
                     }
                     Err(err) => {
+                        let detail = worker_execution_failure_detail(
+                            &err,
+                            config.control_backend_to_worker_capacity,
+                        );
                         warn!(
                             component = "worker",
                             session_epoch = result.session_epoch,
@@ -466,7 +528,7 @@ fn handle_steps(
                             WorkerExecutionToBackend::FailExecution {
                                 session_epoch: result.session_epoch,
                                 code: ExecutionFailureCode::Internal,
-                                detail: None,
+                                detail,
                             },
                         )?;
                         metrics.add_elapsed(MetricId::WorkerTotalNs, worker_start);
