@@ -178,7 +178,7 @@ fn build_output_schema(source_schema: &DFSchema, scan: &CompiledScan) -> Result<
             )));
         }
         let (qualifier, field) = source_schema.qualified_field(index);
-        fields.push((qualifier.cloned(), Arc::new(field.clone())));
+        fields.push((qualifier.cloned(), field.clone()));
     }
     Ok(Arc::new(DFSchema::new_with_metadata(
         fields,

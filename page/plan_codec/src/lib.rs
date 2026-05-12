@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
+use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, TableReference};
 use datafusion_expr::logical_plan::{Extension, LogicalPlan};
@@ -442,7 +443,7 @@ impl PlanEncodeSession {
 
 /// Streaming decoder for one logical plan payload.
 pub struct PlanDecodeSession {
-    ctx: SessionContext,
+    ctx: Arc<TaskContext>,
     machine: fsm::decode_flow::StateMachine,
     control_buf: BytesMut,
     scan_specs_remaining: Option<usize>,
@@ -463,6 +464,7 @@ impl PlanDecodeSession {
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_format_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_quote_literal_udf());
         let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
+        let ctx = ctx.task_ctx();
         Self {
             ctx,
             machine: fsm::decode_flow::StateMachine::new(),
@@ -864,10 +866,7 @@ where
 }
 
 #[cfg(test)]
-fn decode_envelope_from<S>(
-    source: &mut S,
-    ctx: &SessionContext,
-) -> Result<PlanEnvelope, DecodeError>
+fn decode_envelope_from<S>(source: &mut S, ctx: &TaskContext) -> Result<PlanEnvelope, DecodeError>
 where
     S: Buf,
 {
@@ -982,7 +981,7 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[LogicalPlan],
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Extension> {
         Err(DataFusionError::Plan(
             "plan_codec does not decode logical extension nodes in nested protobuf payloads".into(),
@@ -1000,7 +999,7 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
         _buf: &[u8],
         _table_ref: &TableReference,
         _schema: datafusion::arrow::datatypes::SchemaRef,
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Arc<dyn datafusion::datasource::TableProvider>> {
         Err(DataFusionError::Plan(
             "plan_codec does not decode table providers".into(),
@@ -1063,7 +1062,7 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[LogicalPlan],
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Extension> {
         Err(DataFusionError::Plan(
             "plan_codec encode codec does not decode PgScanNode payloads".into(),
@@ -1092,7 +1091,7 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
         _buf: &[u8],
         _table_ref: &TableReference,
         _schema: datafusion::arrow::datatypes::SchemaRef,
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Arc<dyn datafusion::datasource::TableProvider>> {
         Err(DataFusionError::Plan(
             "plan_codec does not decode table providers".into(),
@@ -1163,7 +1162,7 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[LogicalPlan],
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Extension> {
         if buf.len() == PG_SCAN_ID_PAYLOAD_LEN
             && buf.first().copied() == Some(PG_SCAN_ID_PAYLOAD_VERSION)
@@ -1209,7 +1208,7 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
         _buf: &[u8],
         _table_ref: &TableReference,
         _schema: datafusion::arrow::datatypes::SchemaRef,
-        _ctx: &SessionContext,
+        _ctx: &TaskContext,
     ) -> DataFusionResult<Arc<dyn datafusion::datasource::TableProvider>> {
         Err(DataFusionError::Plan(
             "plan_codec does not decode table providers".into(),
@@ -1370,7 +1369,7 @@ where
 #[cfg(test)]
 fn decode_pg_scan_specs_from<S>(
     source: &mut S,
-    ctx: &SessionContext,
+    ctx: &TaskContext,
 ) -> Result<BTreeMap<PgScanId, Arc<PgScanSpec>>, DecodeError>
 where
     S: Buf,
@@ -1405,10 +1404,7 @@ where
     Ok(())
 }
 
-fn decode_pg_scan_spec_from<S>(
-    source: &mut S,
-    ctx: &SessionContext,
-) -> Result<PgScanSpec, DecodeError>
+fn decode_pg_scan_spec_from<S>(source: &mut S, ctx: &TaskContext) -> Result<PgScanSpec, DecodeError>
 where
     S: Buf,
 {
@@ -1479,7 +1475,7 @@ where
 
 fn decode_compiled_scan_from<S>(
     source: &mut S,
-    ctx: &SessionContext,
+    ctx: &TaskContext,
 ) -> Result<CompiledScan, DecodeError>
 where
     S: Buf,
@@ -1616,7 +1612,7 @@ where
 
 fn decode_residual_filters_from<S>(
     source: &mut S,
-    ctx: &SessionContext,
+    ctx: &TaskContext,
 ) -> Result<Vec<datafusion_expr::Expr>, DecodeError>
 where
     S: Buf,

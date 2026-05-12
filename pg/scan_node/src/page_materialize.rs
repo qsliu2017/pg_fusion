@@ -26,7 +26,7 @@ use futures::StreamExt;
 #[derive(Debug)]
 pub struct PageMaterializeExec {
     input: Arc<dyn ExecutionPlan>,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
 }
 
 impl PageMaterializeExec {
@@ -55,7 +55,7 @@ impl ExecutionPlan for PageMaterializeExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
@@ -86,8 +86,8 @@ impl ExecutionPlan for PageMaterializeExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.statistics()
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        self.input.partition_statistics(partition)
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -259,17 +259,17 @@ mod tests {
     #[derive(Debug)]
     struct TestExec {
         name: &'static str,
-        props: PlanProperties,
+        props: Arc<PlanProperties>,
     }
 
     impl TestExec {
         fn new(name: &'static str, schema: SchemaRef) -> Self {
-            let props = PlanProperties::new(
+            let props = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            );
+            ));
             Self { name, props }
         }
     }
@@ -278,7 +278,7 @@ mod tests {
     struct TestUnaryExec {
         name: &'static str,
         input: Arc<dyn ExecutionPlan>,
-        props: PlanProperties,
+        props: Arc<PlanProperties>,
     }
 
     impl TestUnaryExec {
@@ -303,7 +303,7 @@ mod tests {
             self
         }
 
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.props
         }
 
@@ -333,8 +333,8 @@ mod tests {
             ))
         }
 
-        fn statistics(&self) -> Result<Statistics> {
-            self.input.statistics()
+        fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+            self.input.partition_statistics(partition)
         }
 
         fn maintains_input_order(&self) -> Vec<bool> {
@@ -361,7 +361,7 @@ mod tests {
             self
         }
 
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.props
         }
 
@@ -388,7 +388,7 @@ mod tests {
             Err(DataFusionError::Plan("TestExec is not executable".into()))
         }
 
-        fn statistics(&self) -> Result<Statistics> {
+        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
             Ok(Statistics::new_unknown(self.schema().as_ref()))
         }
     }

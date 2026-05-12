@@ -9,7 +9,7 @@ use arrow_schema::{DataType, Field, Schema};
 use bytes::BytesMut;
 use datafusion::prelude::SessionContext;
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion_common::{Column, DFSchema, TableReference};
+use datafusion_common::{Column, DFSchema, NullEquality, TableReference};
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::logical_plan::{
     build_join_schema, EmptyRelation, Extension as LogicalExtension, Filter, Join, JoinConstraint,
@@ -159,7 +159,8 @@ fn join_plan(
         join_type,
         join_constraint: JoinConstraint::On,
         schema,
-        null_equals_null: false,
+        null_equality: NullEquality::NullEqualsNothing,
+        null_aware: false,
     })
 }
 
@@ -715,8 +716,9 @@ fn rejects_missing_pg_scan_spec_reference() {
     let plan = simple_scan_plan();
     let bytes = encode_bytes(&plan);
     let ctx = SessionContext::new();
+    let task_ctx = ctx.task_ctx();
     let mut source = Bytes::from(bytes);
-    let mut envelope = decode_envelope_from(&mut source, &ctx).expect("decode envelope");
+    let mut envelope = decode_envelope_from(&mut source, &task_ctx).expect("decode envelope");
     envelope.pg_scan_specs.clear();
 
     let mut sink = BytesMut::new();
@@ -765,8 +767,9 @@ fn rejects_malformed_pg_scan_reference_payload() {
 
     let bytes = encode_bytes(&plan);
     let ctx = SessionContext::new();
+    let task_ctx = ctx.task_ctx();
     let mut source = Bytes::from(bytes);
-    let mut envelope = decode_envelope_from(&mut source, &ctx).expect("decode envelope");
+    let mut envelope = decode_envelope_from(&mut source, &task_ctx).expect("decode envelope");
 
     if let Some(LogicalPlanType::Extension(extension)) =
         envelope.logical_plan.logical_plan_type.as_mut()

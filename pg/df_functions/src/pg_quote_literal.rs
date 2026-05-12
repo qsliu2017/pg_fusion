@@ -12,7 +12,7 @@ use datafusion_expr::{
 use crate::pg_format::quote_literal;
 
 /// PostgreSQL-compatible `quote_literal(text)` scalar function.
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub struct PgQuoteLiteral {
     signature: Signature,
 }

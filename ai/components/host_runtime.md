@@ -45,7 +45,9 @@ importance: 0.8
   execution directories on success, failure, or cancel. Disabled spill does not
   create directories or run spill garbage collection. This is not PostgreSQL
   `BufFile` storage and does not honor `temp_tablespaces`, `temp_file_limit`,
-  or ResourceOwner cleanup.
+  or ResourceOwner cleanup. With DataFusion 53, this covers sort and row-hash
+  aggregate spill paths; ordinary `HashJoinExec` remains non-spilling and fails
+  under the finite pool when it cannot reserve memory.
 - Worker execution lives in `runtime/worker` and consumes scan pages as Arrow
   batches through `page/import`. Transport scan streams use a bounded
   DataFusion batch channel and short idle polling interval so scan threads can

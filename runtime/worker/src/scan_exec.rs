@@ -145,7 +145,7 @@ pub struct WorkerPgScanExec {
     page_kind: transfer::MessageKind,
     page_flags: u16,
     tuning: WorkerScanTuning,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
 }
 
 impl WorkerPgScanExec {
@@ -159,12 +159,12 @@ impl WorkerPgScanExec {
         page_flags: u16,
         tuning: WorkerScanTuning,
     ) -> Self {
-        let props = PlanProperties::new(
+        let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             producers,
             session_epoch,
@@ -194,7 +194,7 @@ impl WorkerPgScanExec {
 impl DisplayAs for WorkerPgScanExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default => {
+            DisplayFormatType::Default | DisplayFormatType::TreeRender => {
                 write!(f, "WorkerPgScanExec: scan_id={}", self.spec.scan_id.get())
             }
             DisplayFormatType::Verbose => write!(
@@ -218,7 +218,7 @@ impl ExecutionPlan for WorkerPgScanExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
@@ -261,7 +261,7 @@ impl ExecutionPlan for WorkerPgScanExec {
         })
     }
 
-    fn statistics(&self) -> DFResult<Statistics> {
+    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
         Ok(Statistics::new_unknown(&self.output_schema))
     }
 }

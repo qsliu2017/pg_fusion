@@ -25,6 +25,12 @@ pub(crate) fn render_literal(literal: &ScalarValue) -> Option<String> {
             || Some("NULL".into()),
             |value| value.is_finite().then(|| value.to_string()),
         ),
+        ScalarValue::Decimal32(value, precision, scale) => {
+            render_decimal_literal(value.map(|value| value.to_string()), *precision, *scale)
+        }
+        ScalarValue::Decimal64(value, precision, scale) => {
+            render_decimal_literal(value.map(|value| value.to_string()), *precision, *scale)
+        }
         ScalarValue::Decimal128(value, precision, scale) => {
             render_decimal_literal(value.map(|value| value.to_string()), *precision, *scale)
         }
@@ -94,7 +100,8 @@ pub(crate) fn render_literal(literal: &ScalarValue) -> Option<String> {
         | ScalarValue::LargeList(_)
         | ScalarValue::Struct(_)
         | ScalarValue::Map(_)
-        | ScalarValue::Union(_, _, _) => None,
+        | ScalarValue::Union(_, _, _)
+        | ScalarValue::RunEndEncoded(_, _, _) => None,
     }
 }
 

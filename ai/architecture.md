@@ -153,7 +153,8 @@ page-backed Arrow batches.
    The worker garbage-collects pg_fusion-marked stale spill directories in that
    cluster namespace at generation startup; disabled spill does not create
    directories or run garbage collection. v1 spill is independent of PostgreSQL
-   temp-file accounting.
+   temp-file accounting; on DataFusion 53 it applies to sort and row-hash
+   aggregate spill paths, while ordinary `HashJoinExec` remains non-spilling.
 6. Backend imports result pages with `slot_import` and projects rows into
    PostgreSQL tuple slots. Result transport supports Decimal128 fixed-width
    pages for PostgreSQL `numeric` outputs produced by worker-side expressions

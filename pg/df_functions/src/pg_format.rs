@@ -11,7 +11,7 @@ use datafusion_expr::{
 
 /// PostgreSQL-compatible `format(text, ...)` scalar function for the supported
 /// pg_fusion text surface.
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub struct PgFormat {
     signature: Signature,
 }

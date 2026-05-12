@@ -122,17 +122,17 @@ mod tests {
     struct CountingExec {
         calls: Arc<AtomicUsize>,
         batch: RecordBatch,
-        props: PlanProperties,
+        props: Arc<PlanProperties>,
     }
 
     impl CountingExec {
         fn new(calls: Arc<AtomicUsize>, batch: RecordBatch) -> Self {
-            let props = PlanProperties::new(
+            let props = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(batch.schema()),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            );
+            ));
             Self {
                 calls,
                 batch,
@@ -156,7 +156,7 @@ mod tests {
             self
         }
 
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.props
         }
 
@@ -192,7 +192,7 @@ mod tests {
             }))
         }
 
-        fn statistics(&self) -> Result<Statistics> {
+        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
             Ok(Statistics::new_unknown(&self.batch.schema()))
         }
     }
@@ -428,7 +428,7 @@ pub struct MaterializedCteExec {
     projection: Option<Vec<usize>>,
     fetch: Option<usize>,
     state: Arc<MaterializedCteState>,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
 }
 
 impl MaterializedCteExec {
@@ -441,12 +441,12 @@ impl MaterializedCteExec {
         fetch: Option<usize>,
         state: Arc<MaterializedCteState>,
     ) -> Self {
-        let props = PlanProperties::new(
+        let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             cte_id,
             name,
@@ -463,7 +463,9 @@ impl MaterializedCteExec {
 impl DisplayAs for MaterializedCteExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         match t {
-            DisplayFormatType::Default => write!(f, "CteScanExec: {}", self.name),
+            DisplayFormatType::Default | DisplayFormatType::TreeRender => {
+                write!(f, "CteScanExec: {}", self.name)
+            }
             DisplayFormatType::Verbose => write!(
                 f,
                 "CteScanExec: cte_id={}, name={}, projection={:?}, fetch={:?}",
@@ -485,7 +487,7 @@ impl ExecutionPlan for MaterializedCteExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
@@ -534,7 +536,7 @@ impl ExecutionPlan for MaterializedCteExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn statistics(&self) -> Result<Statistics> {
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
         Ok(Statistics::new_unknown(&self.output_schema))
     }
 

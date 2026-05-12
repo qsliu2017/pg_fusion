@@ -145,7 +145,7 @@ struct ExplainPgScanExec {
     pg_explain: Arc<str>,
     planned_parallelism: Option<ExplainScanParallelism>,
     actual_parallelism: Option<ExplainScanParallelism>,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
 }
 
 impl ExplainPgScanExec {
@@ -156,12 +156,12 @@ impl ExplainPgScanExec {
         actual_parallelism: Option<ExplainScanParallelism>,
     ) -> Self {
         let output_schema = spec.arrow_schema();
-        let props = PlanProperties::new(
+        let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             spec,
             output_schema,
@@ -210,7 +210,7 @@ impl ExecutionPlan for ExplainPgScanExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
@@ -241,7 +241,7 @@ impl ExecutionPlan for ExplainPgScanExec {
         ))
     }
 
-    fn statistics(&self) -> DFResult<Statistics> {
+    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
         Ok(Statistics::new_unknown(&self.output_schema))
     }
 }

@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use datafusion_common::tree_node::{Transformed, TreeNode};
-use datafusion_common::{Column, DFSchemaRef, DataFusionError};
+use datafusion_common::{Column, DFSchemaRef, DataFusionError, NullEquality};
 use datafusion_expr::logical_plan::{
     build_join_schema, Join, JoinConstraint, JoinType, LogicalPlan, Projection, SubqueryAlias,
     TableScan,
@@ -236,7 +236,8 @@ fn is_reorderable_join(join: &Join) -> bool {
     join.join_type == JoinType::Inner
         && join.join_constraint == JoinConstraint::On
         && join.filter.is_none()
-        && !join.null_equals_null
+        && join.null_equality == NullEquality::NullEqualsNothing
+        && !join.null_aware
 }
 
 fn table_leaf(plan: &LogicalPlan) -> Result<Option<Leaf>, PlanBuildError> {
@@ -512,7 +513,8 @@ fn build_join_tree(
         join_type: JoinType::Inner,
         join_constraint: JoinConstraint::On,
         schema: datafusion_common::DFSchemaRef::new(schema),
-        null_equals_null: false,
+        null_equality: NullEquality::NullEqualsNothing,
+        null_aware: false,
     }))
 }
 

@@ -14,7 +14,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
     RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
-use datafusion_common::{DataFusionError, Result as DFResult};
+use datafusion_common::{DataFusionError, NullEquality, Result as DFResult};
 use datafusion_execution::TaskContext;
 use datafusion_expr::JoinType;
 use datafusion_physical_expr::expressions::Column;
@@ -56,7 +56,10 @@ fn maybe_wrap_hash_join(
     pool: RuntimeFilterPool,
     metrics: RuntimeMetrics,
 ) -> DFResult<Option<Arc<dyn ExecutionPlan>>> {
-    if *join.join_type() != JoinType::Inner || join.null_equals_null() {
+    if *join.join_type() != JoinType::Inner
+        || join.null_equality() != NullEquality::NullEqualsNothing
+        || join.null_aware
+    {
         return Ok(None);
     }
     if join.left().output_partitioning().partition_count() != 1 {
@@ -109,9 +112,12 @@ fn maybe_wrap_hash_join(
         join.on().to_vec(),
         join.filter().cloned(),
         join.join_type(),
-        join.projection.clone(),
+        join.projection
+            .as_ref()
+            .map(|projection| projection.to_vec()),
         *join.partition_mode(),
-        join.null_equals_null(),
+        join.null_equality(),
+        join.null_aware,
     )?)))
 }
 
@@ -140,7 +146,7 @@ struct RuntimeFilterBuildExec {
     key_index: usize,
     key_type: RuntimeFilterKeyType,
     state: Arc<RuntimeFilterBuildState>,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
 }
 
 impl RuntimeFilterBuildExec {
@@ -169,7 +175,9 @@ impl RuntimeFilterBuildExec {
 impl DisplayAs for RuntimeFilterBuildExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+            DisplayFormatType::Default
+            | DisplayFormatType::Verbose
+            | DisplayFormatType::TreeRender => {
                 write!(f, "RuntimeFilterBuildExec: key_index={}", self.key_index)
             }
         }
@@ -185,7 +193,7 @@ impl ExecutionPlan for RuntimeFilterBuildExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
@@ -226,8 +234,8 @@ impl ExecutionPlan for RuntimeFilterBuildExec {
         }))
     }
 
-    fn statistics(&self) -> DFResult<Statistics> {
-        self.input.statistics()
+    fn partition_statistics(&self, partition: Option<usize>) -> DFResult<Statistics> {
+        self.input.partition_statistics(partition)
     }
 }
 

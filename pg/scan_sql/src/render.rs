@@ -9,6 +9,7 @@ use crate::literal::{render_cast_target, render_literal, render_string_literal};
 use crate::quote::quote_identifier;
 use crate::types::{PgRelation, RenderedExpr};
 
+#[allow(deprecated)]
 pub(crate) fn render_expr(
     expr: &Expr,
     schema: &Schema,
@@ -20,7 +21,7 @@ pub(crate) fn render_expr(
         Expr::Column(column) => {
             render_column(column, schema, relation, identifier_max_bytes).map(Some)
         }
-        Expr::Literal(literal) => Ok(render_literal(literal).map(RenderedExpr::new)),
+        Expr::Literal(literal, _) => Ok(render_literal(literal).map(RenderedExpr::new)),
         Expr::BinaryExpr(binary) => {
             render_binary_expr(binary, schema, relation, identifier_max_bytes)
         }
@@ -86,7 +87,8 @@ pub(crate) fn render_expr(
         | Expr::GroupingSet(_)
         | Expr::Placeholder(_)
         | Expr::OuterReferenceColumn(_, _)
-        | Expr::Unnest(_) => Ok(None),
+        | Expr::Unnest(_)
+        | Expr::SetComparison(_) => Ok(None),
     }
 }
 
@@ -419,5 +421,6 @@ fn render_operator(operator: Operator) -> Option<&'static str> {
         Operator::StringConcat => "||",
         Operator::AtArrow => "@>",
         Operator::ArrowAt => "<@",
+        _ => return None,
     })
 }

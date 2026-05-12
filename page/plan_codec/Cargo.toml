@@ -14,9 +14,9 @@ bytes = "1"
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
-datafusion-proto = "44.0"
+datafusion-proto = "53.1"
 df_functions = { path = "../../pg/df_functions", version = "25.0" }
-prost = "0.13"
+prost = "0.14"
 rmp = "0.8"
 rust-fsm = { version = "0.7", features = ["diagram"] }
 scan_node = { path = "../../pg/scan_node", version = "25.0" }

@@ -12,7 +12,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, ArrayRef};
 use arrow_buffer::i256;
-use arrow_schema::{DataType, Field, IntervalUnit};
+use arrow_schema::{DataType, Field, FieldRef, IntervalUnit};
 use datafusion_common::{exec_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::utils::format_state_name;
@@ -32,7 +32,7 @@ const USECS_PER_SEC: f64 = 1_000_000.0;
 const TS_PREC_INV: f64 = 1_000_000.0;
 
 /// PostgreSQL-compatible AVG aggregate for the type surface pg_fusion supports.
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub struct PgAvg {
     signature: Signature,
 }
@@ -89,7 +89,7 @@ impl AggregateUDFImpl for PgAvg {
         if acc_args.is_distinct {
             return DistinctAvgAccumulator::try_new(&data_type).map(|acc| Box::new(acc) as _);
         }
-        match (&data_type, acc_args.return_type) {
+        match (&data_type, acc_args.return_type()) {
             (
                 DataType::Int16 | DataType::Int32 | DataType::Int64,
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
@@ -109,103 +109,109 @@ impl AggregateUDFImpl for PgAvg {
                 "{} accumulator does not support ({} -> {})",
                 self.name(),
                 data_type,
-                acc_args.return_type
+                acc_args.return_type()
             ),
         }
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
-        let input_type = single_arg_type(self.name(), args.input_types)?;
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        let input_type = single_arg_field_type(self.name(), args.input_fields)?;
         if args.is_distinct {
-            return Ok(vec![Field::new_list(
+            return Ok(vec![Arc::new(Field::new_list(
                 format_state_name(args.name, "distinct_values"),
                 Field::new_list_field(input_type.clone(), true),
                 false,
-            )]);
+            ))]);
         }
 
-        let count_field = Field::new(
-            format_state_name(args.name, "count"),
-            DataType::UInt64,
-            true,
-        );
+        let count_field = || {
+            Arc::new(Field::new(
+                format_state_name(args.name, "count"),
+                DataType::UInt64,
+                true,
+            ))
+        };
 
-        match (input_type, args.return_type) {
+        match (input_type, args.return_type()) {
             (
                 DataType::Int16 | DataType::Int32 | DataType::Int64,
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
             ) => Ok(vec![
-                count_field,
-                Field::new(
+                count_field(),
+                Arc::new(Field::new(
                     format_state_name(args.name, "sum"),
                     DataType::Decimal256(INT_AVG_SUM_PRECISION, INT_AVG_SUM_SCALE),
                     true,
-                ),
+                )),
             ]),
             (
                 DataType::Decimal128(_, scale),
                 DataType::Decimal128(NUMERIC_AVG_PRECISION, NUMERIC_AVG_SCALE),
             ) => Ok(vec![
-                count_field,
-                Field::new(
+                count_field(),
+                Arc::new(Field::new(
                     format_state_name(args.name, "sum"),
                     DataType::Decimal256(
                         DECIMAL_AVG_SUM_PRECISION,
                         decimal_avg_state_scale(*scale),
                     ),
                     true,
-                ),
+                )),
             ]),
             (DataType::Float64, DataType::Float64) => Ok(vec![
-                count_field,
-                Field::new(
+                count_field(),
+                Arc::new(Field::new(
                     format_state_name(args.name, "finite_sum"),
                     DataType::Float64,
                     true,
-                ),
-                Field::new(
+                )),
+                Arc::new(Field::new(
                     format_state_name(args.name, "finite_sxx"),
                     DataType::Float64,
                     true,
-                ),
-                Field::new(
+                )),
+                Arc::new(Field::new(
                     format_state_name(args.name, "nan_count"),
                     DataType::UInt64,
                     true,
-                ),
-                Field::new(
+                )),
+                Arc::new(Field::new(
                     format_state_name(args.name, "pos_inf_count"),
                     DataType::UInt64,
                     true,
-                ),
-                Field::new(
+                )),
+                Arc::new(Field::new(
                     format_state_name(args.name, "neg_inf_count"),
                     DataType::UInt64,
                     true,
-                ),
+                )),
             ]),
             (
                 DataType::Interval(IntervalUnit::MonthDayNano),
                 DataType::Interval(IntervalUnit::MonthDayNano),
             ) => Ok(vec![
-                count_field,
-                Field::new(
+                count_field(),
+                Arc::new(Field::new(
                     format_state_name(args.name, "months"),
                     DataType::Int64,
                     true,
-                ),
-                Field::new(format_state_name(args.name, "days"), DataType::Int64, true),
-                Field::new(
+                )),
+                Arc::new(Field::new(
+                    format_state_name(args.name, "days"),
+                    DataType::Int64,
+                    true,
+                )),
+                Arc::new(Field::new(
                     format_state_name(args.name, "time_micros"),
                     DataType::Int64,
                     true,
-                ),
+                )),
             ]),
             _ => exec_err!(
                 "{} state does not support ({} -> {})",
                 self.name(),
                 input_type,
-                args.return_type
+                args.return_type()
             ),
         }
     }
@@ -228,6 +234,13 @@ fn single_arg_type<'a>(name: &str, arg_types: &'a [DataType]) -> Result<&'a Data
         return exec_err!("{name} expects exactly one argument");
     }
     Ok(&arg_types[0])
+}
+
+fn single_arg_field_type<'a>(name: &str, fields: &'a [FieldRef]) -> Result<&'a DataType> {
+    if fields.len() != 1 {
+        return exec_err!("{name} expects exactly one argument");
+    }
+    Ok(fields[0].data_type())
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

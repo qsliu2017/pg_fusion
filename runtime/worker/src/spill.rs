@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use control_transport::BackendLeaseSlot;
 use datafusion_execution::{
-    disk_manager::DiskManagerConfig, memory_pool::FairSpillPool, runtime_env::RuntimeEnvBuilder,
+    disk_manager::{DiskManagerBuilder, DiskManagerMode},
+    memory_pool::FairSpillPool,
+    runtime_env::RuntimeEnvBuilder,
     TaskContext,
 };
 use tracing::warn;
@@ -132,9 +134,10 @@ impl WorkerSpillRuntime {
         })?;
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::new(FairSpillPool::new(memory_limit_bytes)))
-            .with_disk_manager(DiskManagerConfig::NewSpecified(vec![
-                spill_path.to_path_buf()
-            ]))
+            .with_disk_manager_builder(
+                DiskManagerBuilder::default()
+                    .with_mode(DiskManagerMode::Directories(vec![spill_path.to_path_buf()])),
+            )
             .build_arc()?;
         Ok(Arc::new(TaskContext::default().with_runtime(runtime)))
     }

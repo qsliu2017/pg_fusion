@@ -39,7 +39,7 @@ use datafusion_sql::parser::{DFParser, Statement as DFStatement};
 use datafusion_sql::planner::SqlToRel;
 use datafusion_sql::sqlparser::ast::{
     visit_expressions_mut, Cte, CteAsMaterialized, DataType as SqlDataType, Expr as SqlExpr, Ident,
-    ObjectName, Query, Statement as SqlStatement, Visit, Visitor, With,
+    ObjectName, ObjectNamePart, Query, Statement as SqlStatement, Visit, Visitor, With,
 };
 use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion_sql::sqlparser::parser::ParserError;
@@ -267,8 +267,11 @@ fn is_postgres_unknown_type(data_type: &SqlDataType) -> bool {
     };
     modifiers.is_empty()
         && name.0.len() == 1
-        && name.0[0].value.eq_ignore_ascii_case("unknown")
-        && name.0[0].quote_style.is_none()
+        && matches!(
+            &name.0[0],
+            ObjectNamePart::Identifier(ident)
+                if ident.value.eq_ignore_ascii_case("unknown") && ident.quote_style.is_none()
+        )
 }
 
 fn ensure_query_statement(statement: &DFStatement) -> Result<(), PlanBuildError> {
@@ -498,9 +501,9 @@ fn is_decimal_type(data_type: &DataType) -> bool {
 
 fn string_literal_is_special_numeric(expr: &Expr) -> bool {
     let value = match expr {
-        Expr::Literal(ScalarValue::Utf8(Some(value)))
-        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)))
-        | Expr::Literal(ScalarValue::Utf8View(Some(value))) => value,
+        Expr::Literal(ScalarValue::Utf8(Some(value)), _)
+        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _)
+        | Expr::Literal(ScalarValue::Utf8View(Some(value)), _) => value,
         _ => return false,
     };
     matches!(
@@ -687,8 +690,8 @@ impl Visitor for CteReferenceCounter<'_> {
     type Break = ();
 
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
-        if relation.0.len() == 1 {
-            let name = normalize_ident(relation.0[0].clone());
+        if let [ObjectNamePart::Identifier(ident)] = relation.0.as_slice() {
+            let name = normalize_ident(ident.clone());
             if self.names.contains(&name) {
                 *self.counts.entry(name).or_default() += 1;
             }
