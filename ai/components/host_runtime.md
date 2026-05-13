@@ -86,7 +86,9 @@ importance: 0.8
   frame-read-to-DataFusion-batch-delivery time. Runtime filter metrics count
   allocations, ready publications, pool exhaustion, build rows, probed rows,
   rejected rows, and probe rows that passed unfiltered because a filter was not
-  ready.
+  ready. Worker DataFusion spill metrics are summed from the executed physical
+  plan tree after execution and exposed as global spill count, spilled row, and
+  spilled byte counters.
 - Backend scan timing is always on and intentionally coarse: `scan_page_fill_ns`
   covers successful emitted page fills, with cheap prepare/finish buckets and a
   retry counter. It does not instrument slot-to-Arrow internals; use external

@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
 use ::worker::{
-    DecodedInbound, ResultPageEmitter, ResultPageProducerConfig, ResultPageStep,
-    ScanIngressProvider, TransportScanBatchSource, TransportWorkerRuntime, WorkerRuntimeCore,
-    WorkerRuntimeError, WorkerRuntimeStep, WorkerSpillRuntime,
+    record_datafusion_spill_metrics, DecodedInbound, ResultPageEmitter, ResultPageProducerConfig,
+    ResultPageStep, ScanIngressProvider, TransportScanBatchSource, TransportWorkerRuntime,
+    WorkerRuntimeCore, WorkerRuntimeError, WorkerRuntimeStep, WorkerSpillRuntime,
 };
 use backend_service::{BackendService, StandaloneScanProducerInput};
 use control_transport::WorkerTransport;
@@ -614,9 +614,9 @@ async fn execute_physical_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<(), WorkerRuntimeError> {
     let spill_dir = spill_runtime.execution_dir(peer, session_epoch)?;
-    {
+    let execution_result: Result<(), WorkerRuntimeError> = async {
         let task_ctx = spill_runtime.task_context(&spill_dir)?;
-        let stream = execute_stream(plan, task_ctx)?;
+        let stream = execute_stream(Arc::clone(&plan), task_ctx)?;
         let page_tx = PageTx::new(page_pool);
         let payload_capacity = u32::try_from(page_tx.payload_capacity()).map_err(|_| {
             WorkerRuntimeError::ProtocolViolation("result payload capacity exceeds u32".into())
@@ -673,7 +673,11 @@ async fn execute_physical_plan(
                 None => break,
             }
         }
+        Ok(())
     }
+    .await;
+    record_datafusion_spill_metrics(plan.as_ref(), metrics);
+    execution_result?;
     spill_dir.cleanup()?;
 
     Ok(())

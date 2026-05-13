@@ -167,6 +167,9 @@ Interpretation:
 | `worker_result_page_fill_ns` | Worker time spent encoding DataFusion output `RecordBatch` rows into successful result pages. |
 | `worker_result_pages_total` | Number of result data pages sent from worker to backend. Terminal result close/control frames are not counted here. |
 | `worker_result_bytes_sent_total` | Payload bytes sent in result data pages from worker to backend. |
+| `worker_spill_count_total` | Number of DataFusion operator spill events observed after worker physical-plan execution. |
+| `worker_spilled_rows_total` | Number of rows DataFusion operators reported as spilled by worker physical-plan execution. |
+| `worker_spilled_bytes_total` | Bytes DataFusion operators reported as spilled by worker physical-plan execution. |
 | `result_w2b_wait_ns` | Time from worker stamping a result page after send until the backend observes the same page descriptor. This approximates worker-to-backend data-plane handoff latency. |
 | `result_w2b_wait_total` | Number of result page observations included in `result_w2b_wait_ns`. |
 | `result_page_read_ns` | Backend-side time spent accepting/importing a result page frame into result ingress. |

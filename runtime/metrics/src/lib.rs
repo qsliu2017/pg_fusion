@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pool::PageDescriptor;
 
 const METRICS_MAGIC: u64 = 0x5047_4655_4D45_5431;
-const METRICS_VERSION: u32 = 10;
+const METRICS_VERSION: u32 = 11;
 const NO_STAMP: u64 = 0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +109,9 @@ pub enum MetricId {
     WorkerResultPageFillNs,
     WorkerResultPagesTotal,
     WorkerResultBytesSentTotal,
+    WorkerSpillCountTotal,
+    WorkerSpilledRowsTotal,
+    WorkerSpilledBytesTotal,
     ResultW2bWaitNs,
     ResultW2bWaitTotal,
     ResultPageReadNs,
@@ -346,6 +349,27 @@ pub const METRIC_DESCRIPTORS: [MetricDescriptor; METRIC_COUNT] = [
         id: MetricId::WorkerResultBytesSentTotal,
         component: "worker",
         metric: "worker_result_bytes_sent_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Bytes,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillCountTotal,
+        component: "worker",
+        metric: "worker_spill_count_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpilledRowsTotal,
+        component: "worker",
+        metric: "worker_spilled_rows_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpilledBytesTotal,
+        component: "worker",
+        metric: "worker_spilled_bytes_total",
         kind: MetricKind::Counter,
         unit: MetricUnit::Bytes,
     },

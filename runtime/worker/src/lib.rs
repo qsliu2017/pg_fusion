@@ -8,6 +8,7 @@ mod runtime_filter_plan;
 pub mod scan_exec;
 pub mod scan_flow_driver;
 pub mod spill;
+pub mod spill_metrics;
 pub mod transport_scan_source;
 
 pub use control_transport::{BackendLeaseId, BackendLeaseSlot};
@@ -26,4 +27,7 @@ pub use scan_exec::{
 };
 pub use scan_flow_driver::{OpenScanControl, ScanFlowDriver, ScanFlowDriverStep, ScanFlowOpen};
 pub use spill::{ExecutionSpillDir, WorkerSpillConfig, WorkerSpillRuntime};
+pub use spill_metrics::{
+    datafusion_spill_metrics, record_datafusion_spill_metrics, DataFusionSpillMetrics,
+};
 pub use transport_scan_source::{ScanIngressProvider, TransportScanBatchSource};

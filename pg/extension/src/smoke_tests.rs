@@ -1073,6 +1073,11 @@ pub(crate) fn metrics_smoke() {
             )), ',',
             coalesce(max(value) FILTER (WHERE metric = 'result_pages_read_total'), 0), ',',
             coalesce(max(value) FILTER (WHERE metric = 'backend_rows_returned_total'), 0), ',',
+            count(*) FILTER (WHERE metric IN (
+                'worker_spill_count_total',
+                'worker_spilled_rows_total',
+                'worker_spilled_bytes_total'
+            )), ',',
             coalesce(max(reset_epoch), 0)
         )
         FROM pg_fusion_metrics()
@@ -1083,7 +1088,7 @@ pub(crate) fn metrics_smoke() {
         .split(',')
         .map(|part| part.parse::<i64>().expect("metric value must be integer"))
         .collect::<Vec<_>>();
-    assert_eq!(parts.len(), 16);
+    assert_eq!(parts.len(), 17);
     assert!(
         parts[0] > 0,
         "scan_pages_sent_total must be positive: {summary}"
@@ -1140,7 +1145,11 @@ pub(crate) fn metrics_smoke() {
         parts[14] > 0,
         "backend_rows_returned_total must be positive: {summary}"
     );
-    assert_eq!(parts[15], before_epoch);
+    assert_eq!(
+        parts[15], 3,
+        "all worker spill metric rows must be present: {summary}"
+    );
+    assert_eq!(parts[16], before_epoch);
 
     let after_epoch: i64 =
         simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
