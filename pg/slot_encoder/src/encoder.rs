@@ -27,6 +27,7 @@ pub enum SlotFilterKeyType {
     Float32,
     Float64,
     Utf8View,
+    Uuid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,6 +39,7 @@ pub enum SlotFilterKeyRef<'a> {
     Float32(f32),
     Float64(f64),
     Utf8(&'a [u8]),
+    Uuid(&'a [u8]),
 }
 
 /// Direct writer from PostgreSQL `TupleTableSlot` rows into an
@@ -460,6 +462,10 @@ pub unsafe fn with_filter_key<R>(
             Ok(f(Some(SlotFilterKeyRef::Float64(unsafe {
                 read_f64(datum, attr.attbyval)
             }))))
+        }
+        SlotFilterKeyType::Uuid if attr.atttypid == pg_sys::UUIDOID => {
+            let bytes = unsafe { read_fixed_bytes(datum, 16, source_index)? };
+            Ok(f(Some(SlotFilterKeyRef::Uuid(bytes))))
         }
         SlotFilterKeyType::Utf8View if attr.atttypid == pg_sys::NAMEOID => {
             let bytes = unsafe { read_name_bytes(datum, source_index)? };

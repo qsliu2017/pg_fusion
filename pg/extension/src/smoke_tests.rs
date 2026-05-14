@@ -1183,6 +1183,94 @@ pub(crate) fn metrics_smoke() {
     assert!(after_epoch > before_epoch);
 }
 
+pub(crate) fn runtime_filter_uuid_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let build_table = "pg_temp.pgf_runtime_filter_uuid_build";
+    let probe_table = "pg_temp.pgf_runtime_filter_uuid_probe";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {build_table} AS
+            SELECT ('00000000-0000-0000-0000-' || lpad(g::text, 12, '0'))::uuid AS u
+            FROM generate_series(1, 3) AS g;
+
+            CREATE TEMP TABLE {probe_table} AS
+            SELECT ('00000000-0000-0000-0000-' || lpad(g::text, 12, '0'))::uuid AS u
+            FROM generate_series(1, 100000) AS g;
+            "
+        ),
+    );
+
+    let before_epoch: i64 =
+        simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
+            .expect("runtime filter metrics reset must return an epoch")
+            .parse()
+            .expect("runtime filter metrics reset epoch must be an integer");
+
+    let count: i64 = simple_query_first_column_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT count(*)::bigint
+            FROM {build_table} AS b
+            JOIN {probe_table} AS p ON b.u = p.u
+            "
+        ),
+    )
+    .expect("uuid runtime filter join must return one row")
+    .parse()
+    .expect("uuid runtime filter join count must be an integer");
+    assert_eq!(count, 3);
+
+    let summary = simple_query_first_column_tx(
+        &mut tx,
+        "\
+        SELECT concat(
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_allocated_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_ready_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_build_rows_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_rows_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_rows_rejected_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_pass_unfiltered_total'), 0), ',',
+            coalesce(max(reset_epoch), 0)
+        )
+        FROM pg_fusion_metrics()
+        ",
+    )
+    .expect("runtime filter metric summary must return one row");
+    let parts = summary
+        .split(',')
+        .map(|part| {
+            part.parse::<i64>()
+                .expect("runtime filter metric value must be integer")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 7);
+    assert!(
+        parts[0] > 0,
+        "runtime filter should be allocated for uuid join: {summary}"
+    );
+    assert!(
+        parts[1] > 0,
+        "runtime filter should become ready for uuid join: {summary}"
+    );
+    assert!(
+        parts[2] >= 3,
+        "runtime filter should observe uuid build rows: {summary}"
+    );
+    assert!(
+        parts[3] >= 100000,
+        "runtime filter should probe uuid rows: {summary}"
+    );
+    assert!(
+        parts[4] > 0,
+        "runtime filter should reject non-matching uuid probe rows: {summary}"
+    );
+    assert_eq!(parts[6], before_epoch);
+}
+
 pub(crate) fn spill_metrics_smoke() {
     if std::env::var("PG_FUSION_SPILL_PG_TEST").as_deref() != Ok("1") {
         return;

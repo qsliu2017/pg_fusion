@@ -704,8 +704,15 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             attbyval: false,
             attalign: b'c',
         },
+        TestAttr {
+            oid: pg_sys::UUIDOID,
+            attlen: 16,
+            attbyval: false,
+            attalign: b'c',
+        },
     ];
     let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let uuid = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6];
     let mut slot = OwnedSlot::from_cells(
         tuple_desc.ptr,
         vec![
@@ -716,6 +723,7 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             MockCell::Utf8(short_varlena(b"varchar")),
             MockCell::Utf8(short_varlena(b"bpchar")),
             MockCell::Name(name_data("name_key")),
+            MockCell::Uuid(Box::new(uuid)),
         ],
     );
 
@@ -781,6 +789,20 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
         .expect("utf8 key");
         assert_eq!(key.as_deref(), Some(expected));
     }
+
+    let uuid_key = unsafe {
+        with_filter_key(
+            slot.as_mut_ptr(),
+            7,
+            SlotFilterKeyType::Uuid,
+            |value| match value {
+                Some(SlotFilterKeyRef::Uuid(bytes)) => Some(bytes.to_vec()),
+                other => panic!("unexpected uuid key: {other:?}"),
+            },
+        )
+    }
+    .expect("uuid key");
+    assert_eq!(uuid_key.as_deref(), Some(&uuid[..]));
 }
 
 #[test]

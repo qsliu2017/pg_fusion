@@ -118,9 +118,10 @@ page-backed Arrow batches.
    `HashJoinExec` nodes unless `pg_fusion.runtime_filter_enable` is disabled.
    The v1 path is intentionally narrow: one `Inner` hash join equi-key, `Column =
    Column`, single-partition build side, supported key type (`bool`,
-   `int2`/`int4`/`int8`, `float4`/`float8`, or text-like `Utf8View` from
-   `text`/`varchar`/`bpchar`/`name`), and a `WorkerPgScanExec` on the probe
-   side. The worker registers the target by `(session_epoch,
+   `int2`/`int4`/`int8`, `float4`/`float8`, `uuid`, or text-like `Utf8View`
+   from `text`/`varchar`/`bpchar`/`name`), and a `WorkerPgScanExec` on the
+   probe side, possibly below DataFusion's schema-preserving `CooperativeExec`
+   wrapper. The worker registers the target by `(session_epoch,
    scan_id, output_column)` in shared memory, fills the filter while consuming
    the build side, and publishes it when that stream reaches EOF. If the pool
    is full the join runs unchanged and increments a diagnostic counter.

@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow_array::{
-    Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
-    RecordBatch, StringViewArray,
+    Array, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, RecordBatch, StringViewArray,
 };
 use arrow_schema::DataType;
+use datafusion::physical_plan::coop::CooperativeExec;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -74,7 +75,7 @@ fn maybe_wrap_hash_join(
     let Some(right_col) = right_expr.as_any().downcast_ref::<Column>() else {
         return Ok(None);
     };
-    let Some(right_scan) = join.right().as_any().downcast_ref::<WorkerPgScanExec>() else {
+    let Some(right_scan) = runtime_filter_probe_scan(join.right()) else {
         return Ok(None);
     };
     let Some(key_type) = key_type_for_pair(
@@ -121,6 +122,16 @@ fn maybe_wrap_hash_join(
     )?)))
 }
 
+fn runtime_filter_probe_scan(plan: &Arc<dyn ExecutionPlan>) -> Option<&WorkerPgScanExec> {
+    if let Some(scan) = plan.as_any().downcast_ref::<WorkerPgScanExec>() {
+        return Some(scan);
+    }
+    if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+        return runtime_filter_probe_scan(cooperative.input());
+    }
+    None
+}
+
 fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
     match data_type {
         DataType::Boolean => Some(RuntimeFilterKeyType::Boolean),
@@ -130,6 +141,7 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
         DataType::Float32 => Some(RuntimeFilterKeyType::Float32),
         DataType::Float64 => Some(RuntimeFilterKeyType::Float64),
         DataType::Utf8View => Some(RuntimeFilterKeyType::Utf8View),
+        DataType::FixedSizeBinary(width) if *width == 16 => Some(RuntimeFilterKeyType::Uuid),
         _ => None,
     }
 }
@@ -358,6 +370,24 @@ impl RuntimeFilterBuildState {
                     &self.handle,
                 )?
             }
+            RuntimeFilterKeyType::Uuid => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter Uuid build key had non-FixedSizeBinary array".into(),
+                        )
+                    })?;
+                if array.value_length() != 16 {
+                    return Err(DataFusionError::Execution(format!(
+                        "runtime filter Uuid build key had FixedSizeBinary({}) array",
+                        array.value_length()
+                    )));
+                }
+                insert_hashes(array, |idx| hash_bytes_key(array.value(idx)), &self.handle)?
+            }
         };
         self.metrics
             .add(MetricId::RuntimeFilterBuildRowsTotal, rows);
@@ -541,6 +571,7 @@ mod tests {
             (DataType::Float32, RuntimeFilterKeyType::Float32),
             (DataType::Float64, RuntimeFilterKeyType::Float64),
             (DataType::Utf8View, RuntimeFilterKeyType::Utf8View),
+            (DataType::FixedSizeBinary(16), RuntimeFilterKeyType::Uuid),
         ];
 
         for (data_type, expected) in cases {
@@ -554,6 +585,20 @@ mod tests {
         assert_eq!(key_type_for_pair(&DataType::Utf8, &DataType::Utf8), None);
         assert_eq!(
             key_type_for_pair(&DataType::Binary, &DataType::Binary),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(
+                &DataType::FixedSizeBinary(15),
+                &DataType::FixedSizeBinary(15)
+            ),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(
+                &DataType::FixedSizeBinary(17),
+                &DataType::FixedSizeBinary(17)
+            ),
             None
         );
     }
@@ -583,6 +628,19 @@ mod tests {
             DataType::Utf8View,
             Arc::new(StringViewArray::from(vec![Some("alpha"), None])),
             hash_bytes_key(b"alpha"),
+        );
+        let uuid = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        build_and_probe(
+            RuntimeFilterKeyType::Uuid,
+            DataType::FixedSizeBinary(16),
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(uuid), None].into_iter(),
+                    16,
+                )
+                .expect("uuid array"),
+            ),
+            hash_bytes_key(&uuid),
         );
     }
 }

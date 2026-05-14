@@ -114,7 +114,7 @@ helpers for supported runtime-filter key families:
 - `hash_float32_key` for `float4`
 - `hash_float64_key` for `float8`
 - `hash_bytes_key` for text-like `Utf8View` keys (`text`, `varchar`,
-  `bpchar`, and `name` in the extension scan schema)
+  `bpchar`, and `name` in the extension scan schema) and `uuid`
 
 Both build and probe sides must call the same helper for the same logical key
 type. Float helpers normalize signed zero and NaNs so the two sides agree on

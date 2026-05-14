@@ -35,6 +35,8 @@ pub enum RuntimeFilterKeyType {
     Float64 = 6,
     /// UTF-8 byte key.
     Utf8View = 7,
+    /// PostgreSQL `uuid` key stored as 16 bytes.
+    Uuid = 8,
 }
 
 impl RuntimeFilterKeyType {
@@ -47,6 +49,7 @@ impl RuntimeFilterKeyType {
             5 => Some(Self::Float32),
             6 => Some(Self::Float64),
             7 => Some(Self::Utf8View),
+            8 => Some(Self::Uuid),
             _ => None,
         }
     }
