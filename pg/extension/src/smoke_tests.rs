@@ -1021,6 +1021,9 @@ pub(crate) fn metrics_smoke() {
     let mut tx = smoke_transaction(&mut client);
     let table_name = "pg_temp.pgf_metrics_smoke";
     reset_heap_fixture(&mut tx, table_name);
+    let worker_memory_limit =
+        simple_query_first_column_tx(&mut tx, "SHOW pg_fusion.worker_memory_limit_mb")
+            .expect("worker memory limit GUC must be visible");
 
     let before_epoch: i64 =
         simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
@@ -1083,6 +1086,16 @@ pub(crate) fn metrics_smoke() {
                 'worker_spill_dirs_removed_total',
                 'worker_spill_cleanup_errors_total'
             )), ',',
+            coalesce(sum(value) FILTER (WHERE metric IN (
+                'worker_spill_count_total',
+                'worker_spilled_rows_total',
+                'worker_spilled_bytes_total',
+                'worker_spill_leaked_files_total',
+                'worker_spill_leaked_bytes_total',
+                'worker_spill_dirs_created_total',
+                'worker_spill_dirs_removed_total',
+                'worker_spill_cleanup_errors_total'
+            )), 0), ',',
             coalesce(max(reset_epoch), 0)
         )
         FROM pg_fusion_metrics()
@@ -1093,7 +1106,7 @@ pub(crate) fn metrics_smoke() {
         .split(',')
         .map(|part| part.parse::<i64>().expect("metric value must be integer"))
         .collect::<Vec<_>>();
-    assert_eq!(parts.len(), 17);
+    assert_eq!(parts.len(), 18);
     assert!(
         parts[0] > 0,
         "scan_pages_sent_total must be positive: {summary}"
@@ -1154,7 +1167,13 @@ pub(crate) fn metrics_smoke() {
         parts[15], 8,
         "all worker spill metric rows must be present: {summary}"
     );
-    assert_eq!(parts[16], before_epoch);
+    if worker_memory_limit == "0" {
+        assert_eq!(
+            parts[16], 0,
+            "worker spill metrics must stay zero when worker spill is disabled: {summary}"
+        );
+    }
+    assert_eq!(parts[17], before_epoch);
 
     let after_epoch: i64 =
         simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
