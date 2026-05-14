@@ -65,8 +65,9 @@ importance: 0.8
   from a shared-memory pool and records `(session_epoch, scan_id,
   output_column, key_type)` metadata there. Backend scan producers, including
   dynamic standalone scan workers, attach probes by `(session_epoch, scan_id)`
-  at scan open and test supported bool, integer, float, uuid, and text-like
-  keys before Arrow encoding. No control-ring message is needed for readiness;
+  at scan open and test supported bool, integer, float, uuid, binary, and
+  text-like keys before Arrow encoding. No control-ring message is needed for
+  readiness;
   probes read the shared lifecycle word and pass rows unfiltered until the
   matching generation is `Ready`.
 - Results return as issued Arrow pages and are projected into PostgreSQL tuple

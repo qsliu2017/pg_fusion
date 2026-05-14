@@ -458,6 +458,7 @@ fn slot_filter_key_type(key_type: RuntimeFilterKeyType) -> SlotFilterKeyType {
         RuntimeFilterKeyType::Float64 => SlotFilterKeyType::Float64,
         RuntimeFilterKeyType::Utf8View => SlotFilterKeyType::Utf8View,
         RuntimeFilterKeyType::Uuid => SlotFilterKeyType::Uuid,
+        RuntimeFilterKeyType::BinaryView => SlotFilterKeyType::BinaryView,
     }
 }
 
@@ -471,6 +472,7 @@ fn hash_slot_filter_key(value: SlotFilterKeyRef<'_>) -> u64 {
         SlotFilterKeyRef::Float64(value) => hash_float64_key(value),
         SlotFilterKeyRef::Utf8(value) => hash_bytes_key(value),
         SlotFilterKeyRef::Uuid(value) => hash_bytes_key(value),
+        SlotFilterKeyRef::Binary(value) => hash_bytes_key(value),
     }
 }
 

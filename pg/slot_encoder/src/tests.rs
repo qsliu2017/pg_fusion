@@ -710,9 +710,16 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             attbyval: false,
             attalign: b'c',
         },
+        TestAttr {
+            oid: pg_sys::BYTEAOID,
+            attlen: -1,
+            attbyval: false,
+            attalign: b'i',
+        },
     ];
     let tuple_desc = OwnedTupleDesc::new(&attrs);
     let uuid = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6];
+    let binary = b"\x00binary key".to_vec();
     let mut slot = OwnedSlot::from_cells(
         tuple_desc.ptr,
         vec![
@@ -724,6 +731,7 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             MockCell::Utf8(short_varlena(b"bpchar")),
             MockCell::Name(name_data("name_key")),
             MockCell::Uuid(Box::new(uuid)),
+            MockCell::Binary(short_varlena(&binary)),
         ],
     );
 
@@ -803,6 +811,20 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
     }
     .expect("uuid key");
     assert_eq!(uuid_key.as_deref(), Some(&uuid[..]));
+
+    let binary_key = unsafe {
+        with_filter_key(
+            slot.as_mut_ptr(),
+            8,
+            SlotFilterKeyType::BinaryView,
+            |value| match value {
+                Some(SlotFilterKeyRef::Binary(bytes)) => Some(bytes.to_vec()),
+                other => panic!("unexpected binary key: {other:?}"),
+            },
+        )
+    }
+    .expect("binary key");
+    assert_eq!(binary_key.as_deref(), Some(binary.as_slice()));
 }
 
 #[test]

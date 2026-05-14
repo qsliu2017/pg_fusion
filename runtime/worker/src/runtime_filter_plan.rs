@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow_array::{
-    Array, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, RecordBatch, StringViewArray,
+    Array, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array,
+    Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
 };
 use arrow_schema::DataType;
 use datafusion::physical_plan::coop::CooperativeExec;
@@ -142,6 +142,7 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
         DataType::Float64 => Some(RuntimeFilterKeyType::Float64),
         DataType::Utf8View => Some(RuntimeFilterKeyType::Utf8View),
         DataType::FixedSizeBinary(width) if *width == 16 => Some(RuntimeFilterKeyType::Uuid),
+        DataType::BinaryView => Some(RuntimeFilterKeyType::BinaryView),
         _ => None,
     }
 }
@@ -388,6 +389,18 @@ impl RuntimeFilterBuildState {
                 }
                 insert_hashes(array, |idx| hash_bytes_key(array.value(idx)), &self.handle)?
             }
+            RuntimeFilterKeyType::BinaryView => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<BinaryViewArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter BinaryView build key had non-BinaryView array".into(),
+                        )
+                    })?;
+                insert_hashes(array, |idx| hash_bytes_key(array.value(idx)), &self.handle)?
+            }
         };
         self.metrics
             .add(MetricId::RuntimeFilterBuildRowsTotal, rows);
@@ -572,6 +585,7 @@ mod tests {
             (DataType::Float64, RuntimeFilterKeyType::Float64),
             (DataType::Utf8View, RuntimeFilterKeyType::Utf8View),
             (DataType::FixedSizeBinary(16), RuntimeFilterKeyType::Uuid),
+            (DataType::BinaryView, RuntimeFilterKeyType::BinaryView),
         ];
 
         for (data_type, expected) in cases {
@@ -641,6 +655,15 @@ mod tests {
                 .expect("uuid array"),
             ),
             hash_bytes_key(&uuid),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::BinaryView,
+            DataType::BinaryView,
+            Arc::new(BinaryViewArray::from(vec![
+                Some(&b"\x00\x01binary"[..]),
+                None,
+            ])),
+            hash_bytes_key(b"\x00\x01binary"),
         );
     }
 }

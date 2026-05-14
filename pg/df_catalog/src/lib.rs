@@ -312,6 +312,7 @@ fn oid_to_arrow_type(oid: pg_sys::Oid) -> Option<arrow_schema::DataType> {
         o if o == pg_sys::FLOAT4OID => Some(DataType::Float32),
         o if o == pg_sys::FLOAT8OID => Some(DataType::Float64),
         o if o == pg_sys::UUIDOID => Some(DataType::FixedSizeBinary(16)),
+        o if o == pg_sys::BYTEAOID => Some(DataType::BinaryView),
         o if o == pg_sys::DATEOID => Some(DataType::Date32),
         o if o == pg_sys::TIMEOID => Some(DataType::Time64(TimeUnit::Microsecond)),
         o if o == pg_sys::TIMESTAMPOID || o == pg_sys::TIMESTAMPTZOID => {
@@ -351,6 +352,7 @@ mod tests {
             (pg_sys::FLOAT4OID, DataType::Float32),
             (pg_sys::FLOAT8OID, DataType::Float64),
             (pg_sys::UUIDOID, DataType::FixedSizeBinary(16)),
+            (pg_sys::BYTEAOID, DataType::BinaryView),
             (pg_sys::DATEOID, DataType::Date32),
             (pg_sys::TIMEOID, DataType::Time64(TimeUnit::Microsecond)),
             (
