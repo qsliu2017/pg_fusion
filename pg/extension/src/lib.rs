@@ -159,6 +159,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_spill_metrics_smoke() {
+        super::smoke_tests::spill_metrics_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_pg_compat_allowlist() {
         super::pg_compat::pg_compat_allowlist();
     }
@@ -170,6 +175,10 @@ pub mod pg_test {
 
     #[must_use]
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec!["shared_preload_libraries = 'pg_fusion'"]
+        let mut options = vec!["shared_preload_libraries = 'pg_fusion'"];
+        if std::env::var("PG_FUSION_SPILL_PG_TEST").is_ok_and(|value| value == "1") {
+            options.push("pg_fusion.worker_memory_limit_mb = 128");
+        }
+        options
     }
 }

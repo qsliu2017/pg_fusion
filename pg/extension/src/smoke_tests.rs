@@ -1163,3 +1163,104 @@ pub(crate) fn metrics_smoke() {
             .expect("second metrics reset epoch must be an integer");
     assert!(after_epoch > before_epoch);
 }
+
+pub(crate) fn spill_metrics_smoke() {
+    if std::env::var("PG_FUSION_SPILL_PG_TEST").as_deref() != Ok("1") {
+        return;
+    }
+
+    let mut client = smoke_client();
+    let memory_limit =
+        simple_query_first_column_client(&mut client, "SHOW pg_fusion.worker_memory_limit_mb")
+            .expect("worker memory limit GUC must be visible");
+    assert_eq!(
+        memory_limit, "128",
+        "spill metrics smoke requires finite worker memory"
+    );
+
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_spill_metrics_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "CREATE TEMP TABLE {table_name} AS \
+             SELECT g::int AS k, repeat(md5(g::text), 8) AS payload \
+             FROM generate_series(1, 200000) AS g"
+        ),
+    );
+
+    let before_epoch: i64 =
+        simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
+            .expect("spill metrics reset must return an epoch")
+            .parse()
+            .expect("spill metrics reset epoch must be an integer");
+
+    let max_row_number: i64 = simple_query_first_column_tx(
+        &mut tx,
+        &format!(
+            "SELECT max(rn)::bigint \
+             FROM ( \
+               SELECT row_number() OVER (ORDER BY payload) AS rn \
+               FROM {table_name} \
+             ) AS ordered_src"
+        ),
+    )
+    .expect("spill metrics window-sort query must return one row")
+    .parse()
+    .expect("spill metrics window-sort query must return one bigint value");
+    assert_eq!(max_row_number, 200000);
+
+    let summary = simple_query_first_column_tx(
+        &mut tx,
+        "\
+        SELECT concat(
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_count_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spilled_rows_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spilled_bytes_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_dirs_created_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_dirs_removed_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_leaked_files_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_leaked_bytes_total'), 0), ',',
+            coalesce(max(value) FILTER (WHERE metric = 'worker_spill_cleanup_errors_total'), 0), ',',
+            coalesce(max(reset_epoch), 0)
+        )
+        FROM pg_fusion_metrics()
+        ",
+    )
+    .expect("spill metrics summary must return one row");
+    let parts = summary
+        .split(',')
+        .map(|part| {
+            part.parse::<i64>()
+                .expect("spill metric value must be integer")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 9);
+    assert!(
+        parts[0] > 0,
+        "worker spill count must be positive: {summary}"
+    );
+    assert!(
+        parts[1] > 0,
+        "worker spilled rows must be positive: {summary}"
+    );
+    assert!(
+        parts[2] > 0,
+        "worker spilled bytes must be positive: {summary}"
+    );
+    assert_eq!(
+        parts[3], 1,
+        "one execution spill directory must be created: {summary}"
+    );
+    assert_eq!(
+        parts[4], 1,
+        "one execution spill directory must be removed: {summary}"
+    );
+    assert_eq!(parts[5], 0, "spill files must not leak: {summary}");
+    assert_eq!(parts[6], 0, "spill bytes must not leak: {summary}");
+    assert_eq!(
+        parts[7], 0,
+        "spill cleanup must not report errors: {summary}"
+    );
+    assert_eq!(parts[8], before_epoch);
+}

@@ -108,6 +108,7 @@ jobs:
           cargo llvm-cov clean
           cargo pgrx test pg${{ env.PG_MAJOR }} -p pg_test --no-default-features
           cargo pgrx test pg${{ env.PG_MAJOR }} -p pg_fusion --features pg_test pg_fusion_simple_select_smoke
+          PG_FUSION_SPILL_PG_TEST=1 cargo pgrx test pg${{ env.PG_MAJOR }} -p pg_fusion --features pg_test pg_fusion_spill_metrics_smoke
           cargo llvm-cov report --lcov --output-path pgrx_lcov.info
 
       - name: Upload pgrx coverage to Codecov

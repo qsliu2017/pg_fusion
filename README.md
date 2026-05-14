@@ -93,6 +93,7 @@ Run pgrx tests:
 ```sh
 cargo pgrx test pg17 -p pg_fusion --features pg_test
 cargo pgrx test pg17 -p pg_test
+PG_FUSION_SPILL_PG_TEST=1 cargo pgrx test pg17 -p pg_fusion --features pg_test pg_fusion_spill_metrics_smoke
 ```
 
 For the Postgres-side page pipeline benchmark under `pg_test`, see
