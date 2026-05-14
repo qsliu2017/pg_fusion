@@ -165,6 +165,8 @@ same cluster namespace on the next worker start. When the memory limit is `0`,
 the worker does not create spill directories or run spill garbage collection.
 This v1 spill path is pg_fusion-owned OS temp storage; it does not use
 PostgreSQL `temp_tablespaces`, `temp_file_limit`, or `ResourceOwner` cleanup.
+Spill totals and cleanup diagnostics are exposed through `pg_fusion_metrics()`
+as `worker_spill_*` counters.
 
 `pg_fusion.scan_batch_channel_capacity` and
 `pg_fusion.scan_idle_poll_interval_us` are `Userset` GUCs despite being shown in

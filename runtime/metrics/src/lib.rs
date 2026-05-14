@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pool::PageDescriptor;
 
 const METRICS_MAGIC: u64 = 0x5047_4655_4D45_5431;
-const METRICS_VERSION: u32 = 11;
+const METRICS_VERSION: u32 = 12;
 const NO_STAMP: u64 = 0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +112,11 @@ pub enum MetricId {
     WorkerSpillCountTotal,
     WorkerSpilledRowsTotal,
     WorkerSpilledBytesTotal,
+    WorkerSpillLeakedFilesTotal,
+    WorkerSpillLeakedBytesTotal,
+    WorkerSpillDirsCreatedTotal,
+    WorkerSpillDirsRemovedTotal,
+    WorkerSpillCleanupErrorsTotal,
     ResultW2bWaitNs,
     ResultW2bWaitTotal,
     ResultPageReadNs,
@@ -372,6 +377,41 @@ pub const METRIC_DESCRIPTORS: [MetricDescriptor; METRIC_COUNT] = [
         metric: "worker_spilled_bytes_total",
         kind: MetricKind::Counter,
         unit: MetricUnit::Bytes,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillLeakedFilesTotal,
+        component: "worker",
+        metric: "worker_spill_leaked_files_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillLeakedBytesTotal,
+        component: "worker",
+        metric: "worker_spill_leaked_bytes_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Bytes,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillDirsCreatedTotal,
+        component: "worker",
+        metric: "worker_spill_dirs_created_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillDirsRemovedTotal,
+        component: "worker",
+        metric: "worker_spill_dirs_removed_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
+    },
+    MetricDescriptor {
+        id: MetricId::WorkerSpillCleanupErrorsTotal,
+        component: "worker",
+        metric: "worker_spill_cleanup_errors_total",
+        kind: MetricKind::Counter,
+        unit: MetricUnit::Count,
     },
     MetricDescriptor {
         id: MetricId::ResultW2bWaitNs,

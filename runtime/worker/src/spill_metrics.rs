@@ -1,4 +1,5 @@
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion_execution::TaskContext;
 use metrics::{MetricId, RuntimeMetrics};
 
 /// Aggregated DataFusion operator spill metrics for one physical plan tree.
@@ -39,6 +40,19 @@ pub fn datafusion_spill_metrics(plan: &dyn ExecutionPlan) -> DataFusionSpillMetr
 /// Add DataFusion spill metrics from a physical plan tree to pg_fusion metrics.
 pub fn record_datafusion_spill_metrics(plan: &dyn ExecutionPlan, metrics: RuntimeMetrics) {
     datafusion_spill_metrics(plan).record(metrics);
+}
+
+/// Add any DataFusion spill files/bytes still active after execution to leak counters.
+pub fn record_datafusion_spill_leaks(task_ctx: &TaskContext, metrics: RuntimeMetrics) {
+    let progress = task_ctx.runtime_env().disk_manager.spilling_progress();
+    metrics.add(
+        MetricId::WorkerSpillLeakedFilesTotal,
+        usize_to_u64(progress.active_files_count),
+    );
+    metrics.add(
+        MetricId::WorkerSpillLeakedBytesTotal,
+        progress.current_bytes,
+    );
 }
 
 fn collect_datafusion_spill_metrics(plan: &dyn ExecutionPlan, totals: &mut DataFusionSpillMetrics) {
@@ -140,9 +154,16 @@ mod tests {
         assert!(totals.spill_count > 0, "expected DataFusion sort spill");
         assert!(totals.spilled_rows > 0, "expected spilled rows");
         assert!(totals.spilled_bytes > 0, "expected spilled bytes");
+        let spill_progress = worker_task_ctx
+            .runtime_env()
+            .disk_manager
+            .spilling_progress();
+        assert_eq!(spill_progress.active_files_count, 0);
+        assert_eq!(spill_progress.current_bytes, 0);
 
         let (_region, metrics) = MetricsRegion::new();
         record_datafusion_spill_metrics(plan.as_ref(), metrics);
+        record_datafusion_spill_leaks(worker_task_ctx.as_ref(), metrics);
         assert_eq!(
             metrics.get(MetricId::WorkerSpillCountTotal),
             totals.spill_count
@@ -155,11 +176,40 @@ mod tests {
             metrics.get(MetricId::WorkerSpilledBytesTotal),
             totals.spilled_bytes
         );
+        assert_eq!(metrics.get(MetricId::WorkerSpillLeakedFilesTotal), 0);
+        assert_eq!(metrics.get(MetricId::WorkerSpillLeakedBytesTotal), 0);
 
         let dir_path = spill_dir.path().expect("spill dir").to_path_buf();
         spill_dir.cleanup()?;
         assert!(!dir_path.exists());
         assert_eq!(worker_task_ctx.runtime_env().memory_pool.reserved(), 0);
+        drop(spill_runtime);
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn records_active_spill_file_leaks() -> Result<(), Box<dyn std::error::Error>> {
+        let root = unique_root("active_file_leaks");
+        let config = WorkerSpillConfig::new(Some(1024 * 1024), Some(root.clone()));
+        let mut spill_runtime = WorkerSpillRuntime::new(config, 11, 21)?;
+        let peer = BackendLeaseSlot::new(1, BackendLeaseId::new(2, 3));
+        let spill_dir = spill_runtime.execution_dir(peer, 4)?;
+        let worker_task_ctx = spill_runtime.task_context(&spill_dir)?;
+        let file = worker_task_ctx
+            .runtime_env()
+            .disk_manager
+            .create_tmp_file("leak metrics")?;
+
+        let (_region, metrics) = MetricsRegion::new();
+        record_datafusion_spill_leaks(worker_task_ctx.as_ref(), metrics);
+        assert_eq!(metrics.get(MetricId::WorkerSpillLeakedFilesTotal), 1);
+        assert_eq!(metrics.get(MetricId::WorkerSpillLeakedBytesTotal), 0);
+
+        drop(file);
+        let dir_path = spill_dir.path().expect("spill dir").to_path_buf();
+        spill_dir.cleanup()?;
+        assert!(!dir_path.exists());
         drop(spill_runtime);
         let _ = std::fs::remove_dir_all(root);
         Ok(())

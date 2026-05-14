@@ -170,6 +170,11 @@ Interpretation:
 | `worker_spill_count_total` | Number of DataFusion operator spill events observed after worker physical-plan execution. |
 | `worker_spilled_rows_total` | Number of rows DataFusion operators reported as spilled by worker physical-plan execution. |
 | `worker_spilled_bytes_total` | Bytes DataFusion operators reported as spilled by worker physical-plan execution. |
+| `worker_spill_leaked_files_total` | Active DataFusion spill files still reported after worker physical-plan execution. This should stay zero. |
+| `worker_spill_leaked_bytes_total` | Active DataFusion spill bytes still reported after worker physical-plan execution. This should stay zero. |
+| `worker_spill_dirs_created_total` | Number of worker execution spill directories created by pg_fusion. |
+| `worker_spill_dirs_removed_total` | Number of worker execution spill directories explicitly removed by pg_fusion. |
+| `worker_spill_cleanup_errors_total` | Number of explicit worker execution spill directory cleanup failures. |
 | `result_w2b_wait_ns` | Time from worker stamping a result page after send until the backend observes the same page descriptor. This approximates worker-to-backend data-plane handoff latency. |
 | `result_w2b_wait_total` | Number of result page observations included in `result_w2b_wait_ns`. |
 | `result_page_read_ns` | Backend-side time spent accepting/importing a result page frame into result ingress. |

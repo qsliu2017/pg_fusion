@@ -88,7 +88,10 @@ importance: 0.8
   rejected rows, and probe rows that passed unfiltered because a filter was not
   ready. Worker DataFusion spill metrics are summed from the executed physical
   plan tree after execution and exposed as global spill count, spilled row, and
-  spilled byte counters.
+  spilled byte counters. The worker also records spill cleanup diagnostics:
+  leaked DataFusion files/bytes should stay zero after execution, and
+  pg_fusion-owned execution spill directory create/remove/error counters track
+  explicit directory lifecycle cleanup.
 - Backend scan timing is always on and intentionally coarse: `scan_page_fill_ns`
   covers successful emitted page fills, with cheap prepare/finish buckets and a
   retry counter. It does not instrument slot-to-Arrow internals; use external

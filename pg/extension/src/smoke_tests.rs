@@ -1076,7 +1076,12 @@ pub(crate) fn metrics_smoke() {
             count(*) FILTER (WHERE metric IN (
                 'worker_spill_count_total',
                 'worker_spilled_rows_total',
-                'worker_spilled_bytes_total'
+                'worker_spilled_bytes_total',
+                'worker_spill_leaked_files_total',
+                'worker_spill_leaked_bytes_total',
+                'worker_spill_dirs_created_total',
+                'worker_spill_dirs_removed_total',
+                'worker_spill_cleanup_errors_total'
             )), ',',
             coalesce(max(reset_epoch), 0)
         )
@@ -1146,7 +1151,7 @@ pub(crate) fn metrics_smoke() {
         "backend_rows_returned_total must be positive: {summary}"
     );
     assert_eq!(
-        parts[15], 3,
+        parts[15], 8,
         "all worker spill metric rows must be present: {summary}"
     );
     assert_eq!(parts[16], before_epoch);
