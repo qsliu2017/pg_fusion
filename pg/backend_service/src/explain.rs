@@ -33,14 +33,14 @@ pub(crate) fn render_physical_explain(
         params,
         options,
         config,
-        mut scan_worker_launcher,
+        scan_worker_launcher,
         actual_scan_parallelism,
     } = input;
     let built = PlanBuilder::new()
         .with_config(config.plan_builder_config())
         .build(PlanBuildInput { sql, params })?;
 
-    let planned_scan_parallelism = if let Some(launcher) = scan_worker_launcher.as_deref_mut() {
+    let planned_scan_parallelism = if let Some(launcher) = scan_worker_launcher {
         launcher.explain_query(crate::ScanWorkerQueryInput {
             scans: &built.scans,
         })?

@@ -381,7 +381,7 @@ mod tests {
 
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_plan::memory::MemoryExec;
+    use datafusion::physical_plan::test::TestMemoryExec;
     use datafusion::physical_planner::DefaultPhysicalPlanner;
     use datafusion_common::{DFSchema, ScalarValue, TableReference};
     use datafusion_expr::logical_plan::EmptyRelation;
@@ -452,7 +452,7 @@ mod tests {
     fn residual_filters_disable_local_row_cap_but_keep_planner_hint() {
         let mut scan = compiled_scan(vec![0]);
         scan.all_filters_compiled = false;
-        scan.residual_filters = vec![Expr::Literal(ScalarValue::Boolean(Some(true)))];
+        scan.residual_filters = vec![Expr::Literal(ScalarValue::Boolean(Some(true)), None)];
 
         let spec = PgScanSpec::try_new(
             25,
@@ -523,7 +523,7 @@ mod tests {
 
         let expr_err = UserDefinedLogicalNodeCore::with_exprs_and_inputs(
             &node,
-            vec![Expr::Literal(ScalarValue::Int64(Some(1)))],
+            vec![Expr::Literal(ScalarValue::Int64(Some(1)), None)],
             Vec::new(),
         )
         .unwrap_err();
@@ -618,11 +618,11 @@ mod tests {
         fn create(&self, spec: Arc<PgScanSpec>) -> Result<Arc<dyn ExecutionPlan>> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             self.scan_ids.lock().unwrap().push(spec.scan_id);
-            Ok(Arc::new(MemoryExec::try_new(
+            Ok(TestMemoryExec::try_new_exec(
                 &[vec![]],
                 spec.arrow_schema(),
                 None,
-            )?))
+            )?)
         }
     }
 

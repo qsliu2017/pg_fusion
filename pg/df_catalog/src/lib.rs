@@ -337,8 +337,8 @@ fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
     }
 
     let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
-    let precision = ((typmod >> 16) & 0xffff) as i32;
-    let scale = (((typmod & 0x7ff) ^ 1024) - 1024) as i32;
+    let precision = (typmod >> 16) & 0xffff;
+    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
     if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
         return None;
     }

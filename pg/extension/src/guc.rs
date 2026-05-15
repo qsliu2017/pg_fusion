@@ -378,16 +378,18 @@ impl HostConfig {
     }
 
     pub fn backend_service_config(&self) -> BackendServiceConfig {
-        let mut config = BackendServiceConfig::default();
-        config.scan_fetch_batch_rows = self.scan_fetch_batch_rows;
-        config.scan_batch_channel_capacity = self.scan_batch_channel_capacity;
-        config.scan_idle_poll_interval_us = self.scan_idle_poll_interval_us;
-        config.estimator_default.initial_tail_bytes_per_row =
-            self.estimator_initial_tail_bytes_per_row;
-        config.diagnostics = DiagnosticsConfig::new(self.backend_log_level, self.log_path.clone());
-        config.join_reordering_enabled = self.join_reordering;
-        config.runtime_filter_enabled = self.runtime_filter_enable;
-        config
+        BackendServiceConfig {
+            scan_fetch_batch_rows: self.scan_fetch_batch_rows,
+            scan_batch_channel_capacity: self.scan_batch_channel_capacity,
+            scan_idle_poll_interval_us: self.scan_idle_poll_interval_us,
+            estimator_default: row_estimator::EstimatorConfig {
+                initial_tail_bytes_per_row: self.estimator_initial_tail_bytes_per_row,
+            },
+            diagnostics: DiagnosticsConfig::new(self.backend_log_level, self.log_path.clone()),
+            join_reordering_enabled: self.join_reordering,
+            runtime_filter_enabled: self.runtime_filter_enable,
+            ..BackendServiceConfig::default()
+        }
     }
 
     pub fn runtime_filter_pool_config(&self) -> RuntimeFilterPoolConfig {
@@ -540,7 +542,7 @@ mod tests {
 
     #[test]
     fn runtime_filter_defaults_to_enabled() {
-        assert!(DEFAULT_RUNTIME_FILTER_ENABLE);
+        assert_eq!(RUNTIME_FILTER_ENABLE.get(), DEFAULT_RUNTIME_FILTER_ENABLE);
     }
 
     #[test]

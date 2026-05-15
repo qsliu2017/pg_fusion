@@ -292,6 +292,7 @@ fn renders_utf8view_string_literal_filter() {
     let schema = test_schema();
     let filter = Expr::Column(Column::from_name("name")).eq(Expr::Literal(
         datafusion_common::ScalarValue::Utf8View(Some("alice".to_owned())),
+        None,
     ));
 
     let compiled = compile_scan(CompileScanInput {

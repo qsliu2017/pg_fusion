@@ -38,22 +38,39 @@ pub(crate) struct SlotScanPageSource {
     pending_overflow: pg_sys::HeapTuple,
 }
 
+pub(crate) struct SlotScanPageSourceInput {
+    pub(crate) snapshot: pgrx::pg_sys::Snapshot,
+    pub(crate) spi: ExecutionSpiContext,
+    pub(crate) prepared: PreparedScan,
+    pub(crate) schema: SchemaRef,
+    pub(crate) source_projection: Vec<usize>,
+    pub(crate) block_size: u32,
+    pub(crate) fetch_batch_rows: usize,
+    pub(crate) estimator: Option<PageRowEstimator>,
+    pub(crate) metrics: RuntimeMetrics,
+    pub(crate) runtime_filter_enabled: bool,
+    pub(crate) runtime_filters: RuntimeFilterPool,
+    pub(crate) session_epoch: u64,
+    pub(crate) scan_id: u64,
+}
+
 impl SlotScanPageSource {
-    pub(crate) fn new(
-        snapshot: pgrx::pg_sys::Snapshot,
-        spi: ExecutionSpiContext,
-        prepared: PreparedScan,
-        schema: SchemaRef,
-        source_projection: Vec<usize>,
-        block_size: u32,
-        fetch_batch_rows: usize,
-        estimator: Option<PageRowEstimator>,
-        metrics: RuntimeMetrics,
-        runtime_filter_enabled: bool,
-        runtime_filters: RuntimeFilterPool,
-        session_epoch: u64,
-        scan_id: u64,
-    ) -> Self {
+    pub(crate) fn new(input: SlotScanPageSourceInput) -> Self {
+        let SlotScanPageSourceInput {
+            snapshot,
+            spi,
+            prepared,
+            schema,
+            source_projection,
+            block_size,
+            fetch_batch_rows,
+            estimator,
+            metrics,
+            runtime_filter_enabled,
+            runtime_filters,
+            session_epoch,
+            scan_id,
+        } = input;
         let single_row_drains = estimator
             .as_ref()
             .is_some_and(PageRowEstimator::has_variable_width);

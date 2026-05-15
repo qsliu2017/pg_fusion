@@ -98,7 +98,6 @@ pub fn seed_estimator_config(
     match seed_tail_bytes_per_row(relation_oid, columns)? {
         Some(initial_tail_bytes_per_row) => Ok(EstimatorConfig {
             initial_tail_bytes_per_row,
-            ..default
         }),
         None => Ok(default),
     }
@@ -267,7 +266,7 @@ fn caught_error_message(error: CaughtError) -> String {
 fn sum_positive_widths(widths: impl IntoIterator<Item = Option<u32>>) -> Option<u32> {
     let mut total = 0u64;
     for width in widths {
-        total = total.checked_add(u64::from(width?)).unwrap_or(u64::MAX);
+        total = total.saturating_add(u64::from(width?));
     }
     Some(total.min(u64::from(u32::MAX)) as u32)
 }

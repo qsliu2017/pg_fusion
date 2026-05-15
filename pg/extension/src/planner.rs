@@ -36,15 +36,15 @@ unsafe extern "C-unwind" fn pg_fusion_planner_hook(
     cursor_options: c_int,
     bound_params: ParamListInfo,
 ) -> *mut PlannedStmt {
-    if ENABLE.get() && !skip_planner() {
-        if !parse.is_null()
-            && (*parse).commandType == pgrx::pg_sys::CmdType::CMD_SELECT
-            && !(*parse).hasModifyingCTE
-            && !is_pg_fusion_management_sql(query_string)
-            && !should_bypass_pg_fusion_planner(parse, bound_params)
-        {
-            return build_planned_custom_scan(parse, query_string, bound_params);
-        }
+    if ENABLE.get()
+        && !skip_planner()
+        && !parse.is_null()
+        && (*parse).commandType == pgrx::pg_sys::CmdType::CMD_SELECT
+        && !(*parse).hasModifyingCTE
+        && !is_pg_fusion_management_sql(query_string)
+        && !should_bypass_pg_fusion_planner(parse, bound_params)
+    {
+        return build_planned_custom_scan(parse, query_string, bound_params);
     }
 
     if let Some(prev) = PREV_PLANNER_HOOK {

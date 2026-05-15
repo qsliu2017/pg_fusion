@@ -1,4 +1,4 @@
-use super::lifecycle::LogLevel;
+use super::lifecycle::{LogLevel, SlotOwnerTransition};
 use super::{
     BackendRx, BackendSlotLease, BackendTx, ControlRx, ControlTx, LeaseIncarnation, SlotMeta,
     TransportRegion, LEASE_STATE_LEASED, OWNER_BACKEND,
@@ -176,16 +176,16 @@ impl BackendSlotLease {
         }
 
         slot.backend_pid.store(0, Ordering::Release);
-        self.region.log_slot_owner_transition(
-            LogLevel::Info,
-            "explicit_backend_release",
-            self.slot_id,
-            self.incarnation,
-            slot_meta_before.owner_mask(),
-            mutation.remaining_mask(),
+        self.region.log_slot_owner_transition(SlotOwnerTransition {
+            level: LogLevel::Info,
+            reason: "explicit_backend_release",
+            slot_id: self.slot_id,
+            incarnation: self.incarnation,
+            previous_owner_mask: slot_meta_before.owner_mask(),
+            remaining_owner_mask: mutation.remaining_mask(),
             backend_pid_before,
-            0,
-        );
+            backend_pid_after: 0,
+        });
         self.region
             .finalize_if_ownerless(self.slot_id, self.incarnation, mutation);
         self.active = false;

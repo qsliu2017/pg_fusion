@@ -320,7 +320,7 @@ fn live_orders(dir: &Path) -> csv::Result<BenchTable> {
     for record in reader.records() {
         let record = record?;
         let order_date = &record[4];
-        if order_date >= "1994-01-01" && order_date < "1995-01-01" {
+        if ("1994-01-01".."1995-01-01").contains(&order_date) {
             rows.push(vec![
                 BenchCell::Int32(parse_i32(&record[0])),
                 BenchCell::Int32(parse_i32(&record[1])),

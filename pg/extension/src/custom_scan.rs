@@ -1375,16 +1375,11 @@ fn decode_primary_inbound(bytes: &[u8]) -> Result<PrimaryInbound, Box<dyn std::e
             decode_worker_execution_to_backend(bytes)?,
         )),
         Ok(other) => Err(format!("unexpected primary message family {other:?}").into()),
-        Err(runtime_error)
-            if matches!(
-                runtime_error,
-                protocol::DecodeError::InvalidMagic { .. }
-                    | protocol::DecodeError::UnsupportedVersion { .. }
-                    | protocol::DecodeError::TruncatedEnvelope { .. }
-            ) =>
-        {
-            Ok(PrimaryInbound::Issued(decode_issued_frame(bytes)?))
-        }
+        Err(
+            protocol::DecodeError::InvalidMagic { .. }
+            | protocol::DecodeError::UnsupportedVersion { .. }
+            | protocol::DecodeError::TruncatedEnvelope { .. },
+        ) => Ok(PrimaryInbound::Issued(decode_issued_frame(bytes)?)),
         Err(err) => Err(Box::new(err)),
     }
 }

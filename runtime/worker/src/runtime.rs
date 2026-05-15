@@ -116,7 +116,7 @@ pub enum WorkerRuntimeStep {
     PlanFrameAccepted {
         session_epoch: u64,
     },
-    PlanningStarted(PendingPhysicalPlanning),
+    PlanningStarted(Box<PendingPhysicalPlanning>),
     PhysicalPlanReady(PhysicalPlanResult),
     PlanningResultIgnored {
         session_epoch: u64,
@@ -304,9 +304,9 @@ impl WorkerRuntimeCore {
             }),
             WorkerPlanStep::Plan { flow, plan } => {
                 self.consume_event(WorkerExecutionEvent::PlanDecoded)?;
-                Ok(WorkerRuntimeStep::PlanningStarted(
+                Ok(WorkerRuntimeStep::PlanningStarted(Box::new(
                     self.begin_physical_planning(flow, *plan),
-                ))
+                )))
             }
             WorkerPlanStep::LogicalError { flow, message } => {
                 self.fail_logical_plan_decode(flow, message)

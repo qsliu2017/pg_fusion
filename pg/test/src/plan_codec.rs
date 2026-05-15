@@ -94,7 +94,7 @@ pub fn plan_codec_roundtrips_live_pg_scan() {
     let scans = collect_pg_scans(&decoded);
     assert_eq!(scans.len(), 1);
     assert_eq!(scans[0].scan_id.get(), 1);
-    assert_eq!(scans[0].table_oid > 0, true);
+    assert!(scans[0].table_oid > 0);
     assert_eq!(scans[0].relation.schema.as_deref(), Some("plan_codec_ns"));
     assert_eq!(scans[0].relation.table, "items");
     assert_eq!(

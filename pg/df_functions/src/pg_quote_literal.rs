@@ -142,14 +142,20 @@ fn array_text(array: &ArrayRef, row: usize) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::Field;
+    use datafusion_common::config::ConfigOptions;
 
     fn quote_scalar(value: Option<&str>) -> Result<Option<String>> {
+        let arg_field = Arc::new(Field::new("arg", DataType::Utf8, true));
+        let return_field = Arc::new(Field::new("quote_literal", DataType::Utf8, true));
         match PgQuoteLiteral::new().invoke_with_args(ScalarFunctionArgs {
             args: vec![ColumnarValue::Scalar(ScalarValue::Utf8(
                 value.map(str::to_owned),
             ))],
+            arg_fields: vec![arg_field],
             number_rows: 1,
-            return_type: &DataType::Utf8,
+            return_field,
+            config_options: Arc::new(ConfigOptions::default()),
         })? {
             ColumnarValue::Scalar(ScalarValue::Utf8(value)) => Ok(value),
             other => exec_err!("unexpected quote_literal result: {other:?}"),

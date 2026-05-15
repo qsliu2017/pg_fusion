@@ -454,7 +454,7 @@ mod tests {
     fn rewrite_materializes_sort_input_above_streaming_chain() {
         let input = Arc::new(TestUnaryExec::new("streaming", test_leaf("page")));
         let sort = Arc::new(SortExec::new(
-            vec![PhysicalSortExpr {
+            [PhysicalSortExpr {
                 expr: col("a", &schema()).unwrap(),
                 options: SortOptions::default(),
             }]
@@ -487,7 +487,7 @@ mod tests {
     fn rewrite_is_idempotent() {
         let input = test_leaf("page");
         let sort = Arc::new(SortExec::new(
-            vec![PhysicalSortExpr {
+            [PhysicalSortExpr {
                 expr: col("a", &schema()).unwrap(),
                 options: SortOptions::default(),
             }]

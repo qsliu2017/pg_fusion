@@ -461,7 +461,7 @@ fn begin_and_finalize_execution(
     begin
 }
 
-fn try_open_scan_with_runtime_protocol<'a>(
+fn try_open_scan_with_runtime_protocol(
     peer: BackendLeaseSlot,
     session_epoch: u64,
     scan_id: u64,
@@ -505,7 +505,7 @@ fn try_open_scan_with_runtime_protocol<'a>(
     })
 }
 
-fn open_scan_with_runtime_protocol<'a>(
+fn open_scan_with_runtime_protocol(
     peer: BackendLeaseSlot,
     session_epoch: u64,
     scan_id: u64,
@@ -561,8 +561,10 @@ pub fn backend_service_streams_scan_under_saved_snapshot() {
     let query = test_query();
     let scan_transport = IssuedTransportHarness::new();
     let scan_slots = ControlTransportHarness::new(8);
-    let mut config = BackendServiceConfig::default();
-    config.scan_fetch_batch_rows = 2;
+    let config = BackendServiceConfig {
+        scan_fetch_batch_rows: 2,
+        ..BackendServiceConfig::default()
+    };
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
@@ -748,8 +750,10 @@ pub fn backend_service_deferred_outbound_page_is_replayed_before_scan_progress()
     let query = test_query();
     let scan_transport = IssuedTransportHarness::new();
     let scan_slots = ControlTransportHarness::new(8);
-    let mut config = BackendServiceConfig::default();
-    config.scan_fetch_batch_rows = 2;
+    let config = BackendServiceConfig {
+        scan_fetch_batch_rows: 2,
+        ..BackendServiceConfig::default()
+    };
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
@@ -1223,8 +1227,10 @@ pub fn backend_service_interleaves_two_scan_portals_under_shared_spi() {
     let scan_transport_left = IssuedTransportHarness::new();
     let scan_transport_right = IssuedTransportHarness::new();
     let scan_slots = ControlTransportHarness::new(16);
-    let mut config = BackendServiceConfig::default();
-    config.scan_fetch_batch_rows = 1;
+    let config = BackendServiceConfig {
+        scan_fetch_batch_rows: 1,
+        ..BackendServiceConfig::default()
+    };
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
@@ -1287,8 +1293,10 @@ pub fn backend_service_drop_finished_driver_does_not_cancel_sibling_scan() {
     let scan_transport_left = IssuedTransportHarness::new();
     let scan_transport_right = IssuedTransportHarness::new();
     let scan_slots = ControlTransportHarness::new(16);
-    let mut config = BackendServiceConfig::default();
-    config.scan_fetch_batch_rows = 1;
+    let config = BackendServiceConfig {
+        scan_fetch_batch_rows: 1,
+        ..BackendServiceConfig::default()
+    };
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);

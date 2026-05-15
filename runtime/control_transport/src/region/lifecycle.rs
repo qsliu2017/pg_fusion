@@ -110,6 +110,18 @@ pub(super) enum LogLevel {
     Warn,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct SlotOwnerTransition {
+    pub(super) level: LogLevel,
+    pub(super) reason: &'static str,
+    pub(super) slot_id: u32,
+    pub(super) incarnation: LeaseIncarnation,
+    pub(super) previous_owner_mask: u32,
+    pub(super) remaining_owner_mask: u32,
+    pub(super) backend_pid_before: i32,
+    pub(super) backend_pid_after: i32,
+}
+
 impl OwnerMutationResult {
     fn unchanged(owner_mask: u32) -> Self {
         Self {
@@ -296,17 +308,17 @@ impl TransportRegion {
         );
     }
 
-    pub(super) fn log_slot_owner_transition(
-        &self,
-        level: LogLevel,
-        reason: &'static str,
-        slot_id: u32,
-        incarnation: LeaseIncarnation,
-        previous_owner_mask: u32,
-        remaining_owner_mask: u32,
-        backend_pid_before: i32,
-        backend_pid_after: i32,
-    ) {
+    pub(super) fn log_slot_owner_transition(&self, transition: SlotOwnerTransition) {
+        let SlotOwnerTransition {
+            level,
+            reason,
+            slot_id,
+            incarnation,
+            previous_owner_mask,
+            remaining_owner_mask,
+            backend_pid_before,
+            backend_pid_after,
+        } = transition;
         let snapshot = self.load_slot_diagnostic_snapshot(slot_id);
         let region_key = self.region_key();
         match level {
@@ -429,16 +441,16 @@ impl TransportRegion {
             );
             let finalized = self.try_finalize_slot(slot_id, incarnation);
             if finalized {
-                self.log_slot_owner_transition(
-                    LogLevel::Info,
-                    "finalize_if_ownerless_committed",
+                self.log_slot_owner_transition(SlotOwnerTransition {
+                    level: LogLevel::Info,
+                    reason: "finalize_if_ownerless_committed",
                     slot_id,
                     incarnation,
-                    mutation.remaining_mask,
-                    0,
-                    -1,
-                    -1,
-                );
+                    previous_owner_mask: mutation.remaining_mask,
+                    remaining_owner_mask: 0,
+                    backend_pid_before: -1,
+                    backend_pid_after: -1,
+                });
             }
         }
     }
@@ -957,16 +969,16 @@ impl TransportRegion {
         self.clear_slot(slot_id);
         slot.slot_generation.store(0, Ordering::Release);
         let _ = self.publish_free_slot(slot_id, slot);
-        self.log_slot_owner_transition(
-            LogLevel::Info,
-            "finalize_slot",
+        self.log_slot_owner_transition(SlotOwnerTransition {
+            level: LogLevel::Info,
+            reason: "finalize_slot",
             slot_id,
             incarnation,
-            snapshot.owner_mask(),
-            0,
-            snapshot.backend_pid,
-            0,
-        );
+            previous_owner_mask: snapshot.owner_mask(),
+            remaining_owner_mask: 0,
+            backend_pid_before: snapshot.backend_pid,
+            backend_pid_after: 0,
+        });
         true
     }
 
@@ -1063,16 +1075,16 @@ impl TransportRegion {
 
         let backend_pid_before = snapshot.backend_pid;
         slot.backend_pid.store(0, Ordering::Release);
-        self.log_slot_owner_transition(
-            LogLevel::Warn,
-            "reap_dead_backend",
+        self.log_slot_owner_transition(SlotOwnerTransition {
+            level: LogLevel::Warn,
+            reason: "reap_dead_backend",
             slot_id,
             incarnation,
-            snapshot.owner_mask(),
-            mutation.remaining_mask,
+            previous_owner_mask: snapshot.owner_mask(),
+            remaining_owner_mask: mutation.remaining_mask,
             backend_pid_before,
-            0,
-        );
+            backend_pid_after: 0,
+        });
         self.finalize_if_ownerless(slot_id, incarnation, mutation);
         Ok(true)
     }

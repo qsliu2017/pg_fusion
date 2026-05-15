@@ -229,6 +229,20 @@ impl SlotSinkContext {
     }
 }
 
+pub type SlotSinkInit = unsafe fn(
+    ctx: &mut SlotSinkContext,
+    private: *mut c_void,
+    tuple_desc: pg_sys::TupleDesc,
+) -> Result<(), SinkError>;
+pub type SlotSinkConsume = unsafe fn(
+    ctx: &mut SlotSinkContext,
+    private: *mut c_void,
+    slot: *mut pg_sys::TupleTableSlot,
+) -> Result<SlotSinkAction, SinkError>;
+pub type SlotSinkFinish =
+    unsafe fn(ctx: &mut SlotSinkContext, private: *mut c_void) -> Result<(), SinkError>;
+pub type SlotSinkAbort = unsafe fn(ctx: &mut SlotSinkContext, private: *mut c_void);
+
 /// Callback table used by [`SlotSink`].
 ///
 /// The callbacks are invoked in this order:
@@ -248,26 +262,15 @@ impl SlotSinkContext {
 pub struct SlotSinkMethods {
     /// Optional initialization callback, invoked after the cursor is opened and
     /// after run-time plan metadata has been populated in [`SlotSinkContext`].
-    pub init: Option<
-        unsafe fn(
-            ctx: &mut SlotSinkContext,
-            private: *mut c_void,
-            tuple_desc: pg_sys::TupleDesc,
-        ) -> Result<(), SinkError>,
-    >,
+    pub init: Option<SlotSinkInit>,
     /// Required row callback. The provided slot is reused across rows and is
     /// only valid for the duration of the callback.
-    pub consume_slot: unsafe fn(
-        ctx: &mut SlotSinkContext,
-        private: *mut c_void,
-        slot: *mut pg_sys::TupleTableSlot,
-    ) -> Result<SlotSinkAction, SinkError>,
+    pub consume_slot: SlotSinkConsume,
     /// Optional success callback, invoked after the scan loop completes.
-    pub finish:
-        Option<unsafe fn(ctx: &mut SlotSinkContext, private: *mut c_void) -> Result<(), SinkError>>,
+    pub finish: Option<SlotSinkFinish>,
     /// Optional failure callback, invoked exactly once if `run()` exits with an
     /// error after the sink has been constructed.
-    pub abort: Option<unsafe fn(ctx: &mut SlotSinkContext, private: *mut c_void)>,
+    pub abort: Option<SlotSinkAbort>,
 }
 
 /// Bound sink instance passed into [`PreparedScan::run`](crate::PreparedScan::run).
@@ -351,7 +354,7 @@ impl Drop for OwnedSpiPlan {
 pub struct PreparedScan {
     pub(crate) sql: String,
     pub(crate) options: ScanOptions,
-    pub(crate) plan: Arc<OwnedSpiPlan>,
+    pub(crate) plan: Rc<OwnedSpiPlan>,
 }
 
 impl PreparedScan {

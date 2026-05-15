@@ -122,17 +122,29 @@ impl PgScanExecFactory for WorkerPgScanExecFactory {
             })?;
         let output_schema = crate::normalize_scan_transport_schema(&spec.arrow_schema())
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
-        Ok(Arc::new(WorkerPgScanExec::new(
+        Ok(Arc::new(WorkerPgScanExec::new(WorkerPgScanExecInput {
             producers,
-            self.session_epoch,
+            session_epoch: self.session_epoch,
             spec,
             output_schema,
-            Arc::clone(&self.source),
-            self.page_kind,
-            self.page_flags,
-            self.tuning,
-        )))
+            source: Arc::clone(&self.source),
+            page_kind: self.page_kind,
+            page_flags: self.page_flags,
+            tuning: self.tuning,
+        })))
     }
+}
+
+#[derive(Debug)]
+struct WorkerPgScanExecInput {
+    producers: Vec<ScanProducerPeer>,
+    session_epoch: u64,
+    spec: Arc<PgScanSpec>,
+    output_schema: SchemaRef,
+    source: Arc<dyn ScanBatchSource>,
+    page_kind: transfer::MessageKind,
+    page_flags: u16,
+    tuning: WorkerScanTuning,
 }
 
 #[derive(Debug)]
@@ -149,16 +161,17 @@ pub struct WorkerPgScanExec {
 }
 
 impl WorkerPgScanExec {
-    pub fn new(
-        producers: Vec<ScanProducerPeer>,
-        session_epoch: u64,
-        spec: Arc<PgScanSpec>,
-        output_schema: SchemaRef,
-        source: Arc<dyn ScanBatchSource>,
-        page_kind: transfer::MessageKind,
-        page_flags: u16,
-        tuning: WorkerScanTuning,
-    ) -> Self {
+    fn new(input: WorkerPgScanExecInput) -> Self {
+        let WorkerPgScanExecInput {
+            producers,
+            session_epoch,
+            spec,
+            output_schema,
+            source,
+            page_kind,
+            page_flags,
+            tuning,
+        } = input;
         let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
@@ -474,20 +487,20 @@ mod tests {
         let scan_spec = spec(8);
         let output_schema =
             crate::normalize_scan_transport_schema(&scan_spec.arrow_schema()).expect("schema");
-        let exec = WorkerPgScanExec::new(
-            vec![ScanProducerPeer {
+        let exec = WorkerPgScanExec::new(WorkerPgScanExecInput {
+            producers: vec![ScanProducerPeer {
                 producer_id: 0,
                 role: ProducerRoleKind::Leader,
                 peer,
             }],
-            100,
-            scan_spec,
+            session_epoch: 100,
+            spec: scan_spec,
             output_schema,
-            source.clone(),
-            0x4152,
-            0,
-            WorkerScanTuning::default(),
-        );
+            source: source.clone(),
+            page_kind: 0x4152,
+            page_flags: 0,
+            tuning: WorkerScanTuning::default(),
+        });
         let ctx = Arc::new(TaskContext::default());
         let stream = exec.execute(0, ctx).unwrap();
 
@@ -508,20 +521,20 @@ mod tests {
         let scan_spec = spec(9);
         let output_schema =
             crate::normalize_scan_transport_schema(&scan_spec.arrow_schema()).expect("schema");
-        let exec = WorkerPgScanExec::new(
-            vec![ScanProducerPeer {
+        let exec = WorkerPgScanExec::new(WorkerPgScanExecInput {
+            producers: vec![ScanProducerPeer {
                 producer_id: 0,
                 role: ProducerRoleKind::Leader,
                 peer: BackendLeaseSlot::new(3, control_transport::BackendLeaseId::new(1, 4)),
             }],
-            100,
-            scan_spec,
+            session_epoch: 100,
+            spec: scan_spec,
             output_schema,
             source,
-            0x4152,
-            0,
-            WorkerScanTuning::default(),
-        );
+            page_kind: 0x4152,
+            page_flags: 0,
+            tuning: WorkerScanTuning::default(),
+        });
         let err = match exec.execute(1, Arc::new(TaskContext::default())) {
             Ok(_) => panic!("nonzero partition should fail"),
             Err(err) => err,

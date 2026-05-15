@@ -61,9 +61,9 @@ pub extern "C-unwind" fn worker_main(_arg: pgrx::pg_sys::Datum) {
 #[no_mangle]
 pub extern "C-unwind" fn scan_worker_main(arg: pgrx::pg_sys::Datum) {
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGTERM | SignalWakeFlags::SIGHUP);
-    let job_id = arg.value() as usize;
+    let job_id = arg.value();
     if let Err(err) = run_scan_worker_main(job_id) {
-        let _ = init_tracing_file_logger("/tmp/pg_fusion.log", "warn");
+        init_tracing_file_logger("/tmp/pg_fusion.log", "warn");
         warn!(
             component = "scan_worker",
             job_id,
@@ -427,6 +427,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_steps(
     transport: &mut TransportWorkerRuntime,
     runtime: &mut WorkerRuntimeCore,
@@ -603,6 +604,7 @@ fn build_datafusion_runtime() -> Result<tokio::runtime::Runtime, WorkerRuntimeEr
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_physical_plan(
     transport: &mut TransportWorkerRuntime,
     spill_runtime: &mut WorkerSpillRuntime,

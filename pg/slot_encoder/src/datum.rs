@@ -300,8 +300,8 @@ fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
     }
 
     let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
-    let precision = ((typmod >> 16) & 0xffff) as i32;
-    let scale = (((typmod & 0x7ff) ^ 1024) - 1024) as i32;
+    let precision = (typmod >> 16) & 0xffff;
+    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
     if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
         return None;
     }
@@ -434,6 +434,56 @@ pub(crate) unsafe fn read_packed_varlena<'a>(
     Ok(unsafe { slice::from_raw_parts(ptr.add(std::mem::size_of::<u32>()), data_len) })
 }
 
+#[cfg(target_endian = "little")]
+fn varlena_is_1b(b0: u8) -> bool {
+    (b0 & VARLENA_1B_FLAG) == VARLENA_1B_FLAG
+}
+
+#[cfg(target_endian = "big")]
+fn varlena_is_1b(b0: u8) -> bool {
+    (b0 & VARLENA_1B_FLAG) == VARLENA_1B_FLAG
+}
+
+#[cfg(target_endian = "little")]
+fn varlena_is_1b_external(b0: u8) -> bool {
+    b0 == VARLENA_1B_FLAG
+}
+
+#[cfg(target_endian = "big")]
+fn varlena_is_1b_external(b0: u8) -> bool {
+    b0 == VARLENA_1B_FLAG
+}
+
+#[cfg(target_endian = "little")]
+fn varlena_1b_total_len(b0: u8) -> usize {
+    (b0 as usize) >> 1
+}
+
+#[cfg(target_endian = "big")]
+fn varlena_1b_total_len(b0: u8) -> usize {
+    (b0 & 0x7F) as usize
+}
+
+#[cfg(target_endian = "little")]
+fn varlena_is_4b_compressed(header: u32) -> bool {
+    (header & VARLENA_4B_COMPRESSED_FLAG) == VARLENA_4B_COMPRESSED_FLAG
+}
+
+#[cfg(target_endian = "big")]
+fn varlena_is_4b_compressed(header: u32) -> bool {
+    (header & VARLENA_4B_COMPRESSED_FLAG) == VARLENA_4B_COMPRESSED_FLAG
+}
+
+#[cfg(target_endian = "little")]
+fn varlena_4b_total_len(header: u32) -> usize {
+    (header >> 2) as usize
+}
+
+#[cfg(target_endian = "big")]
+fn varlena_4b_total_len(header: u32) -> usize {
+    (header & 0x3FFF_FFFF) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::{numeric_shape_from_typmod, parse_numeric_text_to_decimal128};
@@ -496,54 +546,4 @@ mod tests {
     fn numeric_typmod(precision: i32, scale: i32) -> i32 {
         ((precision << 16) | (scale & 0x7ff)) + pg_sys::VARHDRSZ as i32
     }
-}
-
-#[cfg(target_endian = "little")]
-fn varlena_is_1b(b0: u8) -> bool {
-    (b0 & VARLENA_1B_FLAG) == VARLENA_1B_FLAG
-}
-
-#[cfg(target_endian = "big")]
-fn varlena_is_1b(b0: u8) -> bool {
-    (b0 & VARLENA_1B_FLAG) == VARLENA_1B_FLAG
-}
-
-#[cfg(target_endian = "little")]
-fn varlena_is_1b_external(b0: u8) -> bool {
-    b0 == VARLENA_1B_FLAG
-}
-
-#[cfg(target_endian = "big")]
-fn varlena_is_1b_external(b0: u8) -> bool {
-    b0 == VARLENA_1B_FLAG
-}
-
-#[cfg(target_endian = "little")]
-fn varlena_1b_total_len(b0: u8) -> usize {
-    (b0 as usize) >> 1
-}
-
-#[cfg(target_endian = "big")]
-fn varlena_1b_total_len(b0: u8) -> usize {
-    (b0 & 0x7F) as usize
-}
-
-#[cfg(target_endian = "little")]
-fn varlena_is_4b_compressed(header: u32) -> bool {
-    (header & VARLENA_4B_COMPRESSED_FLAG) == VARLENA_4B_COMPRESSED_FLAG
-}
-
-#[cfg(target_endian = "big")]
-fn varlena_is_4b_compressed(header: u32) -> bool {
-    (header & VARLENA_4B_COMPRESSED_FLAG) == VARLENA_4B_COMPRESSED_FLAG
-}
-
-#[cfg(target_endian = "little")]
-fn varlena_4b_total_len(header: u32) -> usize {
-    (header >> 2) as usize
-}
-
-#[cfg(target_endian = "big")]
-fn varlena_4b_total_len(header: u32) -> usize {
-    (header & 0x3FFF_FFFF) as usize
 }

@@ -983,21 +983,21 @@ impl BackendService {
             })?;
             let estimator = scan_page_estimator(&physical_columns, block_size, estimator_config)?;
 
-            let source = source::SlotScanPageSource::new(
+            let source = source::SlotScanPageSource::new(source::SlotScanPageSourceInput {
                 snapshot,
                 spi,
-                prepared_scan,
+                prepared: prepared_scan,
                 schema,
                 source_projection,
                 block_size,
                 fetch_batch_rows,
                 estimator,
-                execution.config.metrics,
-                execution.config.runtime_filter_enabled,
-                execution.config.runtime_filters,
-                input.session_epoch,
-                input.scan_id,
-            );
+                metrics: execution.config.metrics,
+                runtime_filter_enabled: execution.config.runtime_filter_enabled,
+                runtime_filters: execution.config.runtime_filters,
+                session_epoch: input.session_epoch,
+                scan_id: input.scan_id,
+            });
 
             let mut coordinator = BackendScanCoordinator::new();
             coordinator.open(ScanOpen::new(
@@ -1894,19 +1894,21 @@ fn standalone_page_source(
     let estimator = scan_page_estimator(&physical_columns, block_size, estimator_config)?;
     let spi = ExecutionSpiContext::connect(config.diagnostics.clone())?;
     Ok(source::SlotScanPageSource::new(
-        std::ptr::null_mut(),
-        spi,
-        prepared_scan,
-        schema,
-        descriptor.source_projection.clone(),
-        block_size,
-        normalize_scan_fetch_batch_rows(config.scan_fetch_batch_rows),
-        estimator,
-        config.metrics,
-        config.runtime_filter_enabled,
-        config.runtime_filters,
-        session_epoch,
-        scan_id,
+        source::SlotScanPageSourceInput {
+            snapshot: std::ptr::null_mut(),
+            spi,
+            prepared: prepared_scan,
+            schema,
+            source_projection: descriptor.source_projection.clone(),
+            block_size,
+            fetch_batch_rows: normalize_scan_fetch_batch_rows(config.scan_fetch_batch_rows),
+            estimator,
+            metrics: config.metrics,
+            runtime_filter_enabled: config.runtime_filter_enabled,
+            runtime_filters: config.runtime_filters,
+            session_epoch,
+            scan_id,
+        },
     ))
 }
 
@@ -2015,12 +2017,11 @@ fn drive_standalone_producer(
     let mut pending_outbound = None;
     loop {
         if let Some(outbound) = pending_outbound.take() {
-            match try_send_standalone_scan_page(&mut scan_lease, metrics, outbound)? {
-                Some(outbound) => {
-                    pending_outbound = Some(outbound);
-                    wait_latch(Some(Duration::from_millis(1)));
-                }
-                None => {}
+            if let Some(outbound) =
+                try_send_standalone_scan_page(&mut scan_lease, metrics, outbound)?
+            {
+                pending_outbound = Some(outbound);
+                wait_latch(Some(Duration::from_millis(1)));
             }
             continue;
         }
@@ -2760,7 +2761,7 @@ fn cleanup_execution(
         key,
         snapshot,
         _logical_plan,
-        machine,
+        machine: _machine,
         config: _,
         starting,
         scan_spi,
@@ -2815,10 +2816,9 @@ fn cleanup_execution(
             diagnostic_current_memory_context()
         )
     });
-    drop(machine);
     backend_diag_trace(|| {
         format!(
-            "backend_service cleanup_execution dropped machine slot_id={} session_epoch={} current_mcxt={:p}",
+            "backend_service cleanup_execution released machine state slot_id={} session_epoch={} current_mcxt={:p}",
             key.slot_id,
             key.session_epoch,
             diagnostic_current_memory_context()

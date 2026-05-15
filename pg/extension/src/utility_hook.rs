@@ -43,6 +43,7 @@ pub(crate) fn register_hook() {
 }
 
 #[pg_guard]
+#[allow(clippy::too_many_arguments)]
 unsafe extern "C-unwind" fn pg_fusion_process_utility_hook(
     pstmt: *mut PlannedStmt,
     query_string: *const c_char,
