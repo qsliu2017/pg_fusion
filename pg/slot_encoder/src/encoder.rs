@@ -1,7 +1,8 @@
 use crate::datum::{
     database_encoding, pg_oid_needs_detoast, read_bool, read_f32, read_f64, read_fixed_bytes,
     read_i16, read_i32, read_i64, read_interval_month_day_nano, read_name_bytes,
-    read_packed_varlena, validate_pg_layout_type, with_detoasted_slot_datum,
+    read_numeric_decimal128, read_packed_varlena, validate_pg_layout_type,
+    with_detoasted_slot_datum,
 };
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
@@ -157,7 +158,7 @@ impl<'payload> PageBatchEncoder<'payload> {
             }
 
             let type_tag = inner.column_type_tag(index)?;
-            validate_pg_layout_type(index, attr.atttypid, type_tag)?;
+            validate_pg_layout_type(index, attr.atttypid, attr.atttypmod, type_tag)?;
             if type_tag == TypeTag::Utf8View {
                 needs_utf8 = true;
             }
@@ -300,6 +301,7 @@ impl<'payload> PageBatchEncoder<'payload> {
                 || actual.atttypid != expected.atttypid
                 || actual.attlen != expected.attlen
                 || actual.attbyval != expected.attbyval
+                || actual.atttypmod != expected.atttypmod
             {
                 return Err(EncodeError::SlotTupleDescMismatch);
             }
@@ -660,6 +662,12 @@ impl RowSource for PgSlotRow {
                     f,
                 )
             }
+            oid if oid == pg_sys::NUMERICOID => self.write_cell(
+                CellRef::Decimal128(unsafe {
+                    read_numeric_decimal128(datum, attr.atttypmod, index)?
+                }),
+                f,
+            ),
             oid if oid == pg_sys::NAMEOID => {
                 let bytes = unsafe { read_name_bytes(datum, index)? };
                 self.write_cell(CellRef::Utf8(bytes), f)

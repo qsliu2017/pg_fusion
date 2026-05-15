@@ -64,7 +64,10 @@ enum ColumnProjector {
     Float32,
     Float64,
     Uuid,
-    Numeric { scale: i8 },
+    Numeric {
+        scale: i8,
+        trim_trailing_zeros: bool,
+    },
     Interval,
     Date32,
     Time64Microsecond,
@@ -421,8 +424,14 @@ impl ArrowSlotProjector {
                 (ColumnProjector::Uuid, PageColumnView::Uuid(array)) => {
                     values[index] = pg_sys::Datum::from(array.value(row).as_ptr() as *mut u8);
                 }
-                (ColumnProjector::Numeric { scale }, PageColumnView::Decimal128(array)) => {
-                    values[index] = numeric_datum(array.value(row), *scale)?;
+                (
+                    ColumnProjector::Numeric {
+                        scale,
+                        trim_trailing_zeros,
+                    },
+                    PageColumnView::Decimal128(array),
+                ) => {
+                    values[index] = numeric_datum(array.value(row), *scale, *trim_trailing_zeros)?;
                 }
                 (ColumnProjector::Interval, PageColumnView::IntervalMonthDayNano(array)) => {
                     values[index] = interval_datum(array.value(row), index)?;
@@ -568,7 +577,15 @@ fn projector_for_attr(
                     type_tag,
                 });
             };
-            ColumnProjector::Numeric { scale: *scale }
+            ColumnProjector::Numeric {
+                scale: *scale,
+                // PostgreSQL `numeric` without typmod does not display a fixed
+                // fractional scale, while Arrow Decimal128 always has one. The
+                // CustomScan output TupleDesc may also omit typmod for
+                // numeric(p,s), so only trim the bare-numeric fallback shape.
+                trim_trailing_zeros: atttypmod < 0
+                    && matches!(data_type, DataType::Decimal128(38, 16)),
+            }
         }
         (TypeTag::IntervalMonthDayNano, oid) if oid == pg_sys::INTERVALOID => {
             ColumnProjector::Interval
@@ -704,8 +721,12 @@ fn text_datum(
     }
 }
 
-fn numeric_datum(value: i128, scale: i8) -> Result<pg_sys::Datum, ProjectError> {
-    let rendered = format_decimal128(value, scale);
+fn numeric_datum(
+    value: i128,
+    scale: i8,
+    trim_trailing_zeros: bool,
+) -> Result<pg_sys::Datum, ProjectError> {
+    let rendered = format_decimal128(value, scale, trim_trailing_zeros);
     let cstring = CString::new(rendered)
         .map_err(|_| ProjectError::Postgres("numeric text contained NUL byte".to_owned()))?;
     PgTryBuilder::new(AssertUnwindSafe(|| unsafe {
@@ -748,7 +769,7 @@ fn interval_datum(
     Ok(pg_sys::Datum::from(ptr))
 }
 
-fn format_decimal128(value: i128, scale: i8) -> String {
+fn format_decimal128(value: i128, scale: i8, trim_trailing_zeros: bool) -> String {
     let negative = value.is_negative();
     let mut digits = value.unsigned_abs().to_string();
     match scale.cmp(&0) {
@@ -767,10 +788,16 @@ fn format_decimal128(value: i128, scale: i8) -> String {
                 rendered.push_str("0.");
                 rendered.extend(std::iter::repeat_n('0', scale - digits.len()));
                 rendered.push_str(&digits);
+                if trim_trailing_zeros {
+                    trim_decimal_fraction(&mut rendered);
+                }
                 return rendered;
             }
             let split = digits.len() - scale;
             digits.insert(split, '.');
+            if trim_trailing_zeros {
+                trim_decimal_fraction(&mut digits);
+            }
         }
     }
 
@@ -781,6 +808,15 @@ fn format_decimal128(value: i128, scale: i8) -> String {
         rendered
     } else {
         digits
+    }
+}
+
+fn trim_decimal_fraction(value: &mut String) {
+    while value.ends_with('0') {
+        value.pop();
+    }
+    if value.ends_with('.') {
+        value.pop();
     }
 }
 
@@ -841,9 +877,16 @@ mod tests {
 
     #[test]
     fn format_decimal128_renders_scaled_values_for_numeric_in() {
-        assert_eq!(format_decimal128(123456789, 4), "12345.6789");
-        assert_eq!(format_decimal128(-50, 2), "-0.50");
-        assert_eq!(format_decimal128(42, 0), "42");
-        assert_eq!(format_decimal128(42, -2), "4200");
+        assert_eq!(format_decimal128(123456789, 4, false), "12345.6789");
+        assert_eq!(format_decimal128(-50, 2, false), "-0.50");
+        assert_eq!(format_decimal128(42, 0, false), "42");
+        assert_eq!(format_decimal128(42, -2, false), "4200");
+    }
+
+    #[test]
+    fn format_decimal128_can_trim_bare_numeric_fallback_scale() {
+        assert_eq!(format_decimal128(1230000, 6, true), "1.23");
+        assert_eq!(format_decimal128(1000000, 6, true), "1");
+        assert_eq!(format_decimal128(-500000, 6, true), "-0.5");
     }
 }

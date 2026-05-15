@@ -2,11 +2,15 @@ use crate::error::oid_u32;
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
 use pgrx_pg_sys as pg_sys;
+use std::ffi::CStr;
 use std::ptr;
 use std::slice;
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicI32, Ordering};
+
+const NUMERIC_FALLBACK_PRECISION: u8 = 38;
+const NUMERIC_FALLBACK_SCALE: i8 = 16;
 
 #[cfg(target_endian = "little")]
 const VARLENA_1B_FLAG: u8 = 0x01;
@@ -23,6 +27,7 @@ const VARLENA_4B_COMPRESSED_FLAG: u32 = 0x4000_0000;
 pub(crate) fn validate_pg_layout_type(
     index: usize,
     oid: pg_sys::Oid,
+    atttypmod: i32,
     type_tag: TypeTag,
 ) -> Result<(), ConfigError> {
     let ok = match type_tag {
@@ -33,7 +38,9 @@ pub(crate) fn validate_pg_layout_type(
         TypeTag::Float32 => oid == pg_sys::FLOAT4OID,
         TypeTag::Float64 => oid == pg_sys::FLOAT8OID,
         TypeTag::Uuid => oid == pg_sys::UUIDOID,
-        TypeTag::Decimal128 => false,
+        TypeTag::Decimal128 => {
+            oid == pg_sys::NUMERICOID && numeric_shape_from_typmod(atttypmod).is_some()
+        }
         TypeTag::IntervalMonthDayNano => oid == pg_sys::INTERVALOID,
         TypeTag::Date32 => oid == pg_sys::DATEOID,
         TypeTag::Time64Microsecond => oid == pg_sys::TIMEOID,
@@ -223,6 +230,164 @@ fn interval_is_infinite(interval: pg_sys::Interval) -> bool {
         || (interval.month == i32::MAX && interval.day == i32::MAX && interval.time == i64::MAX)
 }
 
+pub(crate) unsafe fn read_numeric_decimal128(
+    datum: pg_sys::Datum,
+    atttypmod: i32,
+    index: usize,
+) -> Result<i128, EncodeError> {
+    let (precision, scale) = numeric_shape_from_typmod(atttypmod)
+        .ok_or(EncodeError::UnsupportedNumericTypmod { index, atttypmod })?;
+    let original = datum.cast_mut_ptr::<pg_sys::varlena>();
+    if original.is_null() {
+        return Err(EncodeError::NullDatumPointer { index });
+    }
+
+    let detoasted = unsafe { pg_sys::pg_detoast_datum(original) };
+    if detoasted.is_null() {
+        return Err(EncodeError::NullDatumPointer { index });
+    }
+    let is_copy = !ptr::eq(detoasted, original);
+    let result = unsafe { numeric_text(detoasted, index) }
+        .and_then(|text| parse_numeric_text_to_decimal128(&text, precision, scale, index));
+    if is_copy {
+        unsafe { pg_sys::pfree(detoasted.cast()) };
+    }
+    result
+}
+
+unsafe fn numeric_text(
+    numeric_varlena: *mut pg_sys::varlena,
+    index: usize,
+) -> Result<String, EncodeError> {
+    let numeric = numeric_varlena.cast::<pg_sys::NumericData>();
+    if unsafe { pg_sys::numeric_is_nan(numeric) || pg_sys::numeric_is_inf(numeric) } {
+        return Err(EncodeError::UnsupportedSpecialNumeric { index });
+    }
+
+    let cstr_ptr = unsafe {
+        pg_sys::OidOutputFunctionCall(
+            pg_sys::Oid::from_u32(pg_sys::F_NUMERIC_OUT),
+            pg_sys::Datum::from(numeric_varlena),
+        )
+    };
+    if cstr_ptr.is_null() {
+        return Err(EncodeError::NullDatumPointer { index });
+    }
+    let text = unsafe { CStr::from_ptr(cstr_ptr) }
+        .to_str()
+        .map(str::to_owned)
+        .map_err(|_| EncodeError::MalformedNumericText {
+            index,
+            value: "<non-utf8>".to_owned(),
+        });
+    unsafe { pg_sys::pfree(cstr_ptr.cast()) };
+    text
+}
+
+fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
+    if atttypmod < 0 {
+        return Some((NUMERIC_FALLBACK_PRECISION, NUMERIC_FALLBACK_SCALE));
+    }
+
+    let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
+    let precision = ((typmod >> 16) & 0xffff) as i32;
+    let scale = (((typmod & 0x7ff) ^ 1024) - 1024) as i32;
+    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
+        return None;
+    }
+
+    Some((precision as u8, scale as i8))
+}
+
+fn parse_numeric_text_to_decimal128(
+    text: &str,
+    precision: u8,
+    scale: i8,
+    index: usize,
+) -> Result<i128, EncodeError> {
+    if scale < 0 {
+        return Err(EncodeError::NumericValueOutOfRange {
+            index,
+            precision,
+            scale,
+        });
+    }
+
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if rest.is_empty() {
+        return Err(EncodeError::MalformedNumericText {
+            index,
+            value: text.to_owned(),
+        });
+    }
+
+    let mut parts = rest.split('.');
+    let integer = parts.next().unwrap_or_default();
+    let fraction = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || (integer.is_empty() && fraction.is_empty())
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(EncodeError::MalformedNumericText {
+            index,
+            value: text.to_owned(),
+        });
+    }
+
+    let target_scale = scale as usize;
+    if fraction.len() > target_scale
+        && fraction.as_bytes()[target_scale..]
+            .iter()
+            .any(|byte| *byte != b'0')
+    {
+        return Err(EncodeError::NumericValueOutOfRange {
+            index,
+            precision,
+            scale,
+        });
+    }
+
+    let mut digits = String::with_capacity(integer.len() + target_scale);
+    digits.push_str(integer);
+    if fraction.len() >= target_scale {
+        digits.push_str(&fraction[..target_scale]);
+    } else {
+        digits.push_str(fraction);
+        digits.extend(std::iter::repeat_n('0', target_scale - fraction.len()));
+    }
+
+    let significant_digits = digits.trim_start_matches('0').len().max(1);
+    if significant_digits > usize::from(precision) {
+        return Err(EncodeError::NumericValueOutOfRange {
+            index,
+            precision,
+            scale,
+        });
+    }
+
+    let mut value = digits
+        .parse::<i128>()
+        .map_err(|_| EncodeError::NumericValueOutOfRange {
+            index,
+            precision,
+            scale,
+        })?;
+    if negative {
+        value = value
+            .checked_neg()
+            .ok_or(EncodeError::NumericValueOutOfRange {
+                index,
+                precision,
+                scale,
+            })?;
+    }
+    Ok(value)
+}
+
 pub(crate) unsafe fn read_packed_varlena<'a>(
     datum: pg_sys::Datum,
     index: usize,
@@ -257,6 +422,70 @@ pub(crate) unsafe fn read_packed_varlena<'a>(
     }
     let data_len = total_len - std::mem::size_of::<u32>();
     Ok(unsafe { slice::from_raw_parts(ptr.add(std::mem::size_of::<u32>()), data_len) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{numeric_shape_from_typmod, parse_numeric_text_to_decimal128};
+    use crate::EncodeError;
+    use pgrx_pg_sys as pg_sys;
+
+    #[test]
+    fn numeric_typmod_decode_supports_pg_numeric_shapes() {
+        assert_eq!(numeric_shape_from_typmod(-1), Some((38, 16)));
+        assert_eq!(
+            numeric_shape_from_typmod(numeric_typmod(12, 3)),
+            Some((12, 3))
+        );
+        assert_eq!(
+            numeric_shape_from_typmod(numeric_typmod(38, 0)),
+            Some((38, 0))
+        );
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(39, 0)), None);
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(4, 5)), None);
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(4, -1)), None);
+    }
+
+    #[test]
+    fn decimal128_parser_scales_finite_numeric_text() {
+        assert_eq!(parse("123.45", 10, 2), 12345);
+        assert_eq!(parse("-123.4", 10, 2), -12340);
+        assert_eq!(parse("0.0001", 10, 6), 100);
+        assert_eq!(parse("+42", 10, 3), 42000);
+        assert_eq!(parse("1.230000", 10, 2), 123);
+        assert_eq!(
+            parse("99999999999999999999999999999999999999", 38, 0),
+            99_999_999_999_999_999_999_999_999_999_999_999_999_i128
+        );
+    }
+
+    #[test]
+    fn decimal128_parser_rejects_unsupported_numeric_text() {
+        assert!(matches!(
+            parse_numeric_text_to_decimal128("1.234", 10, 2, 0),
+            Err(EncodeError::NumericValueOutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_numeric_text_to_decimal128("100000", 5, 0, 0),
+            Err(EncodeError::NumericValueOutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_numeric_text_to_decimal128("NaN", 38, 16, 0),
+            Err(EncodeError::MalformedNumericText { .. })
+        ));
+        assert!(matches!(
+            parse_numeric_text_to_decimal128("1e3", 38, 16, 0),
+            Err(EncodeError::MalformedNumericText { .. })
+        ));
+    }
+
+    fn parse(text: &str, precision: u8, scale: i8) -> i128 {
+        parse_numeric_text_to_decimal128(text, precision, scale, 0).expect("parse decimal")
+    }
+
+    fn numeric_typmod(precision: i32, scale: i32) -> i32 {
+        ((precision << 16) | (scale & 0x7ff)) + pg_sys::VARHDRSZ as i32
+    }
 }
 
 #[cfg(target_endian = "little")]

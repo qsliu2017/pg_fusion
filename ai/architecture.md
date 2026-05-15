@@ -161,9 +161,12 @@ page-backed Arrow batches.
 6. Backend imports result pages with `slot_import` and projects rows into
    PostgreSQL tuple slots. Result transport supports Decimal128 fixed-width
    pages for PostgreSQL `numeric` outputs produced by worker-side expressions
-   and `Interval(MonthDayNano)` pages for finite PostgreSQL `interval` values;
-   backend heap scans still do not encode arbitrary PostgreSQL `numeric`
-   columns through `slot_encoder`.
+   and `Interval(MonthDayNano)` pages for finite PostgreSQL `interval` values.
+   Backend heap scans encode the finite PostgreSQL `numeric` subset as
+   Decimal128: `numeric(p,s)` uses `Decimal128(p,s)` when `p <= 38` and
+   `0 <= s <= p`, while bare `numeric` uses the fixed
+   `Decimal128(38,16)` fallback. PostgreSQL `numeric` `NaN`/`Infinity` and
+   values outside the selected Decimal128 shape fail during scan encoding.
 
 Page-backed scan batches stay zero-copy through streaming DataFusion operators.
 After physical planning, `scan_node` inserts `PageMaterializeExec` only before

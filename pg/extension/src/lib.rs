@@ -99,6 +99,16 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_heap_numeric_scan_smoke() {
+        super::smoke_tests::heap_numeric_scan_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_heap_numeric_scan_error_smoke() {
+        super::smoke_tests::heap_numeric_scan_error_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_heap_avg_full_scan_smoke() {
         super::smoke_tests::heap_avg_full_scan_smoke();
     }

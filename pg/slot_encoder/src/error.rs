@@ -86,6 +86,22 @@ pub enum EncodeError {
     UnsupportedInfiniteInterval { index: usize },
     #[error("PostgreSQL interval time at column {index} overflows Arrow nanoseconds")]
     IntervalTimeOverflow { index: usize },
+    #[error(
+        "PostgreSQL numeric NaN/Infinity at column {index} cannot be encoded as Arrow Decimal128"
+    )]
+    UnsupportedSpecialNumeric { index: usize },
+    #[error("PostgreSQL numeric typmod {atttypmod} at column {index} cannot be encoded as Arrow Decimal128")]
+    UnsupportedNumericTypmod { index: usize, atttypmod: i32 },
+    #[error(
+        "PostgreSQL numeric value at column {index} cannot be encoded as Decimal128({precision}, {scale})"
+    )]
+    NumericValueOutOfRange {
+        index: usize,
+        precision: u8,
+        scale: i8,
+    },
+    #[error("PostgreSQL numeric output at column {index} is not a finite decimal string: {value}")]
+    MalformedNumericText { index: usize, value: String },
     #[error("column {index} is not nullable in the target layout")]
     NullInNonNullableColumn { index: usize },
     #[error("unsupported row access at column {index}")]

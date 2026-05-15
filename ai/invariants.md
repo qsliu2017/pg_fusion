@@ -30,6 +30,11 @@ importance: 0.95
   `TypeTag::Decimal128` only records the 16-byte fixed-width layout, so
   import/projection code must preserve precision/scale from the Arrow schema
   rather than reconstructing it from the page tag.
+- Scan-side PostgreSQL `numeric` support is a finite Decimal128 subset:
+  `numeric(p,s)` maps to `Decimal128(p,s)` for `p <= 38` and non-negative
+  scale, while bare `numeric` maps to the fixed fallback `Decimal128(38,16)`.
+  Values outside the selected shape and PostgreSQL `numeric` `NaN`/`Infinity`
+  must fail with controlled scan errors.
 - Result schema normalization must preserve finite PostgreSQL interval outputs
   as Arrow `Interval(MonthDayNano)` so worker result pages and `slot_import`
   agree on the `INTERVALOID` projection path.

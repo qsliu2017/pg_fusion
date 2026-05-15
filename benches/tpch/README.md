@@ -13,8 +13,9 @@ is adapted to the current `pg_fusion` data path:
 - some queries intentionally contain subqueries/CTEs to show which shapes still
   fail or fall back.
 
-Those choices avoid measuring unsupported `numeric`/`date` page encoding before
-the benchmark reaches scan and DataFusion operator behavior.
+Those choices keep this historical diagnostic focused on scan and DataFusion
+operator behavior. They do not exercise the newer finite `numeric` or `date`
+scan transport paths.
 
 ## Prerequisites
 

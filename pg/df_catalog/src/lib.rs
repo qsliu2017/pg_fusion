@@ -223,11 +223,12 @@ fn resolve_relation_by_oid(
             if attr.is_dropped() {
                 continue;
             }
-            let data_type =
-                oid_to_arrow_type(attr.atttypid).ok_or_else(|| ResolveError::UnsupportedType {
+            let data_type = oid_to_arrow_type(attr.atttypid, attr.atttypmod).ok_or_else(|| {
+                ResolveError::UnsupportedType {
                     column: attr.name().to_owned(),
                     type_oid: attr.atttypid.to_u32(),
-                })?;
+                }
+            })?;
             fields.push(Field::new(attr.name(), data_type, !attr.attnotnull));
             column_attnums.push(attr.attnum);
         }
@@ -296,7 +297,10 @@ fn validate_relkind(rel: &PgRelation) -> Result<(), ResolveError> {
     Err(ResolveError::UnsupportedRelationKind(relkind))
 }
 
-fn oid_to_arrow_type(oid: pg_sys::Oid) -> Option<arrow_schema::DataType> {
+const NUMERIC_FALLBACK_PRECISION: u8 = 38;
+const NUMERIC_FALLBACK_SCALE: i8 = 16;
+
+fn oid_to_arrow_type(oid: pg_sys::Oid, atttypmod: i32) -> Option<arrow_schema::DataType> {
     match oid {
         o if o == pg_sys::BOOLOID => Some(DataType::Boolean),
         o if o == pg_sys::TEXTOID
@@ -319,8 +323,27 @@ fn oid_to_arrow_type(oid: pg_sys::Oid) -> Option<arrow_schema::DataType> {
             Some(DataType::Timestamp(TimeUnit::Microsecond, None))
         }
         o if o == pg_sys::INTERVALOID => Some(DataType::Interval(IntervalUnit::MonthDayNano)),
+        o if o == pg_sys::NUMERICOID => {
+            let (precision, scale) = numeric_shape_from_typmod(atttypmod)?;
+            Some(DataType::Decimal128(precision, scale))
+        }
         _ => None,
     }
+}
+
+fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
+    if atttypmod < 0 {
+        return Some((NUMERIC_FALLBACK_PRECISION, NUMERIC_FALLBACK_SCALE));
+    }
+
+    let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
+    let precision = ((typmod >> 16) & 0xffff) as i32;
+    let scale = (((typmod & 0x7ff) ^ 1024) - 1024) as i32;
+    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
+        return None;
+    }
+
+    Some((precision as u8, scale as i8))
 }
 
 fn resolve_error_from_caught_error(error: CaughtError) -> ResolveError {
@@ -370,13 +393,49 @@ mod tests {
         ];
 
         for (oid, data_type) in cases {
-            assert_eq!(oid_to_arrow_type(oid), Some(data_type));
+            assert_eq!(oid_to_arrow_type(oid, -1), Some(data_type));
         }
     }
 
     #[test]
     fn oid_to_arrow_type_rejects_unsupported_oids() {
-        assert_eq!(oid_to_arrow_type(pg_sys::TIMETZOID), None);
-        assert_eq!(oid_to_arrow_type(pg_sys::JSONBOID), None);
+        assert_eq!(oid_to_arrow_type(pg_sys::TIMETZOID, -1), None);
+        assert_eq!(oid_to_arrow_type(pg_sys::JSONBOID, -1), None);
+    }
+
+    #[test]
+    fn oid_to_arrow_type_maps_numeric_typmods() {
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, -1),
+            Some(DataType::Decimal128(38, 16))
+        );
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, numeric_typmod(12, 3)),
+            Some(DataType::Decimal128(12, 3))
+        );
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, numeric_typmod(38, 0)),
+            Some(DataType::Decimal128(38, 0))
+        );
+    }
+
+    #[test]
+    fn oid_to_arrow_type_rejects_unsupported_numeric_typmods() {
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, numeric_typmod(39, 0)),
+            None
+        );
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, numeric_typmod(3, 4)),
+            None
+        );
+        assert_eq!(
+            oid_to_arrow_type(pg_sys::NUMERICOID, numeric_typmod(3, -1)),
+            None
+        );
+    }
+
+    fn numeric_typmod(precision: i32, scale: i32) -> i32 {
+        ((precision << 16) | (scale & 0x7ff)) + pg_sys::VARHDRSZ as i32
     }
 }

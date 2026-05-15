@@ -105,6 +105,21 @@ pub(crate) fn simple_query_first_column_rows_tx(
         .collect()
 }
 
+fn simple_query_rows_tx(tx: &mut Transaction<'_>, sql: &str) -> Vec<Vec<Option<String>>> {
+    tx.simple_query(sql)
+        .expect("simple query must succeed")
+        .into_iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(
+                (0..row.len())
+                    .map(|index| row.get(index).map(str::to_owned))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 fn copy_out_to_string_tx(tx: &mut Transaction<'_>, sql: &str) -> String {
     let mut reader = tx.copy_out(sql).expect("COPY TO STDOUT must start");
     let mut output = String::new();
@@ -455,6 +470,118 @@ pub(crate) fn heap_select_filtered_row_smoke() {
     .parse()
     .expect("filtered heap select must return one bigint value");
     assert_eq!(id, 3);
+}
+
+pub(crate) fn heap_numeric_scan_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_heap_numeric_scan_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {table_name} (
+                id integer NOT NULL,
+                fixed numeric(12,3),
+                bare numeric
+            );
+            INSERT INTO {table_name} VALUES
+                (1, 12.340, 1.23),
+                (2, -0.125, 1234567890123456789012.1234567890123456),
+                (3, NULL, NULL)
+            "
+        ),
+    );
+
+    let explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("EXPLAIN SELECT id, fixed, bare FROM {table_name} ORDER BY id"),
+    )
+    .join("\n");
+    assert!(
+        explain.contains("Custom Scan (PgFusionScan)"),
+        "numeric scan should execute through pg_fusion: {explain}"
+    );
+
+    let rows = simple_query_rows_tx(
+        &mut tx,
+        &format!("SELECT id, fixed, bare FROM {table_name} ORDER BY id"),
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Some("1".to_owned()),
+                Some("12.340".to_owned()),
+                Some("1.23".to_owned())
+            ],
+            vec![
+                Some("2".to_owned()),
+                Some("-0.125".to_owned()),
+                Some("1234567890123456789012.1234567890123456".to_owned())
+            ],
+            vec![Some("3".to_owned()), None, None],
+        ]
+    );
+
+    let filtered = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("SELECT id FROM {table_name} WHERE bare > 2 ORDER BY id"),
+    );
+    assert_eq!(filtered, vec!["2"]);
+
+    let grouped = simple_query_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT fixed, count(*)::bigint
+            FROM {table_name}
+            GROUP BY fixed
+            ORDER BY fixed NULLS LAST
+            "
+        ),
+    );
+    assert_eq!(
+        grouped,
+        vec![
+            vec![Some("-0.125".to_owned()), Some("1".to_owned())],
+            vec![Some("12.340".to_owned()), Some("1".to_owned())],
+            vec![None, Some("1".to_owned())],
+        ]
+    );
+}
+
+pub(crate) fn heap_numeric_scan_error_smoke() {
+    let mut client = smoke_client();
+    for (table_name, insert_sql, expected) in [
+        (
+            "pg_temp.pgf_heap_numeric_nan_scan_smoke",
+            "INSERT INTO pg_temp.pgf_heap_numeric_nan_scan_smoke VALUES (1::numeric), ('NaN'::numeric)",
+            "numeric NaN/Infinity",
+        ),
+        (
+            "pg_temp.pgf_heap_numeric_precision_scan_smoke",
+            "INSERT INTO pg_temp.pgf_heap_numeric_precision_scan_smoke VALUES (0.12345678901234567::numeric)",
+            "Decimal128(38, 16)",
+        ),
+    ] {
+        let mut tx = smoke_transaction(&mut client);
+        batch_execute_pg_fusion_disabled(
+            &mut tx,
+            &format!("CREATE TEMP TABLE {table_name} (n numeric); {insert_sql};"),
+        );
+        let err = tx
+            .simple_query(&format!("SELECT n FROM {table_name}"))
+            .expect_err("unsupported numeric scan must fail");
+        let message = err
+            .as_db_error()
+            .map(|db_error| db_error.message().to_owned())
+            .unwrap_or_else(|| err.to_string());
+        assert!(
+            message.contains(expected),
+            "unexpected numeric scan error for {table_name}: {message}"
+        );
+    }
 }
 
 pub(crate) fn heap_avg_full_scan_smoke() {

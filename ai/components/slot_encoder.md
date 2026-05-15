@@ -53,6 +53,10 @@ importance: 0.72
   - `text/varchar/bpchar/name -> Arrow Utf8View`
   - `bytea -> Arrow BinaryView`
   - `uuid -> Arrow FixedSizeBinary(16)`
+  - finite `numeric(p,s) -> Arrow Decimal128(p,s)` for `p <= 38` and
+    `0 <= s <= p`
+  - finite bare `numeric -> Arrow Decimal128(38,16)`; values outside that fixed
+    shape and PostgreSQL `numeric` `NaN`/`Infinity` fail during scan encoding
   - finite `interval -> Arrow Interval(MonthDayNano)`; PostgreSQL interval
     infinities are rejected because Arrow has no interval special values
 - Output contract:

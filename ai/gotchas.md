@@ -61,6 +61,11 @@ importance: 0.7
 - Runtime metrics keep backend scan timing coarse and always-on. They
   deliberately avoid per-row slot encode breakdown because clock reads distort
   the hot path; use flamegraphs for deformation and page-write detail.
+- Backend scan producer failures must publish `ScanFailed` to the worker before
+  tearing down `ACTIVE_EXECUTION`. The worker turns that into primary
+  `FailExecution`, and only then should backend execution cleanup run; otherwise
+  the user sees a generic missing-execution error instead of the original scan
+  failure detail.
 - `plan_builder` validates subquery shapes after DataFusion logical
   optimization. Subqueries that decorrelate into ordinary relational operators
   can lower PostgreSQL leaf scans; subquery nodes that survive optimization
@@ -94,8 +99,8 @@ importance: 0.7
   PostgreSQL `TEXT`.
 - The `benches/tpch` harness is diagnostic rather than official TPC-H. Its
   schema stores TPC-H decimal columns as `double precision` and date columns as
-  ISO `text` so current page encoding can exercise scans, joins, and
-  DataFusion operators before `numeric`/`date` transport support is expanded.
+  ISO `text` to keep historical benchmark comparisons stable; this schema does
+  not exercise the newer finite Decimal128/date scan transport paths.
 - PostgreSQL `max_parallel_workers_per_gather` controls the query-wide CTID
   block-range dynamic scan worker budget for eligible heap scans. `0` means
   leader-only portal streaming; positive values allow up to that many dynamic

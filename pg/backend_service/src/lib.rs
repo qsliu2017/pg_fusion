@@ -2884,7 +2884,7 @@ fn fail_current_execution_after_scan_error(
 
 fn finish_current_execution_after_fatal_scan_step(
     active: &mut Option<ActiveExecution>,
-    active_scan: ActiveScanStream,
+    mut active_scan: ActiveScanStream,
     step: ScanStreamStep,
 ) -> Result<ScanStreamStep, BackendServiceError> {
     let detail = fatal_scan_step_detail(&step);
@@ -2894,21 +2894,14 @@ fn finish_current_execution_after_fatal_scan_step(
             active_scan.scan_id, detail
         )
     });
-    if let Some(execution) = active.as_mut() {
-        execution
-            .active_scans
-            .insert(active_scan.scan_id, active_scan);
-    } else {
+    let Some(execution) = active.as_mut() else {
         return Err(BackendServiceError::ProtocolViolation(format!(
             "fatal scan step lost active execution before cleanup: {}",
             detail
         )));
-    }
+    };
 
-    let execution = active
-        .take()
-        .expect("fatal scan step cleanup requires an installed execution");
-    match cleanup_execution(execution, Some(BackendExecutionEvent::FailExecution)) {
+    match cancel_detached_scan(execution, &mut active_scan) {
         Ok(()) => Ok(step),
         Err(cleanup_err) => Err(BackendServiceError::ProtocolViolation(format!(
             "fatal scan failure: {}; cleanup also failed: {}",

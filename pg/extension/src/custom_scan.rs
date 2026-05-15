@@ -523,6 +523,9 @@ unsafe extern "C-unwind" fn exec_pg_fusion_scan(
         progressed |= poll_primary_peer(state).unwrap_or_else(|err| {
             error!("pg_fusion primary peer poll failed: {err}");
         });
+        if let Some(err) = state.terminal_error.take() {
+            error!("pg_fusion execution failed: {err}");
+        }
         if let Some(result) = state
             .result_ingress
             .as_mut()
