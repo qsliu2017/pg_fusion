@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow_array::{
-    Array, BinaryViewArray, BooleanArray, Date32Array, FixedSizeBinaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
+    Array, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
     Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, TimeUnit};
@@ -21,8 +21,9 @@ use datafusion_execution::TaskContext;
 use datafusion_expr::JoinType;
 use datafusion_physical_expr::expressions::Column;
 use filter::{
-    hash_bool_key, hash_bytes_key, hash_float32_key, hash_float64_key, hash_int_key,
-    RuntimeFilterBuildHandle, RuntimeFilterKeyType, RuntimeFilterPool, RuntimeFilterTarget,
+    hash_bool_key, hash_bytes_key, hash_decimal128_key, hash_float32_key, hash_float64_key,
+    hash_int_key, RuntimeFilterBuildHandle, RuntimeFilterKeyType, RuntimeFilterPool,
+    RuntimeFilterTarget,
 };
 use futures::{ready, Stream, StreamExt};
 use metrics::{MetricId, RuntimeMetrics};
@@ -149,11 +150,22 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             Some(RuntimeFilterKeyType::TimestampMicrosecond)
         }
+        DataType::Decimal128(_, _) => Some(RuntimeFilterKeyType::Decimal128),
         _ => None,
     }
 }
 
 fn key_type_for_pair(left: &DataType, right: &DataType) -> Option<RuntimeFilterKeyType> {
+    match (left, right) {
+        (
+            DataType::Decimal128(left_precision, left_scale),
+            DataType::Decimal128(right_precision, right_scale),
+        ) if left_precision == right_precision && left_scale == right_scale => {
+            return Some(RuntimeFilterKeyType::Decimal128);
+        }
+        (DataType::Decimal128(_, _), _) | (_, DataType::Decimal128(_, _)) => return None,
+        _ => {}
+    }
     let left = key_type_for(left)?;
     let right = key_type_for(right)?;
     (left == right).then_some(left)
@@ -444,8 +456,24 @@ impl RuntimeFilterBuildState {
                         DataFusionError::Execution(
                             "runtime filter TimestampMicrosecond build key had non-Timestamp(Microsecond) array".into(),
                         )
-                    })?;
+                })?;
                 insert_hashes(array, |idx| hash_int_key(array.value(idx)), &self.handle)?
+            }
+            RuntimeFilterKeyType::Decimal128 => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<Decimal128Array>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter Decimal128 build key had non-Decimal128 array".into(),
+                        )
+                    })?;
+                insert_hashes(
+                    array,
+                    |idx| hash_decimal128_key(array.value(idx)),
+                    &self.handle,
+                )?
             }
         };
         self.metrics
@@ -641,6 +669,14 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Microsecond, None),
                 RuntimeFilterKeyType::TimestampMicrosecond,
             ),
+            (
+                DataType::Decimal128(12, 3),
+                RuntimeFilterKeyType::Decimal128,
+            ),
+            (
+                DataType::Decimal128(38, 16),
+                RuntimeFilterKeyType::Decimal128,
+            ),
         ];
 
         for (data_type, expected) in cases {
@@ -668,6 +704,14 @@ mod tests {
                 &DataType::FixedSizeBinary(17),
                 &DataType::FixedSizeBinary(17)
             ),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Decimal128(38, 16)),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Utf8View),
             None
         );
     }
@@ -740,6 +784,16 @@ mod tests {
                 None,
             ])),
             hash_int_key(1_700_000_000_000_000),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::Decimal128,
+            DataType::Decimal128(12, 3),
+            Arc::new(
+                Decimal128Array::from(vec![Some(12345_i128), None])
+                    .with_precision_and_scale(12, 3)
+                    .expect("decimal array"),
+            ),
+            hash_decimal128_key(12345),
         );
     }
 }

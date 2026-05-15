@@ -57,6 +57,8 @@ importance: 0.72
     `0 <= s <= p`
   - finite bare `numeric -> Arrow Decimal128(38,16)`; values outside that fixed
     shape and PostgreSQL `numeric` `NaN`/`Infinity` fail during scan encoding
+  - runtime-filter probe keys for `numeric` use the same finite Decimal128
+    encoding and only match build/probe sides with identical precision and scale
   - finite `interval -> Arrow Interval(MonthDayNano)`; PostgreSQL interval
     infinities are rejected because Arrow has no interval special values
 - Output contract:

@@ -45,6 +45,8 @@ pub enum RuntimeFilterKeyType {
     Time64Microsecond = 11,
     /// Arrow `Timestamp(Microsecond, None)` key stored as native-endian microseconds.
     TimestampMicrosecond = 12,
+    /// Arrow `Decimal128` key stored as a scaled signed 128-bit integer.
+    Decimal128 = 13,
 }
 
 impl RuntimeFilterKeyType {
@@ -62,6 +64,7 @@ impl RuntimeFilterKeyType {
             10 => Some(Self::Date32),
             11 => Some(Self::Time64Microsecond),
             12 => Some(Self::TimestampMicrosecond),
+            13 => Some(Self::Decimal128),
             _ => None,
         }
     }

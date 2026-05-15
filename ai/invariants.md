@@ -34,7 +34,9 @@ importance: 0.95
   `numeric(p,s)` maps to `Decimal128(p,s)` for `p <= 38` and non-negative
   scale, while bare `numeric` maps to the fixed fallback `Decimal128(38,16)`.
   Values outside the selected shape and PostgreSQL `numeric` `NaN`/`Infinity`
-  must fail with controlled scan errors.
+  must fail with controlled scan errors. Dynamic filters for `numeric` hash the
+  scaled Decimal128 integer and must only be planned when both join sides use
+  the same Decimal128 precision and scale.
 - Result schema normalization must preserve finite PostgreSQL interval outputs
   as Arrow `Interval(MonthDayNano)` so worker result pages and `slot_import`
   agree on the `INTERVALOID` projection path.

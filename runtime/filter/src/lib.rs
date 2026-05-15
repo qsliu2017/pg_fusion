@@ -42,6 +42,13 @@ pub fn hash_int_key(value: i64) -> u64 {
     value as u64
 }
 
+/// Hash an Arrow Decimal128/PostgreSQL numeric join key using the pg_fusion
+/// runtime-filter contract.
+#[inline]
+pub fn hash_decimal128_key(value: i128) -> u64 {
+    hash_bytes_key(&value.to_le_bytes())
+}
+
 /// Hash a `float4` join key using the pg_fusion runtime-filter contract.
 ///
 /// `+0.0` and `-0.0` are normalized to the same hash and all NaNs are

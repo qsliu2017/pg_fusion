@@ -33,6 +33,7 @@ pub enum SlotFilterKeyType {
     Date32,
     Time64Microsecond,
     TimestampMicrosecond,
+    Decimal128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,6 +50,7 @@ pub enum SlotFilterKeyRef<'a> {
     Date32(i32),
     Time64Microsecond(i64),
     TimestampMicrosecond(i64),
+    Decimal128(i128),
 }
 
 /// Direct writer from PostgreSQL `TupleTableSlot` rows into an
@@ -491,6 +493,11 @@ pub unsafe fn with_filter_key<R>(
         {
             Ok(f(Some(SlotFilterKeyRef::TimestampMicrosecond(unsafe {
                 read_i64(datum, attr.attbyval)
+            }))))
+        }
+        SlotFilterKeyType::Decimal128 if attr.atttypid == pg_sys::NUMERICOID => {
+            Ok(f(Some(SlotFilterKeyRef::Decimal128(unsafe {
+                read_numeric_decimal128(datum, attr.atttypmod, source_index)?
             }))))
         }
         SlotFilterKeyType::Uuid if attr.atttypid == pg_sys::UUIDOID => {
