@@ -6,7 +6,7 @@ mod fsm;
 mod source;
 
 use arrow_layout::{ColumnSpec, TypeTag};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use control_transport::{
     BackendLeaseSlot, BackendSlotLease, BackendTxError, CommitOutcome, TransportRegion, TxError,
 };
@@ -1925,6 +1925,9 @@ fn arrow_data_type_for_type_tag(type_tag: TypeTag) -> DataType {
         TypeTag::IntervalMonthDayNano => {
             DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
         }
+        TypeTag::Date32 => DataType::Date32,
+        TypeTag::Time64Microsecond => DataType::Time64(TimeUnit::Microsecond),
+        TypeTag::TimestampMicrosecond => DataType::Timestamp(TimeUnit::Microsecond, None),
     }
 }
 

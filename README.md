@@ -271,8 +271,9 @@ SET pg_fusion.runtime_filter_enable = off;
 ```
 
 The first implementation supports only simple `Column = Column` inner hash
-joins with a single-partition build side, supported bool, integer, float, or
-text-like keys, and a PostgreSQL scan on the probe side. If no slot is
+joins with a single-partition build side, supported bool, integer, float,
+date/time, `uuid`, `bytea`, or text-like keys, and a PostgreSQL scan on the
+probe side. If no slot is
 available in the shared filter pool, the query continues without that filter
 and increments `runtime_filter_pool_exhausted_total`.
 

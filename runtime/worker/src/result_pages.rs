@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_layout::{init_block, ColumnSpec, LayoutPlan, TypeTag};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use batch_encoder::BatchPageEncoder;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::StreamExt;
@@ -354,8 +354,11 @@ fn normalize_field(index: usize, field: &Field) -> Result<Field, WorkerRuntimeEr
         | DataType::Int64
         | DataType::Float32
         | DataType::Float64
+        | DataType::Date32
         | DataType::Decimal128(_, _)
         | DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano) => field.data_type().clone(),
+        DataType::Time64(TimeUnit::Microsecond)
+        | DataType::Timestamp(TimeUnit::Microsecond, None) => field.data_type().clone(),
         DataType::FixedSizeBinary(width) if *width == 16 => field.data_type().clone(),
         DataType::Utf8 | DataType::Utf8View => DataType::Utf8View,
         DataType::Binary | DataType::BinaryView => DataType::BinaryView,
@@ -508,6 +511,34 @@ mod tests {
         assert_eq!(
             specs[0],
             ColumnSpec::new(TypeTag::IntervalMonthDayNano, true)
+        );
+    }
+
+    #[test]
+    fn preserves_temporal_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("d", DataType::Date32, true),
+            Field::new("tm", DataType::Time64(TimeUnit::Microsecond), true),
+            Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        ]));
+
+        let (transport_schema, specs) =
+            normalize_result_transport_schema(&schema).expect("transport schema");
+
+        assert_eq!(transport_schema.field(0).data_type(), &DataType::Date32);
+        assert_eq!(
+            transport_schema.field(1).data_type(),
+            &DataType::Time64(TimeUnit::Microsecond)
+        );
+        assert_eq!(
+            transport_schema.field(2).data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(specs[0], ColumnSpec::new(TypeTag::Date32, true));
+        assert_eq!(specs[1], ColumnSpec::new(TypeTag::Time64Microsecond, true));
+        assert_eq!(
+            specs[2],
+            ColumnSpec::new(TypeTag::TimestampMicrosecond, true)
         );
     }
 

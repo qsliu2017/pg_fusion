@@ -20,8 +20,8 @@ mod error;
 mod tests;
 
 use arrow_array::types::{
-    ArrowPrimitiveType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
-    IntervalMonthDayNanoType,
+    ArrowPrimitiveType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, IntervalMonthDayNanoType, Time64MicrosecondType, TimestampMicrosecondType,
 };
 use arrow_array::{
     ArrayRef, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, PrimitiveArray, RecordBatch,
@@ -195,6 +195,19 @@ impl ArrowPageDecoder {
                 }
                 TypeTag::IntervalMonthDayNano => {
                     Arc::new(self.import_primitive::<IntervalMonthDayNanoType>(
+                        &owner, &layout, row_count, nulls,
+                    )?)
+                }
+                TypeTag::Date32 => Arc::new(
+                    self.import_primitive::<Date32Type>(&owner, &layout, row_count, nulls)?,
+                ),
+                TypeTag::Time64Microsecond => {
+                    Arc::new(self.import_primitive::<Time64MicrosecondType>(
+                        &owner, &layout, row_count, nulls,
+                    )?)
+                }
+                TypeTag::TimestampMicrosecond => {
+                    Arc::new(self.import_primitive::<TimestampMicrosecondType>(
                         &owner, &layout, row_count, nulls,
                     )?)
                 }

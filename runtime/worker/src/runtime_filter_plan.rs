@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow_array::{
-    Array, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
+    Array, BinaryViewArray, BooleanArray, Date32Array, FixedSizeBinaryArray, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
+    Time64MicrosecondArray, TimestampMicrosecondArray,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use datafusion::physical_plan::coop::CooperativeExec;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::{
@@ -143,6 +144,11 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
         DataType::Utf8View => Some(RuntimeFilterKeyType::Utf8View),
         DataType::FixedSizeBinary(width) if *width == 16 => Some(RuntimeFilterKeyType::Uuid),
         DataType::BinaryView => Some(RuntimeFilterKeyType::BinaryView),
+        DataType::Date32 => Some(RuntimeFilterKeyType::Date32),
+        DataType::Time64(TimeUnit::Microsecond) => Some(RuntimeFilterKeyType::Time64Microsecond),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            Some(RuntimeFilterKeyType::TimestampMicrosecond)
+        }
         _ => None,
     }
 }
@@ -401,6 +407,46 @@ impl RuntimeFilterBuildState {
                     })?;
                 insert_hashes(array, |idx| hash_bytes_key(array.value(idx)), &self.handle)?
             }
+            RuntimeFilterKeyType::Date32 => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<Date32Array>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter Date32 build key had non-Date32 array".into(),
+                        )
+                    })?;
+                insert_hashes(
+                    array,
+                    |idx| hash_int_key(array.value(idx) as i64),
+                    &self.handle,
+                )?
+            }
+            RuntimeFilterKeyType::Time64Microsecond => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<Time64MicrosecondArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter Time64Microsecond build key had non-Time64(Microsecond) array".into(),
+                        )
+                    })?;
+                insert_hashes(array, |idx| hash_int_key(array.value(idx)), &self.handle)?
+            }
+            RuntimeFilterKeyType::TimestampMicrosecond => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter TimestampMicrosecond build key had non-Timestamp(Microsecond) array".into(),
+                        )
+                    })?;
+                insert_hashes(array, |idx| hash_int_key(array.value(idx)), &self.handle)?
+            }
         };
         self.metrics
             .add(MetricId::RuntimeFilterBuildRowsTotal, rows);
@@ -586,6 +632,15 @@ mod tests {
             (DataType::Utf8View, RuntimeFilterKeyType::Utf8View),
             (DataType::FixedSizeBinary(16), RuntimeFilterKeyType::Uuid),
             (DataType::BinaryView, RuntimeFilterKeyType::BinaryView),
+            (DataType::Date32, RuntimeFilterKeyType::Date32),
+            (
+                DataType::Time64(TimeUnit::Microsecond),
+                RuntimeFilterKeyType::Time64Microsecond,
+            ),
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                RuntimeFilterKeyType::TimestampMicrosecond,
+            ),
         ];
 
         for (data_type, expected) in cases {
@@ -664,6 +719,27 @@ mod tests {
                 None,
             ])),
             hash_bytes_key(b"\x00\x01binary"),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::Date32,
+            DataType::Date32,
+            Arc::new(Date32Array::from(vec![Some(19_000), None])),
+            hash_int_key(19_000),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::Time64Microsecond,
+            DataType::Time64(TimeUnit::Microsecond),
+            Arc::new(Time64MicrosecondArray::from(vec![Some(1_000_000), None])),
+            hash_int_key(1_000_000),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::TimestampMicrosecond,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(1_700_000_000_000_000),
+                None,
+            ])),
+            hash_int_key(1_700_000_000_000_000),
         );
     }
 }

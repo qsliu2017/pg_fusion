@@ -1,11 +1,12 @@
 use crate::{ConfigError, ProjectError};
 use arrow_array::types::IntervalMonthDayNanoType;
 use arrow_array::{
-    Array, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray, StringViewArray,
+    Array, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray,
+    StringViewArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_layout::TypeTag;
-use arrow_schema::{DataType, SchemaRef};
+use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use import::{ArrowPageDecoder, OwnedPage};
 use pgrx::fcinfo::direct_function_call_as_datum;
 use pgrx::pg_sys;
@@ -65,6 +66,9 @@ enum ColumnProjector {
     Uuid,
     Numeric { scale: i8 },
     Interval,
+    Date32,
+    Time64Microsecond,
+    TimestampMicrosecond,
     TextLike(TextLikeProjector),
     Bytea,
 }
@@ -98,6 +102,9 @@ enum PageColumnView {
     Uuid(FixedSizeBinaryArray),
     Decimal128(Decimal128Array),
     IntervalMonthDayNano(IntervalMonthDayNanoArray),
+    Date32(Date32Array),
+    Time64Microsecond(Time64MicrosecondArray),
+    TimestampMicrosecond(TimestampMicrosecondArray),
     Utf8View(StringViewArray),
     BinaryView(BinaryViewArray),
 }
@@ -321,6 +328,36 @@ impl ArrowSlotProjector {
                             expected: "IntervalMonthDayNanoArray",
                         })?,
                 ),
+                ColumnProjector::Date32 => PageColumnView::Date32(
+                    array
+                        .as_any()
+                        .downcast_ref::<Date32Array>()
+                        .cloned()
+                        .ok_or(ProjectError::ImportedArrayTypeMismatch {
+                            index,
+                            expected: "Date32Array",
+                        })?,
+                ),
+                ColumnProjector::Time64Microsecond => PageColumnView::Time64Microsecond(
+                    array
+                        .as_any()
+                        .downcast_ref::<Time64MicrosecondArray>()
+                        .cloned()
+                        .ok_or(ProjectError::ImportedArrayTypeMismatch {
+                            index,
+                            expected: "Time64MicrosecondArray",
+                        })?,
+                ),
+                ColumnProjector::TimestampMicrosecond => PageColumnView::TimestampMicrosecond(
+                    array
+                        .as_any()
+                        .downcast_ref::<TimestampMicrosecondArray>()
+                        .cloned()
+                        .ok_or(ProjectError::ImportedArrayTypeMismatch {
+                            index,
+                            expected: "TimestampMicrosecondArray",
+                        })?,
+                ),
                 ColumnProjector::TextLike(_) => PageColumnView::Utf8View(
                     array
                         .as_any()
@@ -389,6 +426,18 @@ impl ArrowSlotProjector {
                 }
                 (ColumnProjector::Interval, PageColumnView::IntervalMonthDayNano(array)) => {
                     values[index] = interval_datum(array.value(row), index)?;
+                }
+                (ColumnProjector::Date32, PageColumnView::Date32(array)) => {
+                    values[index] = pg_sys::Datum::from(array.value(row));
+                }
+                (ColumnProjector::Time64Microsecond, PageColumnView::Time64Microsecond(array)) => {
+                    values[index] = pg_sys::Datum::from(array.value(row));
+                }
+                (
+                    ColumnProjector::TimestampMicrosecond,
+                    PageColumnView::TimestampMicrosecond(array),
+                ) => {
+                    values[index] = pg_sys::Datum::from(array.value(row));
                 }
                 (ColumnProjector::TextLike(projector), PageColumnView::Utf8View(array)) => {
                     values[index] = text_datum(*projector, array.value(row), index)?;
@@ -487,6 +536,9 @@ impl PageColumnView {
             Self::Uuid(array) => array.is_null(row),
             Self::Decimal128(array) => array.is_null(row),
             Self::IntervalMonthDayNano(array) => array.is_null(row),
+            Self::Date32(array) => array.is_null(row),
+            Self::Time64Microsecond(array) => array.is_null(row),
+            Self::TimestampMicrosecond(array) => array.is_null(row),
             Self::Utf8View(array) => array.is_null(row),
             Self::BinaryView(array) => array.is_null(row),
         }
@@ -520,6 +572,29 @@ fn projector_for_attr(
         }
         (TypeTag::IntervalMonthDayNano, oid) if oid == pg_sys::INTERVALOID => {
             ColumnProjector::Interval
+        }
+        (TypeTag::Date32, oid) if oid == pg_sys::DATEOID => ColumnProjector::Date32,
+        (TypeTag::Time64Microsecond, oid) if oid == pg_sys::TIMEOID => {
+            let DataType::Time64(TimeUnit::Microsecond) = data_type else {
+                return Err(ConfigError::PgLayoutTypeMismatch {
+                    index,
+                    oid: oid.to_u32(),
+                    type_tag,
+                });
+            };
+            ColumnProjector::Time64Microsecond
+        }
+        (TypeTag::TimestampMicrosecond, oid)
+            if oid == pg_sys::TIMESTAMPOID || oid == pg_sys::TIMESTAMPTZOID =>
+        {
+            let DataType::Timestamp(TimeUnit::Microsecond, None) = data_type else {
+                return Err(ConfigError::PgLayoutTypeMismatch {
+                    index,
+                    oid: oid.to_u32(),
+                    type_tag,
+                });
+            };
+            ColumnProjector::TimestampMicrosecond
         }
         (TypeTag::Utf8View, oid) if oid == pg_sys::TEXTOID => {
             ColumnProjector::TextLike(TextLikeProjector {

@@ -5,7 +5,7 @@ use crate::constants::{BUFFER_ALIGNMENT, UUID_WIDTH_BYTES};
 use crate::internals::{align_up_u32, aligned_mul, checked_u32};
 use crate::raw::ColumnDesc;
 use crate::LayoutError;
-use arrow_schema::{DataType, IntervalUnit};
+use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 
 /// Raw block-level flags stored in [`crate::raw::BlockHeader::flags`].
 ///
@@ -113,6 +113,12 @@ pub enum TypeTag {
     Decimal128 = 10,
     /// Native-endian Arrow `Interval(MonthDayNano)` values.
     IntervalMonthDayNano = 11,
+    /// Native-endian Arrow `Date32` values.
+    Date32 = 12,
+    /// Native-endian Arrow `Time64(Microsecond)` values.
+    Time64Microsecond = 13,
+    /// Native-endian Arrow `Timestamp(Microsecond, None)` values.
+    TimestampMicrosecond = 14,
 }
 
 impl TypeTag {
@@ -130,6 +136,9 @@ impl TypeTag {
             9 => Ok(Self::BinaryView),
             10 => Ok(Self::Decimal128),
             11 => Ok(Self::IntervalMonthDayNano),
+            12 => Ok(Self::Date32),
+            13 => Ok(Self::Time64Microsecond),
+            14 => Ok(Self::TimestampMicrosecond),
             _ => Err(LayoutError::InvalidTypeTag { raw }),
         }
     }
@@ -149,8 +158,10 @@ impl TypeTag {
         match self {
             Self::Boolean => None,
             Self::Int16 => Some(2),
-            Self::Int32 | Self::Float32 => Some(4),
-            Self::Int64 | Self::Float64 => Some(8),
+            Self::Int32 | Self::Float32 | Self::Date32 => Some(4),
+            Self::Int64 | Self::Float64 | Self::Time64Microsecond | Self::TimestampMicrosecond => {
+                Some(8)
+            }
             Self::Uuid
             | Self::Utf8View
             | Self::BinaryView
@@ -165,8 +176,10 @@ impl TypeTag {
         match self {
             Self::Boolean => align_up_u32(bitmap_bytes(max_rows), BUFFER_ALIGNMENT),
             Self::Int16 => aligned_mul(max_rows, 2),
-            Self::Int32 | Self::Float32 => aligned_mul(max_rows, 4),
-            Self::Int64 | Self::Float64 => aligned_mul(max_rows, 8),
+            Self::Int32 | Self::Float32 | Self::Date32 => aligned_mul(max_rows, 4),
+            Self::Int64 | Self::Float64 | Self::Time64Microsecond | Self::TimestampMicrosecond => {
+                aligned_mul(max_rows, 8)
+            }
             Self::Uuid
             | Self::Utf8View
             | Self::BinaryView
@@ -186,18 +199,20 @@ impl TypeTag {
                     .checked_mul(2)
                     .ok_or(LayoutError::SizeOverflow)?,
             ),
-            Self::Int32 | Self::Float32 => checked_u32(
+            Self::Int32 | Self::Float32 | Self::Date32 => checked_u32(
                 usize::try_from(row_count)
                     .map_err(|_| LayoutError::SizeOverflow)?
                     .checked_mul(4)
                     .ok_or(LayoutError::SizeOverflow)?,
             ),
-            Self::Int64 | Self::Float64 => checked_u32(
-                usize::try_from(row_count)
-                    .map_err(|_| LayoutError::SizeOverflow)?
-                    .checked_mul(8)
-                    .ok_or(LayoutError::SizeOverflow)?,
-            ),
+            Self::Int64 | Self::Float64 | Self::Time64Microsecond | Self::TimestampMicrosecond => {
+                checked_u32(
+                    usize::try_from(row_count)
+                        .map_err(|_| LayoutError::SizeOverflow)?
+                        .checked_mul(8)
+                        .ok_or(LayoutError::SizeOverflow)?,
+                )
+            }
             Self::Uuid
             | Self::Utf8View
             | Self::BinaryView
@@ -225,6 +240,9 @@ impl TypeTag {
             DataType::BinaryView => Ok(Self::BinaryView),
             DataType::Decimal128(_, _) => Ok(Self::Decimal128),
             DataType::Interval(IntervalUnit::MonthDayNano) => Ok(Self::IntervalMonthDayNano),
+            DataType::Date32 => Ok(Self::Date32),
+            DataType::Time64(TimeUnit::Microsecond) => Ok(Self::Time64Microsecond),
+            DataType::Timestamp(TimeUnit::Microsecond, None) => Ok(Self::TimestampMicrosecond),
             other => Err(LayoutError::UnsupportedArrowType {
                 index,
                 data_type: other.to_string(),

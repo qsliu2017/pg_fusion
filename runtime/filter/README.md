@@ -110,7 +110,8 @@ The Bloom filter stores already-hashed keys. `pg_fusion` currently exposes
 helpers for supported runtime-filter key families:
 
 - `hash_bool_key` for `bool`
-- `hash_int_key` for `int2` / `int4` / `int8`
+- `hash_int_key` for `int2` / `int4` / `int8`, `date`, `time`,
+  `timestamp`, and `timestamptz`
 - `hash_float32_key` for `float4`
 - `hash_float64_key` for `float8`
 - `hash_bytes_key` for text-like `Utf8View` keys (`text`, `varchar`,

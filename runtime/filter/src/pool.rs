@@ -39,6 +39,12 @@ pub enum RuntimeFilterKeyType {
     Uuid = 8,
     /// Binary byte key.
     BinaryView = 9,
+    /// Arrow `Date32` key stored as native-endian days.
+    Date32 = 10,
+    /// Arrow `Time64(Microsecond)` key stored as native-endian microseconds.
+    Time64Microsecond = 11,
+    /// Arrow `Timestamp(Microsecond, None)` key stored as native-endian microseconds.
+    TimestampMicrosecond = 12,
 }
 
 impl RuntimeFilterKeyType {
@@ -53,6 +59,9 @@ impl RuntimeFilterKeyType {
             7 => Some(Self::Utf8View),
             8 => Some(Self::Uuid),
             9 => Some(Self::BinaryView),
+            10 => Some(Self::Date32),
+            11 => Some(Self::Time64Microsecond),
+            12 => Some(Self::TimestampMicrosecond),
             _ => None,
         }
     }

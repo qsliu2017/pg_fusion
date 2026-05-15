@@ -29,6 +29,9 @@ pub enum SlotFilterKeyType {
     Utf8View,
     Uuid,
     BinaryView,
+    Date32,
+    Time64Microsecond,
+    TimestampMicrosecond,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +45,9 @@ pub enum SlotFilterKeyRef<'a> {
     Utf8(&'a [u8]),
     Uuid(&'a [u8]),
     Binary(&'a [u8]),
+    Date32(i32),
+    Time64Microsecond(i64),
+    TimestampMicrosecond(i64),
 }
 
 /// Direct writer from PostgreSQL `TupleTableSlot` rows into an
@@ -164,6 +170,9 @@ impl<'payload> PageBatchEncoder<'payload> {
                         | TypeTag::Float32
                         | TypeTag::Float64
                         | TypeTag::IntervalMonthDayNano
+                        | TypeTag::Date32
+                        | TypeTag::Time64Microsecond
+                        | TypeTag::TimestampMicrosecond
                 )
             {
                 fixed_width_fast_path = false;
@@ -465,6 +474,23 @@ pub unsafe fn with_filter_key<R>(
                 read_f64(datum, attr.attbyval)
             }))))
         }
+        SlotFilterKeyType::Date32 if attr.atttypid == pg_sys::DATEOID => {
+            Ok(f(Some(SlotFilterKeyRef::Date32(unsafe {
+                read_i32(datum, attr.attbyval)
+            }))))
+        }
+        SlotFilterKeyType::Time64Microsecond if attr.atttypid == pg_sys::TIMEOID => {
+            Ok(f(Some(SlotFilterKeyRef::Time64Microsecond(unsafe {
+                read_i64(datum, attr.attbyval)
+            }))))
+        }
+        SlotFilterKeyType::TimestampMicrosecond
+            if attr.atttypid == pg_sys::TIMESTAMPOID || attr.atttypid == pg_sys::TIMESTAMPTZOID =>
+        {
+            Ok(f(Some(SlotFilterKeyRef::TimestampMicrosecond(unsafe {
+                read_i64(datum, attr.attbyval)
+            }))))
+        }
         SlotFilterKeyType::Uuid if attr.atttypid == pg_sys::UUIDOID => {
             let bytes = unsafe { read_fixed_bytes(datum, 16, source_index)? };
             Ok(f(Some(SlotFilterKeyRef::Uuid(bytes))))
@@ -546,6 +572,13 @@ impl FixedWidthRowSource for PgSlotRow {
             TypeTag::Int64 => FixedWidthCell::Int64(unsafe { read_i64(datum, attr.attbyval) }),
             TypeTag::Float32 => FixedWidthCell::Float32(unsafe { read_f32(datum, attr.attbyval) }),
             TypeTag::Float64 => FixedWidthCell::Float64(unsafe { read_f64(datum, attr.attbyval) }),
+            TypeTag::Date32 => FixedWidthCell::Date32(unsafe { read_i32(datum, attr.attbyval) }),
+            TypeTag::Time64Microsecond => {
+                FixedWidthCell::Time64Microsecond(unsafe { read_i64(datum, attr.attbyval) })
+            }
+            TypeTag::TimestampMicrosecond => {
+                FixedWidthCell::TimestampMicrosecond(unsafe { read_i64(datum, attr.attbyval) })
+            }
             TypeTag::IntervalMonthDayNano => {
                 let (months, days, nanoseconds) =
                     unsafe { read_interval_month_day_nano(datum, index)? };
@@ -597,6 +630,18 @@ impl RowSource for PgSlotRow {
             ),
             oid if oid == pg_sys::FLOAT8OID => self.write_cell(
                 CellRef::Float64(unsafe { read_f64(datum, attr.attbyval) }),
+                f,
+            ),
+            oid if oid == pg_sys::DATEOID => self.write_cell(
+                CellRef::Date32(unsafe { read_i32(datum, attr.attbyval) }),
+                f,
+            ),
+            oid if oid == pg_sys::TIMEOID => self.write_cell(
+                CellRef::Time64Microsecond(unsafe { read_i64(datum, attr.attbyval) }),
+                f,
+            ),
+            oid if oid == pg_sys::TIMESTAMPOID || oid == pg_sys::TIMESTAMPTZOID => self.write_cell(
+                CellRef::TimestampMicrosecond(unsafe { read_i64(datum, attr.attbyval) }),
                 f,
             ),
             oid if oid == pg_sys::UUIDOID => {

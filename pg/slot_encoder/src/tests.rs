@@ -198,6 +198,7 @@ enum MockCell {
     Null,
     Bool(bool),
     I32(i32),
+    I64(i64),
     F32(f32),
     F64(f64),
     Utf8(Vec<u8>),
@@ -213,6 +214,7 @@ impl MockCell {
             Self::Null => (pg_sys::Datum::null(), true),
             Self::Bool(value) => (pg_sys::Datum::from(*value), false),
             Self::I32(value) => (pg_sys::Datum::from(*value), false),
+            Self::I64(value) => (pg_sys::Datum::from(*value), false),
             Self::F32(value) => (pg_sys::Datum::from(value.to_bits()), false),
             Self::F64(value) => (pg_sys::Datum::from(value.to_bits()), false),
             Self::Utf8(value) | Self::Binary(value) => {
@@ -303,6 +305,11 @@ fn bool_at(block: &BlockRef<'_>, col: usize, row: u32) -> bool {
 fn i32_at(block: &BlockRef<'_>, col: usize, row: u32) -> i32 {
     let bytes = block.fixed_value(col, row).expect("fixed value");
     i32::from_ne_bytes(bytes.try_into().expect("i32 bytes"))
+}
+
+fn i64_at(block: &BlockRef<'_>, col: usize, row: u32) -> i64 {
+    let bytes = block.fixed_value(col, row).expect("fixed value");
+    i64::from_ne_bytes(bytes.try_into().expect("i64 bytes"))
 }
 
 fn f64_at(block: &BlockRef<'_>, col: usize, row: u32) -> f64 {
@@ -632,6 +639,68 @@ fn append_slot_encodes_interval_as_month_day_nano() {
 }
 
 #[test]
+fn append_slot_encodes_temporal_values() {
+    let specs = [
+        ColumnSpec::new(TypeTag::Date32, false),
+        ColumnSpec::new(TypeTag::Time64Microsecond, false),
+        ColumnSpec::new(TypeTag::TimestampMicrosecond, false),
+        ColumnSpec::new(TypeTag::TimestampMicrosecond, false),
+    ];
+    let attrs = [
+        TestAttr {
+            oid: pg_sys::DATEOID,
+            attlen: 4,
+            attbyval: true,
+            attalign: b'i',
+        },
+        TestAttr {
+            oid: pg_sys::TIMEOID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+        TestAttr {
+            oid: pg_sys::TIMESTAMPOID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+        TestAttr {
+            oid: pg_sys::TIMESTAMPTZOID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+    ];
+    let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let mut slot = OwnedSlot::from_cells(
+        tuple_desc.ptr,
+        vec![
+            MockCell::I32(19_000),
+            MockCell::I64(1_000_000),
+            MockCell::I64(1_700_000_000_000_000),
+            MockCell::I64(1_700_000_000_000_001),
+        ],
+    );
+
+    let mut payload = init_payload(&specs, 2, 512);
+    let mut encoder =
+        unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
+    assert!(encoder.fixed_width_fast_path_for_tests());
+    assert_eq!(
+        unsafe { encoder.append_slot(slot.as_mut_ptr()) }.expect("append slot"),
+        AppendStatus::Appended
+    );
+    encoder.finish().expect("finish");
+
+    let block = BlockRef::open(&payload).expect("block");
+    assert_eq!(i32_at(&block, 0, 0), 19_000);
+    assert_eq!(i64_at(&block, 1, 0), 1_000_000);
+    assert_eq!(i64_at(&block, 2, 0), 1_700_000_000_000_000);
+    assert_eq!(i64_at(&block, 3, 0), 1_700_000_000_000_001);
+}
+
+#[test]
 fn append_slot_rejects_infinite_interval() {
     let specs = [ColumnSpec::new(TypeTag::IntervalMonthDayNano, true)];
     let attrs = [TestAttr {
@@ -676,6 +745,30 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
         },
         TestAttr {
             oid: pg_sys::FLOAT8OID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+        TestAttr {
+            oid: pg_sys::DATEOID,
+            attlen: 4,
+            attbyval: true,
+            attalign: b'i',
+        },
+        TestAttr {
+            oid: pg_sys::TIMEOID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+        TestAttr {
+            oid: pg_sys::TIMESTAMPOID,
+            attlen: 8,
+            attbyval: true,
+            attalign: b'd',
+        },
+        TestAttr {
+            oid: pg_sys::TIMESTAMPTZOID,
             attlen: 8,
             attbyval: true,
             attalign: b'd',
@@ -726,6 +819,10 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             MockCell::Bool(true),
             MockCell::F32(1.25),
             MockCell::F64(-2.5),
+            MockCell::I32(19_000),
+            MockCell::I64(1_000_000),
+            MockCell::I64(1_700_000_000_000_000),
+            MockCell::I64(1_700_000_000_000_001),
             MockCell::Utf8(short_varlena(b"text")),
             MockCell::Utf8(short_varlena(b"varchar")),
             MockCell::Utf8(short_varlena(b"bpchar")),
@@ -777,11 +874,61 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
     .expect("float8 key");
     assert_eq!(float8_key, Some(-2.5));
 
+    let date_key = unsafe {
+        with_filter_key(
+            slot.as_mut_ptr(),
+            3,
+            SlotFilterKeyType::Date32,
+            |value| match value {
+                Some(SlotFilterKeyRef::Date32(value)) => Some(value),
+                other => panic!("unexpected date key: {other:?}"),
+            },
+        )
+    }
+    .expect("date key");
+    assert_eq!(date_key, Some(19_000));
+
+    let time_key = unsafe {
+        with_filter_key(
+            slot.as_mut_ptr(),
+            4,
+            SlotFilterKeyType::Time64Microsecond,
+            |value| match value {
+                Some(SlotFilterKeyRef::Time64Microsecond(value)) => Some(value),
+                other => panic!("unexpected time key: {other:?}"),
+            },
+        )
+    }
+    .expect("time key");
+    assert_eq!(time_key, Some(1_000_000));
+
+    for (index, key_type, expected) in [
+        (
+            5,
+            SlotFilterKeyType::TimestampMicrosecond,
+            1_700_000_000_000_000,
+        ),
+        (
+            6,
+            SlotFilterKeyType::TimestampMicrosecond,
+            1_700_000_000_000_001,
+        ),
+    ] {
+        let key = unsafe {
+            with_filter_key(slot.as_mut_ptr(), index, key_type, |value| match value {
+                Some(SlotFilterKeyRef::TimestampMicrosecond(value)) => Some(value),
+                other => panic!("unexpected timestamp key at {index}: {other:?}"),
+            })
+        }
+        .expect("timestamp key");
+        assert_eq!(key, Some(expected));
+    }
+
     for (index, expected) in [
-        (3, &b"text"[..]),
-        (4, &b"varchar"[..]),
-        (5, &b"bpchar"[..]),
-        (6, &b"name_key"[..]),
+        (7, &b"text"[..]),
+        (8, &b"varchar"[..]),
+        (9, &b"bpchar"[..]),
+        (10, &b"name_key"[..]),
     ] {
         let key = unsafe {
             with_filter_key(
@@ -801,7 +948,7 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
     let uuid_key = unsafe {
         with_filter_key(
             slot.as_mut_ptr(),
-            7,
+            11,
             SlotFilterKeyType::Uuid,
             |value| match value {
                 Some(SlotFilterKeyRef::Uuid(bytes)) => Some(bytes.to_vec()),
@@ -815,7 +962,7 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
     let binary_key = unsafe {
         with_filter_key(
             slot.as_mut_ptr(),
-            8,
+            12,
             SlotFilterKeyType::BinaryView,
             |value| match value {
                 Some(SlotFilterKeyRef::Binary(bytes)) => Some(bytes.to_vec()),

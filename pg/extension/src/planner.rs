@@ -386,6 +386,11 @@ fn type_to_oid(data_type: &DataType) -> Option<Oid> {
         DataType::Binary | DataType::BinaryView => Some(pgrx::pg_sys::BYTEAOID),
         DataType::FixedSizeBinary(16) => Some(pgrx::pg_sys::UUIDOID),
         DataType::Interval(IntervalUnit::MonthDayNano) => Some(pgrx::pg_sys::INTERVALOID),
+        DataType::Date32 => Some(pgrx::pg_sys::DATEOID),
+        DataType::Time64(arrow_schema::TimeUnit::Microsecond) => Some(pgrx::pg_sys::TIMEOID),
+        DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None) => {
+            Some(pgrx::pg_sys::TIMESTAMPOID)
+        }
         _ => None,
     }
 }

@@ -1359,6 +1359,115 @@ pub(crate) fn runtime_filter_bytea_smoke() {
     assert_eq!(parts[6], before_epoch);
 }
 
+pub(crate) fn runtime_filter_temporal_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let cases = [
+        (
+            "date",
+            "(DATE '2024-01-01' + (g::int - 1))::date",
+        ),
+        (
+            "time",
+            "(TIME '00:00:00' + (g::text || ' microseconds')::interval)::time",
+        ),
+        (
+            "timestamp",
+            "(TIMESTAMP '2024-01-01 00:00:00' + (g::text || ' microseconds')::interval)::timestamp",
+        ),
+        (
+            "timestamptz",
+            "(TIMESTAMPTZ '2024-01-01 00:00:00+00' + (g::text || ' microseconds')::interval)::timestamptz",
+        ),
+    ];
+
+    for (name, expr) in cases {
+        let build_table = format!("pg_temp.pgf_runtime_filter_{name}_build");
+        let probe_table = format!("pg_temp.pgf_runtime_filter_{name}_probe");
+        batch_execute_pg_fusion_disabled(
+            &mut tx,
+            &format!(
+                "\
+                CREATE TEMP TABLE {build_table} AS
+                SELECT {expr} AS k
+                FROM generate_series(1, 3) AS g;
+
+                CREATE TEMP TABLE {probe_table} AS
+                SELECT {expr} AS k
+                FROM generate_series(1, 100000) AS g;
+                "
+            ),
+        );
+
+        let before_epoch: i64 =
+            simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
+                .expect("runtime filter metrics reset must return an epoch")
+                .parse()
+                .expect("runtime filter metrics reset epoch must be an integer");
+
+        let count: i64 = simple_query_first_column_tx(
+            &mut tx,
+            &format!(
+                "\
+                SELECT count(*)::bigint
+                FROM {build_table} AS b
+                JOIN {probe_table} AS p ON b.k = p.k
+                "
+            ),
+        )
+        .unwrap_or_else(|| panic!("{name} runtime filter join must return one row"))
+        .parse()
+        .unwrap_or_else(|err| panic!("{name} runtime filter join count must be an integer: {err}"));
+        assert_eq!(count, 3, "{name} runtime filter join count");
+
+        let summary = simple_query_first_column_tx(
+            &mut tx,
+            "\
+            SELECT concat(
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_allocated_total'), 0), ',',
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_ready_total'), 0), ',',
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_build_rows_total'), 0), ',',
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_rows_total'), 0), ',',
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_rows_rejected_total'), 0), ',',
+                coalesce(max(value) FILTER (WHERE metric = 'runtime_filter_probe_pass_unfiltered_total'), 0), ',',
+                coalesce(max(reset_epoch), 0)
+            )
+            FROM pg_fusion_metrics()
+            ",
+        )
+        .expect("runtime filter metric summary must return one row");
+        let parts = summary
+            .split(',')
+            .map(|part| {
+                part.parse::<i64>()
+                    .expect("runtime filter metric value must be integer")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(parts.len(), 7);
+        assert!(
+            parts[0] > 0,
+            "runtime filter should be allocated for {name} join: {summary}"
+        );
+        assert!(
+            parts[1] > 0,
+            "runtime filter should become ready for {name} join: {summary}"
+        );
+        assert!(
+            parts[2] >= 3,
+            "runtime filter should observe {name} build rows: {summary}"
+        );
+        assert!(
+            parts[3] >= 100000,
+            "runtime filter should probe {name} rows: {summary}"
+        );
+        assert!(
+            parts[4] > 0,
+            "runtime filter should reject non-matching {name} probe rows: {summary}"
+        );
+        assert_eq!(parts[6], before_epoch);
+    }
+}
+
 pub(crate) fn spill_metrics_smoke() {
     if std::env::var("PG_FUSION_SPILL_PG_TEST").as_deref() != Ok("1") {
         return;

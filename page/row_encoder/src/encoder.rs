@@ -30,6 +30,9 @@ pub enum CellType {
     Uuid,
     Decimal128,
     IntervalMonthDayNano,
+    Date32,
+    Time64Microsecond,
+    TimestampMicrosecond,
     Utf8,
     Binary,
 }
@@ -50,6 +53,9 @@ pub enum CellRef<'a> {
         days: i32,
         nanoseconds: i64,
     },
+    Date32(i32),
+    Time64Microsecond(i64),
+    TimestampMicrosecond(i64),
     Utf8(&'a [u8]),
     Binary(&'a [u8]),
 }
@@ -67,6 +73,9 @@ impl CellRef<'_> {
             Self::Uuid(_) => CellType::Uuid,
             Self::Decimal128(_) => CellType::Decimal128,
             Self::IntervalMonthDayNano { .. } => CellType::IntervalMonthDayNano,
+            Self::Date32(_) => CellType::Date32,
+            Self::Time64Microsecond(_) => CellType::Time64Microsecond,
+            Self::TimestampMicrosecond(_) => CellType::TimestampMicrosecond,
             Self::Utf8(_) => CellType::Utf8,
             Self::Binary(_) => CellType::Binary,
         }
@@ -87,6 +96,9 @@ pub enum FixedWidthCell {
         days: i32,
         nanoseconds: i64,
     },
+    Date32(i32),
+    Time64Microsecond(i64),
+    TimestampMicrosecond(i64),
 }
 
 impl FixedWidthCell {
@@ -100,6 +112,9 @@ impl FixedWidthCell {
             Self::Float64(_) => CellType::Float64,
             Self::Decimal128(_) => CellType::Decimal128,
             Self::IntervalMonthDayNano { .. } => CellType::IntervalMonthDayNano,
+            Self::Date32(_) => CellType::Date32,
+            Self::Time64Microsecond(_) => CellType::Time64Microsecond,
+            Self::TimestampMicrosecond(_) => CellType::TimestampMicrosecond,
         }
     }
 }
@@ -258,6 +273,9 @@ impl<'payload> PageRowEncoder<'payload> {
                 | TypeTag::Float64
                 | TypeTag::Decimal128
                 | TypeTag::IntervalMonthDayNano
+                | TypeTag::Date32
+                | TypeTag::Time64Microsecond
+                | TypeTag::TimestampMicrosecond
         ) {
             return Ok(None);
         }
@@ -294,6 +312,18 @@ impl<'payload> PageRowEncoder<'payload> {
                     self.write_fixed_bytes(row_idx, desc, &value.to_bits().to_ne_bytes())?;
                 }
                 (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
+                    self.write_validity(row_idx, desc, true);
+                    self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
+                }
+                (TypeTag::Date32, CellRef::Date32(value)) => {
+                    self.write_validity(row_idx, desc, true);
+                    self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
+                }
+                (TypeTag::Time64Microsecond, CellRef::Time64Microsecond(value)) => {
+                    self.write_validity(row_idx, desc, true);
+                    self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
+                }
+                (TypeTag::TimestampMicrosecond, CellRef::TimestampMicrosecond(value)) => {
                     self.write_validity(row_idx, desc, true);
                     self.write_fixed_bytes(row_idx, desc, &value.to_ne_bytes())?;
                 }
@@ -371,6 +401,15 @@ impl<'payload> PageRowEncoder<'payload> {
             (TypeTag::Decimal128, CellRef::Decimal128(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_ne_bytes())
             }
+            (TypeTag::Date32, CellRef::Date32(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())
+            }
+            (TypeTag::Time64Microsecond, CellRef::Time64Microsecond(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())
+            }
+            (TypeTag::TimestampMicrosecond, CellRef::TimestampMicrosecond(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())
+            }
             (
                 TypeTag::IntervalMonthDayNano,
                 CellRef::IntervalMonthDayNano {
@@ -439,6 +478,18 @@ impl<'payload> PageRowEncoder<'payload> {
                 Ok(())
             }
             (TypeTag::Decimal128, FixedWidthCell::Decimal128(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
+                Ok(())
+            }
+            (TypeTag::Date32, FixedWidthCell::Date32(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
+                Ok(())
+            }
+            (TypeTag::Time64Microsecond, FixedWidthCell::Time64Microsecond(value)) => {
+                self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
+                Ok(())
+            }
+            (TypeTag::TimestampMicrosecond, FixedWidthCell::TimestampMicrosecond(value)) => {
                 self.write_fixed(row_idx, desc, &value.to_ne_bytes())?;
                 Ok(())
             }
@@ -536,10 +587,17 @@ impl<'payload> PageRowEncoder<'payload> {
         match desc.type_tag {
             raw if raw == TypeTag::Boolean.to_raw() => self.write_bool_value(row_idx, desc, false),
             raw if raw == TypeTag::Int16.to_raw() => self.zero_value_slot(row_idx, desc, 2),
-            raw if raw == TypeTag::Int32.to_raw() || raw == TypeTag::Float32.to_raw() => {
+            raw if raw == TypeTag::Int32.to_raw()
+                || raw == TypeTag::Float32.to_raw()
+                || raw == TypeTag::Date32.to_raw() =>
+            {
                 self.zero_value_slot(row_idx, desc, 4)
             }
-            raw if raw == TypeTag::Int64.to_raw() || raw == TypeTag::Float64.to_raw() => {
+            raw if raw == TypeTag::Int64.to_raw()
+                || raw == TypeTag::Float64.to_raw()
+                || raw == TypeTag::Time64Microsecond.to_raw()
+                || raw == TypeTag::TimestampMicrosecond.to_raw() =>
+            {
                 self.zero_value_slot(row_idx, desc, 8)
             }
             raw if raw == TypeTag::Uuid.to_raw()
@@ -655,8 +713,19 @@ impl<'payload> PageRowEncoder<'payload> {
     ) -> Result<(), RowEncodeError> {
         let width = match desc.type_tag {
             raw if raw == TypeTag::Int16.to_raw() => 2usize,
-            raw if raw == TypeTag::Int32.to_raw() || raw == TypeTag::Float32.to_raw() => 4usize,
-            raw if raw == TypeTag::Int64.to_raw() || raw == TypeTag::Float64.to_raw() => 8usize,
+            raw if raw == TypeTag::Int32.to_raw()
+                || raw == TypeTag::Float32.to_raw()
+                || raw == TypeTag::Date32.to_raw() =>
+            {
+                4usize
+            }
+            raw if raw == TypeTag::Int64.to_raw()
+                || raw == TypeTag::Float64.to_raw()
+                || raw == TypeTag::Time64Microsecond.to_raw()
+                || raw == TypeTag::TimestampMicrosecond.to_raw() =>
+            {
+                8usize
+            }
             raw if raw == TypeTag::Uuid.to_raw()
                 || raw == TypeTag::Decimal128.to_raw()
                 || raw == TypeTag::IntervalMonthDayNano.to_raw() =>

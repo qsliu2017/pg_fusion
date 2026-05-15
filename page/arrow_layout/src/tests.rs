@@ -1,7 +1,7 @@
 use super::*;
 use crate::constants::{BUFFER_ALIGNMENT, BUFFER_ALIGNMENT_BIAS, SHARED_VIEW_BUFFER_INDEX};
 use crate::raw::{BlockHeader, ColumnDesc};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use std::mem::{align_of, size_of};
 
 #[test]
@@ -54,6 +54,29 @@ fn rejects_plain_utf8_and_binary() {
     match err {
         LayoutError::UnsupportedArrowType { index, .. } => assert_eq!(index, 0),
         other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn maps_temporal_arrow_types_to_fixed_width_tags() {
+    let cases = [
+        (DataType::Date32, TypeTag::Date32, 4),
+        (
+            DataType::Time64(TimeUnit::Microsecond),
+            TypeTag::Time64Microsecond,
+            8,
+        ),
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            TypeTag::TimestampMicrosecond,
+            8,
+        ),
+    ];
+
+    for (index, (data_type, expected, width)) in cases.into_iter().enumerate() {
+        let tag = TypeTag::from_arrow_data_type(index, &data_type).expect("type tag");
+        assert_eq!(tag, expected);
+        assert_eq!(tag.values_row_width(), Some(width));
     }
 }
 

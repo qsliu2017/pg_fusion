@@ -1,11 +1,12 @@
 use super::{ArrowPageDecoder, ConfigError, ImportError, ARROW_LAYOUT_BATCH_KIND};
 use arrow_array::{
-    Array, ArrayRef, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray,
-    RecordBatch, RecordBatchOptions, StringViewArray,
+    Array, ArrayRef, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array,
+    FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    IntervalMonthDayNanoArray, RecordBatch, RecordBatchOptions, StringViewArray,
+    Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_layout::{init_block, BlockMut, BlockRef, ByteView, LayoutPlan, ViewWriteStatus};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 #[cfg(feature = "slot-encoder-tests")]
 use pgrx_pg_sys as pg_sys;
 use pool::{PagePool, PagePoolConfig, RegionLayout};
@@ -198,6 +199,9 @@ fn mixed_batch() -> RecordBatch {
         Field::new("i64", DataType::Int64, true),
         Field::new("f32", DataType::Float32, true),
         Field::new("f64", DataType::Float64, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("tm", DataType::Time64(TimeUnit::Microsecond), true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
         Field::new("uuid", DataType::FixedSizeBinary(16), true),
         Field::new("txt", DataType::Utf8View, true),
         Field::new("bin", DataType::BinaryView, true),
@@ -229,6 +233,24 @@ fn mixed_batch() -> RecordBatch {
             None,
             Some(-4.75),
             Some(8.25),
+        ])),
+        Arc::new(Date32Array::from(vec![
+            Some(19_000),
+            None,
+            Some(19_002),
+            Some(19_003),
+        ])),
+        Arc::new(Time64MicrosecondArray::from(vec![
+            Some(1_000_000),
+            None,
+            Some(2_000_000),
+            Some(3_000_000),
+        ])),
+        Arc::new(TimestampMicrosecondArray::from(vec![
+            Some(1_700_000_000_000_000),
+            None,
+            Some(1_700_000_000_000_002),
+            Some(1_700_000_000_000_003),
         ])),
         Arc::new(uuid_array([
             Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
@@ -359,6 +381,33 @@ fn encode_layout_payload(batch: &RecordBatch, block_size: usize) -> Vec<u8> {
                         bytes[4..8].copy_from_slice(&value.days.to_ne_bytes());
                         bytes[8..16].copy_from_slice(&value.nanoseconds.to_ne_bytes());
                         block.write_fixed(col, row, &bytes).expect("write fixed");
+                    }
+                    arrow_layout::TypeTag::Date32 => {
+                        let value = array
+                            .as_any()
+                            .downcast_ref::<Date32Array>()
+                            .expect("date32")
+                            .value(row as usize)
+                            .to_ne_bytes();
+                        block.write_fixed(col, row, &value).expect("write fixed");
+                    }
+                    arrow_layout::TypeTag::Time64Microsecond => {
+                        let value = array
+                            .as_any()
+                            .downcast_ref::<Time64MicrosecondArray>()
+                            .expect("time64 microsecond")
+                            .value(row as usize)
+                            .to_ne_bytes();
+                        block.write_fixed(col, row, &value).expect("write fixed");
+                    }
+                    arrow_layout::TypeTag::TimestampMicrosecond => {
+                        let value = array
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .expect("timestamp microsecond")
+                            .value(row as usize)
+                            .to_ne_bytes();
+                        block.write_fixed(col, row, &value).expect("write fixed");
                     }
                     arrow_layout::TypeTag::Uuid => {
                         let value = array
@@ -547,6 +596,9 @@ fn rejects_schema_type_mismatch() {
         Field::new("i64", DataType::Int64, true),
         Field::new("f32", DataType::Float32, true),
         Field::new("f64", DataType::Float64, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("tm", DataType::Time64(TimeUnit::Microsecond), true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
         Field::new("uuid", DataType::FixedSizeBinary(16), true),
         Field::new("txt", DataType::Utf8View, true),
         Field::new("bin", DataType::BinaryView, true),
@@ -572,7 +624,7 @@ fn rejects_invalid_view_buffer_index() {
     let batch = mixed_batch();
     let mut payload = encode_layout_payload(&batch, 4096);
     let block = BlockRef::open(&payload).expect("block");
-    let layout = block.column_layout(7).expect("txt layout");
+    let layout = block.column_layout(10).expect("txt layout");
     let row = 2usize;
     let slot_off =
         usize::try_from(layout.values_off).expect("offset") + row * std::mem::size_of::<ByteView>();
@@ -628,14 +680,14 @@ fn rejects_view_offset_before_allocated_tail() {
     {
         let mut block = BlockMut::open(&mut payload).expect("block");
         let long_value = batch
-            .column(7)
+            .column(10)
             .as_any()
             .downcast_ref::<StringViewArray>()
             .expect("string views")
             .value(2);
         block
             .write_view(
-                7,
+                10,
                 2,
                 ByteView::new_outline(long_value.as_bytes(), 0).expect("view"),
             )
@@ -652,7 +704,7 @@ fn rejects_view_offset_before_allocated_tail() {
     assert!(matches!(
         err,
         ImportError::ViewOffsetBeforeAllocatedTail {
-            index: 7,
+            index: 10,
             row: 2,
             offset: 0,
             ..

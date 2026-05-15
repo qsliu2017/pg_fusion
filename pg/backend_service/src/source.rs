@@ -459,6 +459,9 @@ fn slot_filter_key_type(key_type: RuntimeFilterKeyType) -> SlotFilterKeyType {
         RuntimeFilterKeyType::Utf8View => SlotFilterKeyType::Utf8View,
         RuntimeFilterKeyType::Uuid => SlotFilterKeyType::Uuid,
         RuntimeFilterKeyType::BinaryView => SlotFilterKeyType::BinaryView,
+        RuntimeFilterKeyType::Date32 => SlotFilterKeyType::Date32,
+        RuntimeFilterKeyType::Time64Microsecond => SlotFilterKeyType::Time64Microsecond,
+        RuntimeFilterKeyType::TimestampMicrosecond => SlotFilterKeyType::TimestampMicrosecond,
     }
 }
 
@@ -473,6 +476,9 @@ fn hash_slot_filter_key(value: SlotFilterKeyRef<'_>) -> u64 {
         SlotFilterKeyRef::Utf8(value) => hash_bytes_key(value),
         SlotFilterKeyRef::Uuid(value) => hash_bytes_key(value),
         SlotFilterKeyRef::Binary(value) => hash_bytes_key(value),
+        SlotFilterKeyRef::Date32(value) => hash_int_key(value as i64),
+        SlotFilterKeyRef::Time64Microsecond(value) => hash_int_key(value),
+        SlotFilterKeyRef::TimestampMicrosecond(value) => hash_int_key(value),
     }
 }
 

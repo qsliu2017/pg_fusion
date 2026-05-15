@@ -169,6 +169,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_runtime_filter_temporal_smoke() {
+        super::smoke_tests::runtime_filter_temporal_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_spill_metrics_smoke() {
         super::smoke_tests::spill_metrics_smoke();
     }

@@ -1,12 +1,12 @@
 use super::{AppendResult, BatchPageEncoder, ConfigError, EncodeError};
 use arrow_array::{
-    ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    StringViewArray,
+    ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array,
+    FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    RecordBatch, StringArray, StringViewArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_layout::constants::VIEW_INLINE_LEN;
 use arrow_layout::{init_block, BlockRef, ColumnSpec, LayoutPlan, TypeTag};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
@@ -94,6 +94,9 @@ fn input_schema() -> Arc<Schema> {
         Field::new("i64", DataType::Int64, true),
         Field::new("f32", DataType::Float32, true),
         Field::new("f64", DataType::Float64, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("tm", DataType::Time64(TimeUnit::Microsecond), true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
         Field::new("uuid", DataType::FixedSizeBinary(16), true),
         Field::new("txt", DataType::Utf8, true),
         Field::new("bin", DataType::Binary, true),
@@ -109,6 +112,9 @@ fn layout_plan(max_rows: u32, block_size: u32) -> LayoutPlan {
             ColumnSpec::new(TypeTag::Int64, true),
             ColumnSpec::new(TypeTag::Float32, true),
             ColumnSpec::new(TypeTag::Float64, true),
+            ColumnSpec::new(TypeTag::Date32, true),
+            ColumnSpec::new(TypeTag::Time64Microsecond, true),
+            ColumnSpec::new(TypeTag::TimestampMicrosecond, true),
             ColumnSpec::new(TypeTag::Uuid, true),
             ColumnSpec::new(TypeTag::Utf8View, true),
             ColumnSpec::new(TypeTag::BinaryView, true),
@@ -147,6 +153,24 @@ fn mixed_batch() -> RecordBatch {
             None,
             Some(-4.75),
             Some(8.25),
+        ])),
+        Arc::new(Date32Array::from(vec![
+            Some(19_000),
+            None,
+            Some(19_002),
+            Some(19_003),
+        ])),
+        Arc::new(Time64MicrosecondArray::from(vec![
+            Some(1_000_000),
+            None,
+            Some(2_000_000),
+            Some(3_000_000),
+        ])),
+        Arc::new(TimestampMicrosecondArray::from(vec![
+            Some(1_700_000_000_000_000),
+            None,
+            Some(1_700_000_000_000_002),
+            Some(1_700_000_000_000_003),
         ])),
         Arc::new(
             FixedSizeBinaryArray::try_from_sparse_iter_with_size(
@@ -222,6 +246,9 @@ fn append_batch_writes_mixed_rows() {
         Field::new("i64", DataType::Int64, true),
         Field::new("f32", DataType::Float32, true),
         Field::new("f64", DataType::Float64, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("tm", DataType::Time64(TimeUnit::Microsecond), true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
         Field::new("uuid", DataType::FixedSizeBinary(16), true),
         Field::new("txt", DataType::Utf8View, true),
         Field::new("bin", DataType::BinaryView, true),
@@ -262,14 +289,38 @@ fn append_batch_writes_mixed_rows() {
         ),
         -400
     );
-    let txt0 = block.view(7, 0).expect("txt0");
+    assert_eq!(
+        i32::from_ne_bytes(
+            block.fixed_value(6, 0).expect("date32")[..4]
+                .try_into()
+                .unwrap()
+        ),
+        19_000
+    );
+    assert_eq!(
+        i64::from_ne_bytes(
+            block.fixed_value(7, 2).expect("time64")[..8]
+                .try_into()
+                .unwrap()
+        ),
+        2_000_000
+    );
+    assert_eq!(
+        i64::from_ne_bytes(
+            block.fixed_value(8, 3).expect("timestamp")[..8]
+                .try_into()
+                .unwrap()
+        ),
+        1_700_000_000_000_003
+    );
+    let txt0 = block.view(10, 0).expect("txt0");
     assert!(txt0.is_inline().expect("txt0 inline"));
-    let txt2 = block.view(7, 2).expect("txt2");
+    let txt2 = block.view(10, 2).expect("txt2");
     assert!(!txt2.is_inline().expect("txt2 inline"));
-    let bin2 = block.view(8, 2).expect("bin2");
+    let bin2 = block.view(11, 2).expect("bin2");
     assert!(!bin2.is_inline().expect("bin2 inline"));
-    assert_eq!(block.null_count(7).expect("txt null count"), 1);
-    assert_eq!(block.null_count(8).expect("bin null count"), 1);
+    assert_eq!(block.null_count(10).expect("txt null count"), 1);
+    assert_eq!(block.null_count(11).expect("bin null count"), 1);
 
     let import_plan =
         LayoutPlan::from_arrow_schema(output_schema.as_ref(), 8, 4096).expect("import plan");

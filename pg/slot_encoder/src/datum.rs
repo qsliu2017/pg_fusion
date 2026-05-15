@@ -35,6 +35,11 @@ pub(crate) fn validate_pg_layout_type(
         TypeTag::Uuid => oid == pg_sys::UUIDOID,
         TypeTag::Decimal128 => false,
         TypeTag::IntervalMonthDayNano => oid == pg_sys::INTERVALOID,
+        TypeTag::Date32 => oid == pg_sys::DATEOID,
+        TypeTag::Time64Microsecond => oid == pg_sys::TIMEOID,
+        TypeTag::TimestampMicrosecond => {
+            oid == pg_sys::TIMESTAMPOID || oid == pg_sys::TIMESTAMPTZOID
+        }
         TypeTag::Utf8View => {
             oid == pg_sys::TEXTOID
                 || oid == pg_sys::VARCHAROID

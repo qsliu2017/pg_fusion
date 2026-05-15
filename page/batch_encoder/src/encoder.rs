@@ -1,8 +1,9 @@
 use crate::{ConfigError, EncodeError};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    BinaryType, BinaryViewType, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type,
-    Int64Type, IntervalMonthDayNanoType, StringViewType, Utf8Type,
+    BinaryType, BinaryViewType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
+    Int32Type, Int64Type, IntervalMonthDayNanoType, StringViewType, Time64MicrosecondType,
+    TimestampMicrosecondType, Utf8Type,
 };
 use arrow_array::{
     Array, BooleanArray, FixedSizeBinaryArray, GenericByteArray, GenericByteViewArray,
@@ -11,7 +12,7 @@ use arrow_array::{
 use arrow_buffer::bit_mask::set_bits;
 use arrow_layout::constants::{UUID_WIDTH_BYTES, VIEW_INLINE_LEN};
 use arrow_layout::{BlockMut, ByteView, ColumnLayout, LayoutPlan, TypeTag};
-use arrow_schema::{DataType, IntervalUnit, Schema};
+use arrow_schema::{DataType, IntervalUnit, Schema, TimeUnit};
 use std::mem::size_of;
 use std::slice;
 
@@ -233,6 +234,38 @@ impl<'schema, 'payload> BatchPageEncoder<'schema, 'payload> {
                         batch
                             .column(index)
                             .as_primitive::<IntervalMonthDayNanoType>(),
+                        start_row,
+                        dest_start,
+                        rows_to_write,
+                    )?;
+                }
+                DataType::Date32 => {
+                    self.write_primitive_column::<Date32Type>(
+                        index,
+                        layout,
+                        batch.column(index).as_primitive::<Date32Type>(),
+                        start_row,
+                        dest_start,
+                        rows_to_write,
+                    )?;
+                }
+                DataType::Time64(TimeUnit::Microsecond) => {
+                    self.write_primitive_column::<Time64MicrosecondType>(
+                        index,
+                        layout,
+                        batch.column(index).as_primitive::<Time64MicrosecondType>(),
+                        start_row,
+                        dest_start,
+                        rows_to_write,
+                    )?;
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, None) => {
+                    self.write_primitive_column::<TimestampMicrosecondType>(
+                        index,
+                        layout,
+                        batch
+                            .column(index)
+                            .as_primitive::<TimestampMicrosecondType>(),
                         start_row,
                         dest_start,
                         rows_to_write,
@@ -645,6 +678,11 @@ fn validate_schema_column(
         DataType::Decimal128(_, _) => layout.type_tag == TypeTag::Decimal128,
         DataType::Interval(IntervalUnit::MonthDayNano) => {
             layout.type_tag == TypeTag::IntervalMonthDayNano
+        }
+        DataType::Date32 => layout.type_tag == TypeTag::Date32,
+        DataType::Time64(TimeUnit::Microsecond) => layout.type_tag == TypeTag::Time64Microsecond,
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            layout.type_tag == TypeTag::TimestampMicrosecond
         }
         DataType::FixedSizeBinary(width) if *width == UUID_WIDTH_BYTES as i32 => {
             layout.type_tag == TypeTag::Uuid
