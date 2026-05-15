@@ -39,7 +39,9 @@ importance: 0.95
   equal finite values match across different non-negative Decimal128 scales.
 - Result schema normalization must preserve finite PostgreSQL interval outputs
   as Arrow `Interval(MonthDayNano)` so worker result pages and `slot_import`
-  agree on the `INTERVALOID` projection path.
+  agree on the `INTERVALOID` projection path. Dynamic filters for `interval`
+  must hash the exact Arrow `(months, days, nanoseconds)` triple; calendar
+  equivalences such as `1 month` and `30 days` are not normalized.
 - `pg/df_functions` `avg` has two compatibility tiers. `avg(float4/float8)`
   returns Arrow `Float64` and preserves PostgreSQL-facing `NaN`/`Infinity`
   behavior. Its finite transition and merge paths track PostgreSQL-style

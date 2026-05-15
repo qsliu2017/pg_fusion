@@ -34,6 +34,7 @@ pub enum SlotFilterKeyType {
     Time64Microsecond,
     TimestampMicrosecond,
     Decimal128,
+    IntervalMonthDayNano,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,7 +51,15 @@ pub enum SlotFilterKeyRef<'a> {
     Date32(i32),
     Time64Microsecond(i64),
     TimestampMicrosecond(i64),
-    Decimal128 { value: i128, scale: i8 },
+    Decimal128 {
+        value: i128,
+        scale: i8,
+    },
+    IntervalMonthDayNano {
+        months: i32,
+        days: i32,
+        nanoseconds: i64,
+    },
 }
 
 /// Direct writer from PostgreSQL `TupleTableSlot` rows into an
@@ -499,6 +508,15 @@ pub unsafe fn with_filter_key<R>(
             let (value, scale) =
                 unsafe { read_numeric_decimal128_with_scale(datum, attr.atttypmod, source_index)? };
             Ok(f(Some(SlotFilterKeyRef::Decimal128 { value, scale })))
+        }
+        SlotFilterKeyType::IntervalMonthDayNano if attr.atttypid == pg_sys::INTERVALOID => {
+            let (months, days, nanoseconds) =
+                unsafe { read_interval_month_day_nano(datum, source_index)? };
+            Ok(f(Some(SlotFilterKeyRef::IntervalMonthDayNano {
+                months,
+                days,
+                nanoseconds,
+            })))
         }
         SlotFilterKeyType::Uuid if attr.atttypid == pg_sys::UUIDOID => {
             let bytes = unsafe { read_fixed_bytes(datum, 16, source_index)? };

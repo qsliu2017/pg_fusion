@@ -47,6 +47,8 @@ pub enum RuntimeFilterKeyType {
     TimestampMicrosecond = 12,
     /// Arrow `Decimal128` key stored as a scaled signed 128-bit integer.
     Decimal128 = 13,
+    /// Arrow `Interval(MonthDayNano)` key stored as months/days/nanoseconds.
+    IntervalMonthDayNano = 14,
 }
 
 impl RuntimeFilterKeyType {
@@ -65,6 +67,7 @@ impl RuntimeFilterKeyType {
             11 => Some(Self::Time64Microsecond),
             12 => Some(Self::TimestampMicrosecond),
             13 => Some(Self::Decimal128),
+            14 => Some(Self::IntervalMonthDayNano),
             _ => None,
         }
     }

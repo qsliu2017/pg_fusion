@@ -4,12 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use arrow_array::types::IntervalMonthDayNanoType;
 use arrow_array::{
     Array, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringViewArray,
-    Time64MicrosecondArray, TimestampMicrosecondArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray,
+    RecordBatch, StringViewArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use datafusion::physical_plan::coop::CooperativeExec;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::{
@@ -22,8 +23,8 @@ use datafusion_expr::JoinType;
 use datafusion_physical_expr::expressions::Column;
 use filter::{
     hash_bool_key, hash_bytes_key, hash_decimal128_key, hash_float32_key, hash_float64_key,
-    hash_int_key, RuntimeFilterBuildHandle, RuntimeFilterKeyType, RuntimeFilterPool,
-    RuntimeFilterTarget,
+    hash_int_key, hash_interval_month_day_nano_key, RuntimeFilterBuildHandle, RuntimeFilterKeyType,
+    RuntimeFilterPool, RuntimeFilterTarget,
 };
 use futures::{ready, Stream, StreamExt};
 use metrics::{MetricId, RuntimeMetrics};
@@ -151,6 +152,9 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
             Some(RuntimeFilterKeyType::TimestampMicrosecond)
         }
         DataType::Decimal128(_, scale) if *scale >= 0 => Some(RuntimeFilterKeyType::Decimal128),
+        DataType::Interval(IntervalUnit::MonthDayNano) => {
+            Some(RuntimeFilterKeyType::IntervalMonthDayNano)
+        }
         _ => None,
     }
 }
@@ -480,6 +484,26 @@ impl RuntimeFilterBuildState {
                     &self.handle,
                 )?
             }
+            RuntimeFilterKeyType::IntervalMonthDayNano => {
+                let array = batch
+                    .column(key_index)
+                    .as_any()
+                    .downcast_ref::<IntervalMonthDayNanoArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "runtime filter IntervalMonthDayNano build key had non-Interval(MonthDayNano) array".into(),
+                        )
+                    })?;
+                insert_hashes(
+                    array,
+                    |idx| {
+                        let (months, days, nanoseconds) =
+                            IntervalMonthDayNanoType::to_parts(array.value(idx));
+                        hash_interval_month_day_nano_key(months, days, nanoseconds)
+                    },
+                    &self.handle,
+                )?
+            }
         };
         self.metrics
             .add(MetricId::RuntimeFilterBuildRowsTotal, rows);
@@ -675,6 +699,10 @@ mod tests {
                 RuntimeFilterKeyType::TimestampMicrosecond,
             ),
             (
+                DataType::Interval(IntervalUnit::MonthDayNano),
+                RuntimeFilterKeyType::IntervalMonthDayNano,
+            ),
+            (
                 DataType::Decimal128(12, 3),
                 RuntimeFilterKeyType::Decimal128,
             ),
@@ -725,6 +753,20 @@ mod tests {
         );
         assert_eq!(
             key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Decimal128(38, -1)),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(
+                &DataType::Interval(IntervalUnit::YearMonth),
+                &DataType::Interval(IntervalUnit::YearMonth)
+            ),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(
+                &DataType::Interval(IntervalUnit::MonthDayNano),
+                &DataType::Int64
+            ),
             None
         );
     }
@@ -797,6 +839,15 @@ mod tests {
                 None,
             ])),
             hash_int_key(1_700_000_000_000_000),
+        );
+        build_and_probe(
+            RuntimeFilterKeyType::IntervalMonthDayNano,
+            DataType::Interval(IntervalUnit::MonthDayNano),
+            Arc::new(IntervalMonthDayNanoArray::from(vec![
+                Some(IntervalMonthDayNanoType::make_value(2, -3, 4)),
+                None,
+            ])),
+            hash_interval_month_day_nano_key(2, -3, 4),
         );
         build_and_probe(
             RuntimeFilterKeyType::Decimal128,

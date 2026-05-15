@@ -448,6 +448,27 @@ fn hash_helpers_normalize_supported_key_types() {
     assert_eq!(hash_decimal128_key(0, 0), hash_decimal128_key(0, 16));
     assert_ne!(hash_decimal128_key(12, 0), hash_decimal128_key(12, 1));
     assert_ne!(hash_decimal128_key(12345, 2), hash_decimal128_key(12346, 2));
+
+    assert_eq!(
+        hash_interval_month_day_nano_key(1, 2, 3),
+        hash_interval_month_day_nano_key(1, 2, 3)
+    );
+    assert_ne!(
+        hash_interval_month_day_nano_key(1, 2, 3),
+        hash_interval_month_day_nano_key(2, 2, 3)
+    );
+    assert_ne!(
+        hash_interval_month_day_nano_key(1, 2, 3),
+        hash_interval_month_day_nano_key(1, 3, 3)
+    );
+    assert_ne!(
+        hash_interval_month_day_nano_key(1, 2, 3),
+        hash_interval_month_day_nano_key(1, 2, 4)
+    );
+    assert_eq!(
+        hash_interval_month_day_nano_key(-1, -2, -3),
+        hash_interval_month_day_nano_key(-1, -2, -3)
+    );
 }
 
 #[test]

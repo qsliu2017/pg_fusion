@@ -63,6 +63,20 @@ pub fn hash_decimal128_key(mut value: i128, mut scale: i8) -> u64 {
     hash_bytes_key(&bytes)
 }
 
+/// Hash an Arrow `Interval(MonthDayNano)` join key using the pg_fusion
+/// runtime-filter contract.
+///
+/// This intentionally hashes the exact Arrow triple. PostgreSQL calendar
+/// equivalences such as `1 month` versus `30 days` are not normalized here.
+#[inline]
+pub fn hash_interval_month_day_nano_key(months: i32, days: i32, nanoseconds: i64) -> u64 {
+    let mut bytes = [0_u8; 16];
+    bytes[..4].copy_from_slice(&months.to_le_bytes());
+    bytes[4..8].copy_from_slice(&days.to_le_bytes());
+    bytes[8..16].copy_from_slice(&nanoseconds.to_le_bytes());
+    hash_bytes_key(&bytes)
+}
+
 /// Hash a `float4` join key using the pg_fusion runtime-filter contract.
 ///
 /// `+0.0` and `-0.0` are normalized to the same hash and all NaNs are

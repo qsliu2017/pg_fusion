@@ -62,6 +62,8 @@ importance: 0.72
     different non-negative Decimal128 scales
   - finite `interval -> Arrow Interval(MonthDayNano)`; PostgreSQL interval
     infinities are rejected because Arrow has no interval special values
+  - runtime-filter probe keys for `interval` hash the exact Arrow
+    `(months, days, nanoseconds)` triple
 - Output contract:
   - caller-provided payload already contains one initialized `arrow_layout` block
   - `payload_len` currently equals the block size published by `arrow_layout`

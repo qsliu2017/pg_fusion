@@ -809,10 +809,21 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             attbyval: false,
             attalign: b'i',
         },
+        TestAttr {
+            oid: pg_sys::INTERVALOID,
+            attlen: 16,
+            attbyval: false,
+            attalign: b'd',
+        },
     ];
     let tuple_desc = OwnedTupleDesc::new(&attrs);
     let uuid = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6];
     let binary = b"\x00binary key".to_vec();
+    let interval = Box::new(pg_sys::Interval {
+        time: 4,
+        day: -3,
+        month: 2,
+    });
     let mut slot = OwnedSlot::from_cells(
         tuple_desc.ptr,
         vec![
@@ -829,6 +840,7 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
             MockCell::Name(name_data("name_key")),
             MockCell::Uuid(Box::new(uuid)),
             MockCell::Binary(short_varlena(&binary)),
+            MockCell::Interval(interval),
         ],
     );
 
@@ -972,6 +984,24 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
     }
     .expect("binary key");
     assert_eq!(binary_key.as_deref(), Some(binary.as_slice()));
+
+    let interval_key = unsafe {
+        with_filter_key(
+            slot.as_mut_ptr(),
+            13,
+            SlotFilterKeyType::IntervalMonthDayNano,
+            |value| match value {
+                Some(SlotFilterKeyRef::IntervalMonthDayNano {
+                    months,
+                    days,
+                    nanoseconds,
+                }) => Some((months, days, nanoseconds)),
+                other => panic!("unexpected interval key: {other:?}"),
+            },
+        )
+    }
+    .expect("interval key");
+    assert_eq!(interval_key, Some((2, -3, 4_000)));
 }
 
 #[test]

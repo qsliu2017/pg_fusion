@@ -3,7 +3,8 @@ use arrow_layout::{init_block, LayoutPlan};
 use arrow_schema::SchemaRef;
 use filter::{
     hash_bool_key, hash_bytes_key, hash_decimal128_key, hash_float32_key, hash_float64_key,
-    hash_int_key, ProbeDecision, RuntimeFilterKeyType, RuntimeFilterPool, RuntimeFilterProbeHandle,
+    hash_int_key, hash_interval_month_day_nano_key, ProbeDecision, RuntimeFilterKeyType,
+    RuntimeFilterPool, RuntimeFilterProbeHandle,
 };
 use metrics::{MetricId, RuntimeMetrics};
 use pgrx::pg_sys;
@@ -463,6 +464,7 @@ fn slot_filter_key_type(key_type: RuntimeFilterKeyType) -> SlotFilterKeyType {
         RuntimeFilterKeyType::Time64Microsecond => SlotFilterKeyType::Time64Microsecond,
         RuntimeFilterKeyType::TimestampMicrosecond => SlotFilterKeyType::TimestampMicrosecond,
         RuntimeFilterKeyType::Decimal128 => SlotFilterKeyType::Decimal128,
+        RuntimeFilterKeyType::IntervalMonthDayNano => SlotFilterKeyType::IntervalMonthDayNano,
     }
 }
 
@@ -481,6 +483,11 @@ fn hash_slot_filter_key(value: SlotFilterKeyRef<'_>) -> u64 {
         SlotFilterKeyRef::Time64Microsecond(value) => hash_int_key(value),
         SlotFilterKeyRef::TimestampMicrosecond(value) => hash_int_key(value),
         SlotFilterKeyRef::Decimal128 { value, scale } => hash_decimal128_key(value, scale),
+        SlotFilterKeyRef::IntervalMonthDayNano {
+            months,
+            days,
+            nanoseconds,
+        } => hash_interval_month_day_nano_key(months, days, nanoseconds),
     }
 }
 

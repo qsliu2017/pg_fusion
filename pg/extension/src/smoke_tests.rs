@@ -1506,6 +1506,10 @@ pub(crate) fn runtime_filter_temporal_smoke() {
             "timestamptz",
             "(TIMESTAMPTZ '2024-01-01 00:00:00+00' + (g::text || ' microseconds')::interval)::timestamptz",
         ),
+        (
+            "interval",
+            "(make_interval(months => g::int, days => (g % 31)::int) + (g::text || ' microseconds')::interval)",
+        ),
     ];
 
     for (name, expr) in cases {
