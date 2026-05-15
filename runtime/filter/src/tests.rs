@@ -442,8 +442,12 @@ fn hash_helpers_normalize_supported_key_types() {
     assert_eq!(hash_bytes_key(b"alpha"), hash_bytes_key(b"alpha"));
     assert_ne!(hash_bytes_key(b"alpha"), hash_bytes_key(b"beta"));
 
-    assert_eq!(hash_decimal128_key(12345), hash_decimal128_key(12345));
-    assert_ne!(hash_decimal128_key(12345), hash_decimal128_key(12346));
+    assert_eq!(hash_decimal128_key(123, 2), hash_decimal128_key(12300, 4));
+    assert_eq!(hash_decimal128_key(12, 0), hash_decimal128_key(1200, 2));
+    assert_eq!(hash_decimal128_key(-123, 2), hash_decimal128_key(-12300, 4));
+    assert_eq!(hash_decimal128_key(0, 0), hash_decimal128_key(0, 16));
+    assert_ne!(hash_decimal128_key(12, 0), hash_decimal128_key(12, 1));
+    assert_ne!(hash_decimal128_key(12345, 2), hash_decimal128_key(12346, 2));
 }
 
 #[test]

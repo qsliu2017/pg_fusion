@@ -480,7 +480,7 @@ fn hash_slot_filter_key(value: SlotFilterKeyRef<'_>) -> u64 {
         SlotFilterKeyRef::Date32(value) => hash_int_key(value as i64),
         SlotFilterKeyRef::Time64Microsecond(value) => hash_int_key(value),
         SlotFilterKeyRef::TimestampMicrosecond(value) => hash_int_key(value),
-        SlotFilterKeyRef::Decimal128(value) => hash_decimal128_key(value),
+        SlotFilterKeyRef::Decimal128 { value, scale } => hash_decimal128_key(value, scale),
     }
 }
 

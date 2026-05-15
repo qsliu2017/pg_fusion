@@ -1,8 +1,8 @@
 use crate::datum::{
     database_encoding, pg_oid_needs_detoast, read_bool, read_f32, read_f64, read_fixed_bytes,
     read_i16, read_i32, read_i64, read_interval_month_day_nano, read_name_bytes,
-    read_numeric_decimal128, read_packed_varlena, validate_pg_layout_type,
-    with_detoasted_slot_datum,
+    read_numeric_decimal128, read_numeric_decimal128_with_scale, read_packed_varlena,
+    validate_pg_layout_type, with_detoasted_slot_datum,
 };
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
@@ -50,7 +50,7 @@ pub enum SlotFilterKeyRef<'a> {
     Date32(i32),
     Time64Microsecond(i64),
     TimestampMicrosecond(i64),
-    Decimal128(i128),
+    Decimal128 { value: i128, scale: i8 },
 }
 
 /// Direct writer from PostgreSQL `TupleTableSlot` rows into an
@@ -496,9 +496,9 @@ pub unsafe fn with_filter_key<R>(
             }))))
         }
         SlotFilterKeyType::Decimal128 if attr.atttypid == pg_sys::NUMERICOID => {
-            Ok(f(Some(SlotFilterKeyRef::Decimal128(unsafe {
-                read_numeric_decimal128(datum, attr.atttypmod, source_index)?
-            }))))
+            let (value, scale) =
+                unsafe { read_numeric_decimal128_with_scale(datum, attr.atttypmod, source_index)? };
+            Ok(f(Some(SlotFilterKeyRef::Decimal128 { value, scale })))
         }
         SlotFilterKeyType::Uuid if attr.atttypid == pg_sys::UUIDOID => {
             let bytes = unsafe { read_fixed_bytes(datum, 16, source_index)? };

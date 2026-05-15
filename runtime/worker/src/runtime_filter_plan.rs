@@ -150,17 +150,16 @@ fn key_type_for(data_type: &DataType) -> Option<RuntimeFilterKeyType> {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             Some(RuntimeFilterKeyType::TimestampMicrosecond)
         }
-        DataType::Decimal128(_, _) => Some(RuntimeFilterKeyType::Decimal128),
+        DataType::Decimal128(_, scale) if *scale >= 0 => Some(RuntimeFilterKeyType::Decimal128),
         _ => None,
     }
 }
 
 fn key_type_for_pair(left: &DataType, right: &DataType) -> Option<RuntimeFilterKeyType> {
     match (left, right) {
-        (
-            DataType::Decimal128(left_precision, left_scale),
-            DataType::Decimal128(right_precision, right_scale),
-        ) if left_precision == right_precision && left_scale == right_scale => {
+        (DataType::Decimal128(_, left_scale), DataType::Decimal128(_, right_scale))
+            if *left_scale >= 0 && *right_scale >= 0 =>
+        {
             return Some(RuntimeFilterKeyType::Decimal128);
         }
         (DataType::Decimal128(_, _), _) | (_, DataType::Decimal128(_, _)) => return None,
@@ -469,9 +468,15 @@ impl RuntimeFilterBuildState {
                             "runtime filter Decimal128 build key had non-Decimal128 array".into(),
                         )
                     })?;
+                let scale = array.scale();
+                if scale < 0 {
+                    return Err(DataFusionError::Execution(
+                        "runtime filter Decimal128 build key had negative scale".into(),
+                    ));
+                }
                 insert_hashes(
                     array,
-                    |idx| hash_decimal128_key(array.value(idx)),
+                    |idx| hash_decimal128_key(array.value(idx), scale),
                     &self.handle,
                 )?
             }
@@ -682,6 +687,10 @@ mod tests {
         for (data_type, expected) in cases {
             assert_eq!(key_type_for_pair(&data_type, &data_type), Some(expected));
         }
+        assert_eq!(
+            key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Decimal128(38, 16)),
+            Some(RuntimeFilterKeyType::Decimal128)
+        );
     }
 
     #[test]
@@ -707,11 +716,15 @@ mod tests {
             None
         );
         assert_eq!(
-            key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Decimal128(38, 16)),
+            key_type_for_pair(&DataType::Decimal128(12, -1), &DataType::Decimal128(38, 16)),
             None
         );
         assert_eq!(
             key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Utf8View),
+            None
+        );
+        assert_eq!(
+            key_type_for_pair(&DataType::Decimal128(12, 3), &DataType::Decimal128(38, -1)),
             None
         );
     }
@@ -793,7 +806,7 @@ mod tests {
                     .with_precision_and_scale(12, 3)
                     .expect("decimal array"),
             ),
-            hash_decimal128_key(12345),
+            hash_decimal128_key(12345, 3),
         );
     }
 }

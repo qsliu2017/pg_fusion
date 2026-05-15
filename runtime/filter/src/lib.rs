@@ -44,9 +44,23 @@ pub fn hash_int_key(value: i64) -> u64 {
 
 /// Hash an Arrow Decimal128/PostgreSQL numeric join key using the pg_fusion
 /// runtime-filter contract.
+///
+/// Arrow stores decimals as scaled integers, so equal numeric values can have
+/// different raw integers when their scales differ. Runtime filters hash the
+/// canonical finite decimal value instead: trailing base-10 zeros are stripped
+/// from the scaled integer while scale remains positive, then both the
+/// normalized integer and normalized scale enter the hash.
 #[inline]
-pub fn hash_decimal128_key(value: i128) -> u64 {
-    hash_bytes_key(&value.to_le_bytes())
+pub fn hash_decimal128_key(mut value: i128, mut scale: i8) -> u64 {
+    while scale > 0 && value % 10 == 0 {
+        value /= 10;
+        scale -= 1;
+    }
+
+    let mut bytes = [0_u8; 17];
+    bytes[..16].copy_from_slice(&value.to_le_bytes());
+    bytes[16] = scale as u8;
+    hash_bytes_key(&bytes)
 }
 
 /// Hash a `float4` join key using the pg_fusion runtime-filter contract.

@@ -1599,11 +1599,17 @@ pub(crate) fn runtime_filter_numeric_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
     let cases = [
-        ("numeric_fixed", "(g::numeric(12,3))"),
-        ("numeric_bare", "(g::numeric)"),
+        ("numeric_fixed", "(g::numeric(12,3))", "(g::numeric(12,3))"),
+        ("numeric_bare", "(g::numeric)", "(g::numeric)"),
+        ("numeric_fixed_bare", "(g::numeric(12,3))", "(g::numeric)"),
+        (
+            "numeric_fraction",
+            "((g::numeric / 100)::numeric(12,3))",
+            "((g::numeric / 100)::numeric(38,16))",
+        ),
     ];
 
-    for (name, expr) in cases {
+    for (name, build_expr, probe_expr) in cases {
         let build_table = format!("pg_temp.pgf_runtime_filter_{name}_build");
         let probe_table = format!("pg_temp.pgf_runtime_filter_{name}_probe");
         batch_execute_pg_fusion_disabled(
@@ -1611,11 +1617,11 @@ pub(crate) fn runtime_filter_numeric_smoke() {
             &format!(
                 "\
                 CREATE TEMP TABLE {build_table} AS
-                SELECT {expr} AS k
+                SELECT {build_expr} AS k
                 FROM generate_series(1, 3) AS g;
 
                 CREATE TEMP TABLE {probe_table} AS
-                SELECT {expr} AS k
+                SELECT {probe_expr} AS k
                 FROM generate_series(1, 100000) AS g;
                 "
             ),

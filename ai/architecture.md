@@ -119,8 +119,9 @@ page-backed Arrow batches.
    The v1 path is intentionally narrow: one `Inner` hash join equi-key, `Column =
    Column`, single-partition build side, supported key type (`bool`,
    `int2`/`int4`/`int8`, `float4`/`float8`, `date`, `time`, `timestamp`,
-   `timestamptz`, `uuid`, `bytea` as `BinaryView`, or text-like `Utf8View`
-   from `text`/`varchar`/`bpchar`/`name`), and a `WorkerPgScanExec` on the
+   `timestamptz`, `uuid`, finite `numeric` as `Decimal128`, `bytea` as
+   `BinaryView`, or text-like `Utf8View` from
+   `text`/`varchar`/`bpchar`/`name`), and a `WorkerPgScanExec` on the
    probe side, possibly below DataFusion's
    schema-preserving `CooperativeExec` wrapper. The worker registers the target
    by `(session_epoch,

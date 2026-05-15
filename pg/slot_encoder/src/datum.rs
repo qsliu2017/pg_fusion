@@ -235,6 +235,15 @@ pub(crate) unsafe fn read_numeric_decimal128(
     atttypmod: i32,
     index: usize,
 ) -> Result<i128, EncodeError> {
+    unsafe { read_numeric_decimal128_with_scale(datum, atttypmod, index) }
+        .map(|(value, _scale)| value)
+}
+
+pub(crate) unsafe fn read_numeric_decimal128_with_scale(
+    datum: pg_sys::Datum,
+    atttypmod: i32,
+    index: usize,
+) -> Result<(i128, i8), EncodeError> {
     let (precision, scale) = numeric_shape_from_typmod(atttypmod)
         .ok_or(EncodeError::UnsupportedNumericTypmod { index, atttypmod })?;
     let original = datum.cast_mut_ptr::<pg_sys::varlena>();
@@ -248,7 +257,8 @@ pub(crate) unsafe fn read_numeric_decimal128(
     }
     let is_copy = !ptr::eq(detoasted, original);
     let result = unsafe { numeric_text(detoasted, index) }
-        .and_then(|text| parse_numeric_text_to_decimal128(&text, precision, scale, index));
+        .and_then(|text| parse_numeric_text_to_decimal128(&text, precision, scale, index))
+        .map(|value| (value, scale));
     if is_copy {
         unsafe { pg_sys::pfree(detoasted.cast()) };
     }
