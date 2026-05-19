@@ -310,6 +310,10 @@ heap relations that can be read as unprojected base relation slots without
 dropped attributes. Other scans use leader-only portal streaming. If dynamic
 worker capacity is exhausted at runtime, pg_fusion falls back to leader-only
 streaming for the affected and remaining scans instead of failing the query.
+Verbose `EXPLAIN` for CTID range scans shows one representative producer shape
+rather than an unchunked relation scan; CTID bounds are rendered as `$1`/`$2`
+placeholders so the output does not look tied to the first producer's concrete
+range.
 
 DataFusion fetch/limit hints are lowered into `slot_scan` as a PostgreSQL
 fast-start planning hint plus a local soft row cap. They are not documented as

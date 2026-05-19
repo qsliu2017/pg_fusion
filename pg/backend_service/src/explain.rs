@@ -21,8 +21,8 @@ use scan_node::{insert_page_materializers, PgScanExecFactory, PgScanExtensionPla
 use slot_scan::{explain_scan, ScanExplainOptions, ScanOptions};
 
 use crate::{
-    BackendServiceError, ExplainInput, ExplainScanParallelism, ExplainScanParallelismStrategy,
-    ExplainScanProducerRole,
+    BackendServiceError, CtidBlockRange, ExplainInput, ExplainScanParallelism,
+    ExplainScanParallelismStrategy, ExplainScanProducerRole,
 };
 
 pub(crate) fn render_physical_explain(
@@ -47,7 +47,13 @@ pub(crate) fn render_physical_explain(
     } else {
         BTreeMap::new()
     };
-    let pg_leaf_explains = render_pg_leaf_explains(&built.scans, &config, options)?;
+    let pg_leaf_explains = render_pg_leaf_explains(
+        &built.scans,
+        &config,
+        options,
+        &planned_scan_parallelism,
+        &actual_scan_parallelism,
+    )?;
     let pg_scan_planner = PgScanExtensionPlanner::new(Arc::new(ExplainPgScanExecFactory {
         pg_leaf_explains,
         planned_scan_parallelism,
@@ -74,7 +80,9 @@ fn render_pg_leaf_explains(
     scans: &[Arc<PgScanSpec>],
     config: &crate::BackendServiceConfig,
     options: crate::ExplainRenderOptions,
-) -> Result<BTreeMap<u64, Arc<str>>, BackendServiceError> {
+    planned_scan_parallelism: &BTreeMap<u64, ExplainScanParallelism>,
+    actual_scan_parallelism: &BTreeMap<u64, ExplainScanParallelism>,
+) -> Result<BTreeMap<u64, PgLeafExplain>, BackendServiceError> {
     let explain_options = ScanExplainOptions {
         verbose: options.verbose,
         costs: options.costs,
@@ -82,7 +90,11 @@ fn render_pg_leaf_explains(
     let mut rendered = BTreeMap::new();
     for spec in scans {
         let scan_id = spec.scan_id.get();
-        let execution_sql = crate::scan_execution_sql(spec)?;
+        let representative_range = representative_ctid_range(
+            planned_scan_parallelism.get(&scan_id),
+            actual_scan_parallelism.get(&scan_id),
+        );
+        let execution_sql = representative_scan_execution_sql(spec, representative_range)?;
         let pg_plan = explain_scan(
             &execution_sql,
             ScanOptions {
@@ -92,9 +104,88 @@ fn render_pg_leaf_explains(
             },
             explain_options,
         )?;
-        rendered.insert(scan_id, Arc::from(pg_plan.trim_end()));
+        let (display_sql, pg_plan) = if let Some(range) = representative_range {
+            (
+                mask_ctid_range_sql(&execution_sql, range),
+                mask_ctid_range_literals(&pg_plan, range),
+            )
+        } else {
+            (spec.compiled_scan.sql.clone(), pg_plan)
+        };
+        rendered.insert(
+            scan_id,
+            PgLeafExplain {
+                display_sql: Arc::from(display_sql),
+                pg_explain: Arc::from(pg_plan.trim_end()),
+            },
+        );
     }
     Ok(rendered)
+}
+
+fn mask_ctid_range_sql(sql: &str, range: CtidBlockRange) -> String {
+    let start = ctid_bound_literal(range.start_block);
+    let end = ctid_bound_literal(range.end_block);
+    let concrete = format!("ctid >= {start} AND ctid < {end}");
+    let masked = "ctid >= $1::tid AND ctid < $2::tid";
+    sql.replacen(&concrete, masked, 1)
+}
+
+fn mask_ctid_range_literals(text: &str, range: CtidBlockRange) -> String {
+    text.replace(&ctid_bound_literal(range.start_block), "$1")
+        .replace(&ctid_bound_literal(range.end_block), "$2")
+}
+
+fn ctid_bound_literal(block: u64) -> String {
+    format!("'({block},1)'::tid")
+}
+
+fn representative_scan_execution_sql(
+    spec: &PgScanSpec,
+    representative_range: Option<CtidBlockRange>,
+) -> Result<String, BackendServiceError> {
+    match representative_range {
+        Some(range) => {
+            crate::scan_execution_shape_for_ctid_range(spec, range).map(|shape| shape.sql)
+        }
+        None => crate::scan_execution_sql(spec),
+    }
+}
+
+fn representative_ctid_range(
+    planned: Option<&ExplainScanParallelism>,
+    actual: Option<&ExplainScanParallelism>,
+) -> Option<CtidBlockRange> {
+    let planned = planned?;
+    if planned.strategy != ExplainScanParallelismStrategy::CtidBlockRange {
+        return None;
+    }
+    if let Some(actual) = actual {
+        let has_actual_worker = actual
+            .producers
+            .iter()
+            .any(|producer| producer.role == ExplainScanProducerRole::Worker);
+        if actual.strategy == ExplainScanParallelismStrategy::LeaderOnly || !has_actual_worker {
+            return None;
+        }
+    }
+    planned
+        .producers
+        .iter()
+        .find(|producer| producer.role == ExplainScanProducerRole::Leader)
+        .and_then(|producer| producer.ctid_range)
+        .or_else(|| {
+            planned
+                .producers
+                .iter()
+                .find_map(|producer| producer.ctid_range)
+        })
+}
+
+#[derive(Debug, Clone)]
+struct PgLeafExplain {
+    display_sql: Arc<str>,
+    pg_explain: Arc<str>,
 }
 
 fn build_explain_session_state() -> SessionState {
@@ -112,7 +203,7 @@ fn build_explain_session_state() -> SessionState {
 
 #[derive(Debug)]
 struct ExplainPgScanExecFactory {
-    pg_leaf_explains: BTreeMap<u64, Arc<str>>,
+    pg_leaf_explains: BTreeMap<u64, PgLeafExplain>,
     planned_scan_parallelism: BTreeMap<u64, ExplainScanParallelism>,
     actual_scan_parallelism: BTreeMap<u64, ExplainScanParallelism>,
 }
@@ -131,7 +222,8 @@ impl PgScanExecFactory for ExplainPgScanExecFactory {
             })?;
         Ok(Arc::new(ExplainPgScanExec::new(
             spec,
-            pg_explain,
+            pg_explain.display_sql.clone(),
+            pg_explain.pg_explain.clone(),
             self.planned_scan_parallelism.get(&scan_id).cloned(),
             self.actual_scan_parallelism.get(&scan_id).cloned(),
         )))
@@ -142,6 +234,7 @@ impl PgScanExecFactory for ExplainPgScanExecFactory {
 struct ExplainPgScanExec {
     spec: Arc<PgScanSpec>,
     output_schema: SchemaRef,
+    display_sql: Arc<str>,
     pg_explain: Arc<str>,
     planned_parallelism: Option<ExplainScanParallelism>,
     actual_parallelism: Option<ExplainScanParallelism>,
@@ -151,6 +244,7 @@ struct ExplainPgScanExec {
 impl ExplainPgScanExec {
     fn new(
         spec: Arc<PgScanSpec>,
+        display_sql: Arc<str>,
         pg_explain: Arc<str>,
         planned_parallelism: Option<ExplainScanParallelism>,
         actual_parallelism: Option<ExplainScanParallelism>,
@@ -165,6 +259,7 @@ impl ExplainPgScanExec {
         Self {
             spec,
             output_schema,
+            display_sql,
             pg_explain,
             planned_parallelism,
             actual_parallelism,
@@ -183,7 +278,7 @@ impl ExplainPgScanExec {
             params.push(format!("local_row_cap={cap}"));
         }
         if verbose {
-            params.push(format!("sql=\"{}\"", self.spec.compiled_scan.sql));
+            params.push(format!("sql=\"{}\"", self.display_sql));
         }
         if !params.is_empty() {
             line.push_str(" (");

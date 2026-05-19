@@ -204,8 +204,11 @@ on leader-only portal streaming. Dynamic scan worker jobs carry a resolved
 standalone scan descriptor for one PostgreSQL leaf scan rather than the original
 user SQL, so worker startup does not depend on backend-local `search_path` or
 repeat full DataFusion planning. `EXPLAIN` uses the same eligibility and budget
-logic to show planned producer counts for every PostgreSQL scan leaf; `EXPLAIN
-ANALYZE` also reports the producer channels installed for the real execution.
+logic to show planned producer counts for every PostgreSQL scan leaf. For CTID
+range scans, verbose `EXPLAIN` renders a representative producer SQL and nested
+PostgreSQL plan rather than an unchunked leaf plan, but masks the representative
+CTID bounds as `$1`/`$2` placeholders in the rendered text. `EXPLAIN ANALYZE`
+also reports the producer channels installed for the real execution.
 
 ## Retired Legacy Stack
 

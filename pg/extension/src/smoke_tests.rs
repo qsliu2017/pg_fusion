@@ -925,6 +925,27 @@ pub(crate) fn heap_parallel_scan_smoke() {
             && explain.contains("strategy=ctid_range"),
         "EXPLAIN should show planned dynamic scan producers: {explain}"
     );
+    let verbose_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!(
+            "EXPLAIN (VERBOSE) SELECT sum(id)::bigint FROM {table_name} WHERE id BETWEEN 100 AND 20000"
+        ),
+    )
+    .join("\n");
+    assert!(
+        verbose_explain.contains("sql=\"SELECT *")
+            && verbose_explain.contains("ctid >= $1::tid")
+            && verbose_explain.contains("ctid < $2::tid"),
+        "verbose EXPLAIN should show parameterized representative CTID producer SQL: {verbose_explain}"
+    );
+    assert!(
+        verbose_explain.contains("Tid Range Scan") && !verbose_explain.contains("Gather"),
+        "verbose EXPLAIN should render representative CTID producer plan: {verbose_explain}"
+    );
+    assert!(
+        !verbose_explain.contains("ctid >= '(") && !verbose_explain.contains("ctid < '("),
+        "verbose EXPLAIN should not expose concrete representative CTID bounds: {verbose_explain}"
+    );
     let analyze_explain = simple_query_first_column_rows_tx(
         &mut tx,
         &format!(

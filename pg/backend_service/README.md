@@ -77,10 +77,14 @@ instead of replanning the original SQL, so they do not depend on backend-local
 launch, so a failed `begin_execution` cannot leave a scan worker waiting
 forever. Worker readiness/protocol failures remain strict query errors, and the
 launcher must still mark the current job failed and cancel any already-ready
-producers before returning that error. After a standalone producer publishes
-`ScanFinished`/`ScanFailed`, it keeps its backend lease alive until the worker
-detaches that scan slot; otherwise the lower `control_transport` contract would
-make the terminal frame unreadable as soon as the backend owner is released.
+producers before returning that error. Verbose `EXPLAIN` uses one
+representative CTID producer shape for the nested PostgreSQL leaf plan and masks
+its concrete bounds as `$1`/`$2`, matching the standalone producer SQL shape
+without making the output look tied to one range. After a standalone producer
+publishes `ScanFinished`/`ScanFailed`, it keeps its backend lease alive until
+the worker detaches that scan slot; otherwise the lower `control_transport`
+contract would make the terminal frame unreadable as soon as the backend owner
+is released.
 
 The crate is intentionally backend-local:
 
