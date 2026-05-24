@@ -24,8 +24,11 @@ versions are installed.
 ## Build
 
 ```sh
-cargo build -p pg_fusion
+cargo build --release -p pg_fusion
 ```
+
+Use a release build for local experiments. Debug builds add enough overhead to
+make pg_fusion and PostgreSQL comparisons misleading.
 
 ## Configure PostgreSQL
 
@@ -79,7 +82,7 @@ Restart PostgreSQL after changing postmaster-level settings.
 ## Start psql
 
 ```sh
-cargo pgrx run pg17 -p pg_fusion
+cargo pgrx run pg17 -p pg_fusion --release
 ```
 
 Then create the extension:

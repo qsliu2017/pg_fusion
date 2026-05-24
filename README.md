@@ -20,7 +20,7 @@ DataFusion is not copied into every backend process.
 
 ```sql
 CREATE TABLE t AS
-SELECT i AS id, i % 10 AS group_id, i::double precision AS value
+SELECT i AS id, i % 100 AS a, i % 10 AS group_id, i::double precision AS value
 FROM generate_series(1, 1000000) AS i;
 
 ANALYZE t;
@@ -31,6 +31,11 @@ SELECT group_id, count(*), avg(value)
 FROM t
 GROUP BY group_id
 ORDER BY group_id;
+
+SELECT count(*)
+FROM t o
+JOIN t i USING (a)
+WHERE i.a = 42;
 ```
 
 See [Quick start](docs/quickstart.md) for the local pgrx setup. The rendered
