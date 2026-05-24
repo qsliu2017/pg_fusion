@@ -15,6 +15,12 @@ git history, not here.
   components/       # short component notes
 ```
 
+## Public Documentation
+
+User-facing documentation lives under `docs/`. The `ai/` directory is internal
+maintainer and agent context; it should not mirror public documentation unless
+architecture, invariants, or implementation context actually changed.
+
 ## Reading Order
 
 1. Read `architecture.md` for the active runtime shape.

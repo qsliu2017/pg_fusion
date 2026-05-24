@@ -1,444 +1,102 @@
 # pg_fusion
 
-pg_fusion is a PostgreSQL extension that delegates selected query execution to an
-in-process Apache DataFusion worker runtime. The active extension crate is
-`pg/extension` (`pg_fusion`).
+`pg_fusion` is an experimental PostgreSQL extension for running selected
+analytical `SELECT` queries through Apache DataFusion while PostgreSQL still
+owns table access.
 
-The current runtime boundary keeps PostgreSQL responsible for catalog lookup,
-planning integration, snapshots, table access, and slot materialization. Backend
-scan rows are encoded into page-backed Arrow layout blocks and streamed to the
-worker over shared-memory transport; worker results return as Arrow pages and are
-projected back into PostgreSQL tuple slots.
+The core boundary is:
 
-## Architecture
+> PostgreSQL owns table access; DataFusion owns selected analytical execution
+> above PostgreSQL scan streams.
 
-- `pg/extension/` - pgrx host extension, GUCs, planner/custom-scan hooks,
-  shared-memory bootstrap, background worker entrypoint.
-- `pg/backend_service/` - backend-side execution orchestration and scan page
-  production.
-- `runtime/worker/` - DataFusion worker runtime and transport-backed scan/result
-  handling.
-- `runtime/protocol/` - typed control-plane protocol for backend/worker runtime
-  messages.
-- `runtime/control_transport/` - shared-memory control rings and backend/worker
-  leases.
-- `runtime/filter/` - shared-memory runtime filters used by eligible joins.
-- `runtime/metrics/` - shared-memory runtime counters and page handoff stamps.
-- `page/pool/`, `page/transfer/`, `page/issuance/` - fixed-page ownership and
-  page handoff infrastructure.
-- `page/arrow_layout/`, `page/import/`, `pg/slot_encoder/`, `pg/slot_import/` -
-  zero-copy Arrow page layout, PostgreSQL slot encoding, and result projection.
-- `pg/plan_builder/`, `pg/df_catalog/`, `pg/scan_node/`, `pg/scan_sql/`,
-  `pg/slot_scan/` - backend-side SQL planning and PostgreSQL scan execution.
-- `pg/statistics/` - PostgreSQL planner/catalog statistics bridge used by
-  costed join-order planning.
-- `join_order/` - standalone compact join-order optimizer core used by
-  DataFusion logical-plan reordering.
-- `pg/test/` - pgrx integration tests for the active runtime path and
-  page/slot pipeline.
-- `lockfree/` - shared-memory lock-free primitives used by the transport/page
-  stack.
+Users connect to PostgreSQL normally. Eligible PostgreSQL backends stream scan
+rows into page-backed Arrow batches in shared memory, send the work to a
+separate `pg_fusion` background worker that runs DataFusion, and import result
+pages back into PostgreSQL tuple slots.
 
-## Build & Test
+DataFusion is not copied into every backend process.
 
-Workspace targets Rust 1.89.
-
-```sh
-cargo check --workspace
-cargo test --workspace \
-  --exclude backend_service \
-  --exclude df_catalog \
-  --exclude pg_fusion \
-  --exclude pg_statistics \
-  --exclude pg_test \
-  --exclude plan_builder \
-  --exclude row_estimator_seed \
-  --exclude slot_encoder \
-  --exclude slot_import \
-  --exclude slot_scan
-```
-
-PostgreSQL-bound crates are intentionally excluded from standalone
-`cargo test`: they reference PostgreSQL backend symbols that only exist inside a
-PostgreSQL backend. Their regression coverage lives in the pgrx test crates.
-`pg_statistics` follows the same rule because it calls SPI and PostgreSQL
-syscache APIs directly.
-
-Build only the PostgreSQL extension crate:
-
-```sh
-cargo build -p pg_fusion
-```
-
-Format and lint:
-
-```sh
-cargo fmt --all
-cargo clippy --all-targets --features "pg17, pg_test" --no-default-features
-```
-
-## pgrx Setup (PG 17)
-
-Install and initialize pgrx:
-
-```sh
-cargo install cargo-pgrx
-cargo pgrx init --pg17 $(which pg_config)
-```
-
-Configure `postgresql.conf` as described below before using the extension.
-
-Run pgrx tests:
-
-```sh
-cargo pgrx test pg17 -p pg_fusion --features pg_test
-cargo pgrx test pg17 -p pg_test
-PG_FUSION_SPILL_PG_TEST=1 cargo pgrx test pg17 -p pg_fusion --features pg_test pg_fusion_spill_metrics_smoke
-```
-
-For the Postgres-side page pipeline benchmark under `pg_test`, see
-[`pg/test/README.md`](pg/test/README.md).
-
-## PostgreSQL Configuration
-
-`pg_fusion` must be loaded by PostgreSQL at postmaster start because it
-registers shared memory, hooks, and a background worker. For a pgrx PG 17 dev
-cluster:
-
-```sh
-cat >> ~/.pgrx/data-17/postgresql.conf <<'EOF'
-shared_preload_libraries = 'pg_fusion'
-
-# Worker/runtime diagnostics.
-pg_fusion.worker_threads = 0
-pg_fusion.log_path = '/tmp/pg_fusion.log'
-pg_fusion.worker_log_filter = 'warn'
-pg_fusion.worker_memory_limit_mb = 0
-pg_fusion.worker_spill_directory = ''
-
-# Primary backend <-> worker control transport.
-pg_fusion.control_slot_count = 64
-pg_fusion.control_backend_to_worker_capacity = 8192
-pg_fusion.control_worker_to_backend_capacity = 8192
-
-# Dedicated scan control transport.
-pg_fusion.scan_slot_count = 64
-pg_fusion.scan_backend_to_worker_capacity = 256
-pg_fusion.scan_worker_to_backend_capacity = 256
-
-# Shared page pool and issued-page flow.
-pg_fusion.page_size = 65536
-pg_fusion.page_count = 256
-
-# Backend PostgreSQL scan streaming.
-pg_fusion.scan_fetch_batch_rows = 1024
-pg_fusion.scan_batch_channel_capacity = 32
-pg_fusion.scan_idle_poll_interval_us = 50
-pg_fusion.estimator_initial_tail_bytes_per_row = 64
-
-# Logical planning.
-pg_fusion.join_reordering = on
-
-# Runtime Bloom filters (enabled by default).
-pg_fusion.runtime_filter_count = 64
-pg_fusion.runtime_filter_bits = 1048576
-pg_fusion.runtime_filter_hashes = 4
-EOF
-```
-
-Most settings above are `Postmaster` GUCs and require a cluster restart after
-changes. `pg_fusion.worker_threads = 0` lets the worker runtime choose its
-thread count automatically. The scan ring capacities must stay at least `256`
-bytes in each direction; the worker-to-backend scan ring carries `OpenScan`
-messages that include the full scan producer set used by dynamic scan workers.
-The issued-page permit pool is sized from `pg_fusion.page_count`, so each
-shared page can have one outstanding issued handoff.
-
-`pg_fusion.worker_memory_limit_mb = 0` keeps DataFusion on its default
-unbounded runtime. Setting it above `0` enables a finite DataFusion memory pool
-and worker-owned OS temporary spill files. `pg_fusion.worker_spill_directory`
-may point at an absolute spill root; empty uses the OS temp directory under
-`pg_fusion/spill`. The worker treats that setting as a base directory and uses
-`<base>/cluster-<cluster-id>/worker-<pid>-gen-<generation>/exec-...` for
-per-query spill files. It removes query directories on completion/failure and
-removes only pg_fusion-marked stale worker incarnation directories inside the
-same cluster namespace on the next worker start. When the memory limit is `0`,
-the worker does not create spill directories or run spill garbage collection.
-This v1 spill path is pg_fusion-owned OS temp storage; it does not use
-PostgreSQL `temp_tablespaces`, `temp_file_limit`, or `ResourceOwner` cleanup.
-Spill totals and cleanup diagnostics are exposed through `pg_fusion_metrics()`
-as `worker_spill_*` counters.
-
-`pg_fusion.scan_batch_channel_capacity` and
-`pg_fusion.scan_idle_poll_interval_us` are `Userset` GUCs despite being shown in
-the sample config. The backend captures their current session values when a
-query starts and sends them to the worker in `StartExecution`; changing them
-mid-query does not affect already-open scan streams.
-
-`pg_fusion.runtime_filter_enable` is also a `Userset` GUC and defaults to
-`on`. The pool sizing knobs shown above are `Postmaster` GUCs because they
-define shared-memory layout. By default, worker physical planning can build
-Bloom filters for eligible inner hash joins and backend scan producers apply
-ready filters before slot-to-Arrow encoding.
-
-After configuring the pgrx cluster, install the extension and open `psql`:
-
-```sh
-cargo pgrx run pg17 -p pg_fusion
-```
-
-For a non-pgrx cluster, install the extension artifacts with that cluster's
-`pg_config`, add `shared_preload_libraries = 'pg_fusion'`, restart PostgreSQL,
-and create the extension object in the target database:
-
-```sh
-cargo pgrx install -p pg_fusion --release --pg-config /path/to/pg_config
-```
+## Try A Query
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_fusion;
-```
+CREATE TABLE t AS
+SELECT i AS id, i % 10 AS group_id, i::double precision AS value
+FROM generate_series(1, 1000000) AS i;
 
-Useful PostgreSQL planner/runtime knobs for scan experiments can be placed in
-`postgresql.conf` or set per session with ordinary `SET` commands:
-
-```conf
-# Cursor planning bias used by PostgreSQL itself. Lower values favor fast-start
-# plans; higher values favor total scan cost.
-cursor_tuple_fraction = 0.1
-
-# Normal PostgreSQL memory and parallel scan planning knobs. These are not
-# pg_fusion settings, but they affect PostgreSQL plans that pg_fusion streams
-# through slot_scan. pg_fusion also uses max_parallel_workers_per_gather as the
-# query-wide budget for additional dynamic scan workers across eligible scan leaves.
-work_mem = '64MB'
-max_parallel_workers_per_gather = 2
-min_parallel_table_scan_size = '8MB'
-parallel_setup_cost = 1000
-parallel_tuple_cost = 0.1
-```
-
-Treat these as workload-specific tuning inputs. `slot_scan` executes trusted
-PostgreSQL scan SQL through PostgreSQL executor portals, so PostgreSQL's
-ordinary planner settings still influence whether it chooses seq scan, index
-scan, bitmap scan, or a parallel-capable plan.
-
-## Runtime Use
-
-Enable pg_fusion per session or transaction:
-
-```sql
-SET pg_fusion.enable = on;
-```
-
-For scoped experiments:
-
-```sql
-BEGIN;
-SET LOCAL pg_fusion.enable = on;
-SELECT count(*) FROM my_table WHERE id > 100;
-COMMIT;
-```
-
-Backend diagnostics can also be enabled without restarting:
-
-```sql
-SET pg_fusion.backend_log_level = 1; -- 0=off, 1=basic, 2=trace
-```
-
-Statistics-based join ordering is enabled by default:
-
-```sql
-SET pg_fusion.join_reordering = on;
-```
-
-When enabled, `plan_builder` uses PostgreSQL estimates, column statistics, and
-relation-wide unique keys to reorder eligible inner/cross join components before
-PostgreSQL scan leaves are lowered. It applies only to join trees whose leaves
-are pg_fusion PostgreSQL table scans and whose join predicates are simple equi
-column pairs; outer joins, residual join filters, unsupported expressions, and
-subquery shapes remain in their DataFusion-planned order. Disable it for A/B
-testing or to isolate planning issues:
-
-```sql
-SET pg_fusion.join_reordering = off;
-```
-
-Disable runtime filters for A/B testing or to isolate filter behavior:
-
-```sql
-SET pg_fusion.runtime_filter_enable = off;
-```
-
-The first implementation supports only simple `Column = Column` inner hash
-joins with a single-partition build side, supported bool, integer, float,
-date/time, `uuid`, `bytea`, or text-like keys, and a PostgreSQL scan on the
-probe side. If no slot is
-available in the shared filter pool, the query continues without that filter
-and increments `runtime_filter_pool_exhausted_total`.
-
-`pg_fusion.scan_fetch_batch_rows` controls how many rows the backend asks
-PostgreSQL to deliver from the scan portal per direct `PortalRunFetch()` call.
-Rows are encoded from executor `TupleTableSlot`s directly into Arrow pages; no
-SPI tuptable batch is materialized in the hot path. The default is `1024`; `0`
-is not a valid configured value and the internal scan path normalizes only
-defensive runtime inputs to at least one row. Page boundaries are handled by
-the fetch row budget, not by pausing the PostgreSQL receiver mid-fetch. Scans
-with variable-width transport columns use one-row drains so an overflowing row
-can be retried on the next Arrow page without losing the scan position.
-
-`pg_fusion.scan_batch_channel_capacity` controls the bounded channel between a
-worker scan thread and the DataFusion stream consumer. The default is `32`,
-which lets scan threads absorb short downstream polling gaps without retaining
-unbounded Arrow batches. Lower values make backpressure visible sooner; very
-large values can pin more page-backed batches before materialization operators
-copy them.
-
-`pg_fusion.scan_idle_poll_interval_us` controls how long a worker scan thread
-sleeps when no dedicated scan frame is ready. The default is `50` microseconds.
-Higher values reduce polling overhead but can add page handoff latency; lower
-values are useful when `scan_idle_sleep_ns` dominates metrics.
-
-`max_parallel_workers_per_gather` controls the query-wide budget for dynamic
-PostgreSQL scan workers across eligible pg_fusion leaf scans. `0` keeps scans
-leader-only. A positive value allows up to that many additional dynamic
-background-worker producers for the whole pg_fusion query, capped at `32` and
-bounded by `max_worker_processes` headroom. Eligible scans share the budget; the
-leader backend and workers each scan disjoint heap block ranges and write Arrow
-pages into the same shared page pool. The path is used for cross-backend-visible
-heap relations that can be read as unprojected base relation slots without
-dropped attributes. Other scans use leader-only portal streaming. If dynamic
-worker capacity is exhausted at runtime, pg_fusion falls back to leader-only
-streaming for the affected and remaining scans instead of failing the query.
-Verbose `EXPLAIN` for CTID range scans shows one representative producer shape
-rather than an unchunked relation scan; CTID bounds are rendered as `$1`/`$2`
-placeholders so the output does not look tied to the first producer's concrete
-range.
-
-DataFusion fetch/limit hints are lowered into `slot_scan` as a PostgreSQL
-fast-start planning hint plus a local soft row cap. They are not documented as
-an exact global SQL `LIMIT` guarantee; exact SQL limit semantics must remain in
-the logical query plan above the scan path.
-
-## Runtime Metrics
-
-`pg_fusion` exposes cumulative runtime counters from shared memory:
-
-```sql
-SELECT pg_fusion_metrics_reset();
+ANALYZE t;
 
 SET pg_fusion.enable = on;
-SELECT count(*) FROM my_table WHERE id > 100;
 
-SELECT component, metric, kind, unit, value, reset_epoch
-FROM pg_fusion_metrics()
-WHERE value <> 0
-ORDER BY component, metric;
+SELECT group_id, count(*), avg(value)
+FROM t
+GROUP BY group_id
+ORDER BY group_id;
 ```
 
-`pg_fusion_metrics()` returns a relational result, not JSON. This keeps psql,
-SQL filtering, and external collectors simple; JSON can be derived with
-`jsonb_object_agg()` if needed. `pg_fusion_metrics_reset()` clears the runtime
-counters and advances `reset_epoch`. In-flight page handoff stamps from an older
-epoch are ignored after reset.
+See [Quick start](docs/quickstart.md) for the local pgrx setup. The rendered
+documentation site is published at
+[darthunix.github.io/pg_fusion](https://darthunix.github.io/pg_fusion/).
 
-Metric names use a simple convention:
+## How It Works
 
-- `*_ns` is accumulated time in nanoseconds.
-- `*_total` is an event count or cumulative counter.
-- `*_bytes_sent_total` is the payload bytes written into shared page slots.
+`pg_fusion` installs PostgreSQL hooks and a custom scan path. When a query is
+eligible, PostgreSQL still resolves catalogs, owns the snapshot, reads heap
+tuples, checks MVCC visibility, handles TOAST, and returns final tuple slots to
+the client.
 
-Useful latency probes:
+The expensive part is the boundary crossing: PostgreSQL heap tuples are row
+oriented, while DataFusion runs on Arrow batches. `pg_fusion` therefore tries to
+push filters and narrow projections into PostgreSQL scans before rows are
+encoded into Arrow pages. Sending unused rows or columns to the worker can cost
+more than the DataFusion execution saves.
 
-```sql
-SELECT
-  sum(value) FILTER (WHERE metric = 'backend_wait_latch_ns')::numeric
-  / nullif(sum(value) FILTER (WHERE metric = 'backend_wait_latch_total'), 0)
-    AS avg_backend_wait_latch_ns
-FROM pg_fusion_metrics();
+The DataFusion worker is a shared resource box:
 
-SELECT *
-FROM pg_fusion_metrics()
-WHERE metric IN (
-  'scan_page_fill_ns',
-  'scan_page_prepare_ns',
-  'scan_page_finish_ns',
-  'scan_page_retry_total',
-  'scan_fetch_calls_total',
-  'scan_rows_encoded_total',
-  'scan_full_pages_total',
-  'scan_eof_pages_total',
-  'scan_b2w_wait_ns',
-  'scan_page_read_ns',
-  'scan_batch_send_ns',
-  'scan_batch_delivery_ns',
-  'scan_idle_sleep_ns',
-  'result_w2b_wait_ns',
-  'query_total_ns',
-  'backend_total_ns',
-  'worker_total_ns'
-)
-ORDER BY component, metric;
-```
+- backend processes keep PostgreSQL session and table-access work;
+- one background worker owns DataFusion CPU scheduling, memory, and spill;
+- shared memory owns fixed page, control, filter, wakeup, and metrics capacity.
 
-The scan/result "slot" metrics refer to shared page-pool slots used for Arrow
-pages, not PostgreSQL `TupleTableSlot`. Backend and worker timings may overlap,
-so `backend_total_ns + worker_total_ns` is not expected to equal
-`query_total_ns`.
+## When It Can Help
 
-To inspect backend scan latency, reset the metrics, run the query, then read the
-always-on scan metrics:
+`pg_fusion` is intended for analytical reads where the work above PostgreSQL
+scans is large enough to justify tuple-to-Arrow conversion and transport:
 
-```sql
-SELECT pg_fusion_metrics_reset();
-SET pg_fusion.enable = on;
+- join-heavy plans that create large intermediate batches inside the DataFusion
+  worker;
+- runtime-filter-friendly joins that reduce probe-side scan encoding;
+- grouped aggregation after selective PostgreSQL-side filters;
+- sort and window-like analytical execution;
+- queries where pushed filters and projections greatly reduce scan output.
 
-SELECT a FROM t2 WHERE a = 1;
+It is less likely to help when the query mostly returns raw rows, needs many
+wide columns, cannot push selective filters into PostgreSQL, or uses SQL shapes
+that are not supported yet.
 
-SELECT metric, value
-FROM pg_fusion_metrics()
-WHERE metric LIKE 'scan_%'
-ORDER BY metric;
-```
+## Status
 
-Scan timing metrics are intentionally coarse and cheap enough to remain always
-enabled. They do not instrument slot-to-Arrow internals; use a flamegraph or
-profiler for tuple deformation, detoast, and page-write attribution.
+`pg_fusion` is experimental infrastructure for engineering evaluation,
+benchmarks, and workload feedback. Review [Query support](docs/query-support.md)
+and [Limitations](docs/limitations.md) before using it beyond controlled
+experiments.
 
-Interpretation:
+## Documentation
 
-- `scan_page_fill_ns` is the coarse backend page-fill timer for successful scan
-  pages. It includes PostgreSQL cursor/slot drain, tuple encoding, Arrow page
-  writes, page layout, and estimator work.
-- `scan_page_prepare_ns` and `scan_page_finish_ns` split the cheap setup/finalize
-  portions of emitted scan pages.
-- `scan_page_retry_total` counts estimator retry/backoff attempts that did not
-  emit a page.
-- `scan_eof_pages_total = 1` with one returned row means the scan emitted a
-  partial page only after PostgreSQL reached EOF.
-- `scan_b2w_wait_ns` is backend stamp to worker scan-thread frame read.
-  Compare it with `scan_idle_sleep_ns` to identify idle polling/scheduling.
-- `scan_batch_send_ns` is time blocked inside the DataFusion scan channel send;
-  high values point at downstream DataFusion backpressure.
-- `scan_batch_delivery_ns` is frame read to accepted DataFusion batch; subtract
-  `scan_batch_send_ns` to approximate worker-local page decode/import overhead.
+| Topic | Description |
+| --- | --- |
+| [Quick start](docs/quickstart.md) | Build, configure, and run a first local query |
+| [Architecture](docs/architecture.md) | Runtime model, data movement, and resource boundary |
+| [Query support](docs/query-support.md) | What query shapes are currently eligible |
+| [Configuration](docs/configuration.md) | GUCs for the worker, shared memory, scans, filters, and spill |
+| [Metrics](docs/metrics.md) | Diagnostic workflows for scan, worker, result, filter, and spill metrics |
+| [Benchmarks](docs/benchmarks.md) | Local diagnostic benchmark workflow |
+| [Workloads](docs/workloads.md) | Good and poor workload candidates |
+| [Limitations](docs/limitations.md) | Practical restrictions and overhead cases |
+| [Development](docs/development.md) | Contributor environment and workspace map |
+| [Testing](docs/testing.md) | Standalone Rust and pgrx test commands |
+| [Roadmap](docs/roadmap.md) | Typed planning, PG18 support, compatibility, and testing direction |
 
-## Developer Guidelines
+## Development
 
-- Rust 2021; keep changes small and focused; avoid panics in extension paths.
-- Before PR: `cargo fmt`, `cargo clippy -D warnings`, standalone tests with
-  PostgreSQL-bound crates excluded, and the relevant pgrx tests.
-- Commit style: `area: concise change`.
-
-## Agent Context
-
-We maintain a small living context under `ai/`.
-
-- `ai/README.md` - how to read and maintain the context
-- `ai/architecture.md` - current architecture
-- `ai/invariants.md` - project invariants
-- `ai/gotchas.md` - practical pitfalls
-- `ai/components/` - component notes
-
-After behavior or architecture changes, update the relevant files under
-`ai/` so future agents have accurate context.
+Contributor setup starts in [Development](docs/development.md). Internal
+maintainer and agent notes live under [`ai/`](ai/); they are not a replacement
+for public documentation.
