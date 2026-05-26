@@ -1,5 +1,7 @@
 # Metrics
 
+[Documentation home](index.md)
+
 `pg_fusion` exposes cumulative runtime counters from shared memory through SQL.
 Use them to answer practical questions: did the query spend time scanning,
 encoding, waiting on the worker, spilling, or sending results back?

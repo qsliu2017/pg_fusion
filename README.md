@@ -19,28 +19,22 @@ DataFusion is not copied into every backend process.
 ## Try A Query
 
 ```sql
-CREATE TABLE t AS
-SELECT i AS id, i % 100 AS a, i % 10 AS group_id, i::double precision AS value
-FROM generate_series(1, 1000000) AS i;
+CREATE TABLE t (a int PRIMARY KEY, b int);
+
+INSERT INTO t
+SELECT g, g % 1000
+FROM generate_series(1, 1000000) g;
 
 ANALYZE t;
 
 SET pg_fusion.enable = on;
 
-SELECT group_id, count(*), avg(value)
-FROM t
-GROUP BY group_id
-ORDER BY group_id;
-
 SELECT count(*)
 FROM t o
-JOIN t i USING (a)
-WHERE i.a = 42;
+JOIN t i USING (b);
 ```
 
-See [Quick start](docs/quickstart.md) for the local pgrx setup. The rendered
-documentation site is published at
-[darthunix.github.io/pg_fusion](https://darthunix.github.io/pg_fusion/).
+See [Quick start](docs/quickstart.md) for the local pgrx setup.
 
 ## How It Works
 
@@ -85,6 +79,9 @@ and [Limitations](docs/limitations.md) before using it beyond controlled
 experiments.
 
 ## Documentation
+
+The rendered documentation site is published at
+[darthunix.github.io/pg_fusion](https://darthunix.github.io/pg_fusion/).
 
 | Topic | Description |
 | --- | --- |

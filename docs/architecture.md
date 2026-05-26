@@ -1,5 +1,7 @@
 # Architecture
 
+[Documentation home](index.md)
+
 `pg_fusion` adds a DataFusion execution path to PostgreSQL without taking table
 access away from PostgreSQL.
 

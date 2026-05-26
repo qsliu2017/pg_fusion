@@ -1,5 +1,7 @@
 # Limitations
 
+[Documentation home](index.md)
+
 `pg_fusion` is experimental. Unsupported query shapes should be treated as not
 implemented, not as silently equivalent to PostgreSQL execution.
 

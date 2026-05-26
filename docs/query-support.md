@@ -1,5 +1,7 @@
 # Query Support
 
+[Documentation home](index.md)
+
 `pg_fusion` supports a conservative subset of analytical PostgreSQL `SELECT`
 queries. Unsupported shapes are either bypassed before planning or rejected
 with controlled errors.
@@ -60,6 +62,16 @@ The planner hook bypasses pg_fusion for:
 - PostgreSQL catalog or TOAST relations;
 - PostgreSQL function or table-function range entries;
 - pg_fusion management SQL such as metrics functions.
+
+## COPY
+
+`COPY (SELECT ...) TO STDOUT` can use pg_fusion when the nested `SELECT` is
+eligible for the pg_fusion planner path. The `SELECT` body follows the same
+support, bypass, and fail-closed rules as an ordinary top-level `SELECT`.
+
+This does not mean pg_fusion accelerates data loading. `COPY FROM`, table
+loads, and other non-`SELECT` utility paths remain PostgreSQL-owned execution
+paths.
 
 ## Relational Operators
 

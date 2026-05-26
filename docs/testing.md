@@ -1,5 +1,7 @@
 # Testing
 
+[Documentation home](index.md)
+
 `pg_fusion` has two kinds of tests:
 
 1. standalone Rust tests for PostgreSQL-free crates;

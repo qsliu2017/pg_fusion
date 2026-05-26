@@ -1,5 +1,7 @@
 # Configuration
 
+[Documentation home](index.md)
+
 `pg_fusion` uses PostgreSQL GUCs to configure the runtime path, the DataFusion
 worker, shared-memory transport, scan streaming, runtime filters, spill, and
 diagnostics.

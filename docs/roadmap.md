@@ -1,5 +1,7 @@
 # Roadmap
 
+[Documentation home](index.md)
+
 This page lists the main technical directions for `pg_fusion`. It does not
 promise dates or release scope.
 

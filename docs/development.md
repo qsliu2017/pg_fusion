@@ -1,5 +1,7 @@
 # Development
 
+[Documentation home](index.md)
+
 This page is for contributors working on the repository. User-facing runtime
 concepts are covered in [Architecture](architecture.md).
 

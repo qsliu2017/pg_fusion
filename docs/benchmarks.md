@@ -1,5 +1,7 @@
 # Benchmarks
 
+[Documentation home](index.md)
+
 `pg_fusion` includes local diagnostic benchmarks. They are for engineering
 evaluation, not audited TPC-H publication.
 

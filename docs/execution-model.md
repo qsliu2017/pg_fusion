@@ -1,5 +1,7 @@
 # Execution Model
 
+[Documentation home](index.md)
+
 This page follows one eligible query from PostgreSQL planning to result rows.
 For the higher-level process and resource model, see [Architecture](architecture.md).
 

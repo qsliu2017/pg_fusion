@@ -1,5 +1,7 @@
 # Quick Start
 
+[Documentation home](index.md)
+
 This guide builds `pg_fusion` and runs one local query in a pgrx PostgreSQL 17
 development cluster.
 
@@ -106,6 +108,51 @@ SELECT group_id, count(*), avg(value)
 FROM t
 GROUP BY group_id
 ORDER BY group_id;
+```
+
+## Try A Join-Heavy Query
+
+This example returns one row, but the join creates substantial worker-local
+intermediate data after PostgreSQL scan rows have crossed into Arrow pages.
+
+```sql
+DROP TABLE IF EXISTS t;
+CREATE TABLE t (a int PRIMARY KEY, b int);
+
+INSERT INTO t
+SELECT g, g % 1000
+FROM generate_series(1, 1000000) g;
+
+ANALYZE t;
+
+SET pg_fusion.enable = on;
+
+SELECT count(*)
+FROM t o
+JOIN t i USING (b);
+```
+
+Expected result:
+
+```text
+  count
+------------
+ 1000000000
+```
+
+On one local release run this query completed through pg_fusion in about 9.3
+seconds. Treat that as a smoke result, not a benchmark claim; compare on your
+machine with `pg_fusion.enable` off and on.
+
+`COPY (SELECT ...) TO STDOUT` can use the same pg_fusion path when the nested
+`SELECT` is eligible:
+
+```sql
+COPY (
+  SELECT count(*)
+  FROM t o
+  JOIN t i USING (b)
+) TO STDOUT WITH (FORMAT csv);
 ```
 
 ## Inspect The Plan

@@ -1,5 +1,7 @@
 # Workloads
 
+[Documentation home](index.md)
+
 This page describes workload shapes that are useful to evaluate with
 `pg_fusion`, and what information to collect when a query is faster, slower, or
 unsupported.

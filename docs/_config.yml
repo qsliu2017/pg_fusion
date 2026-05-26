@@ -1,3 +1,5 @@
 title: pg_fusion
 description: PostgreSQL heap-scan analytics through DataFusion
+url: "https://darthunix.github.io"
+baseurl: "/pg_fusion"
 theme: jekyll-theme-cayman
