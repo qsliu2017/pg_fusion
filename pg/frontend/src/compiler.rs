@@ -18,22 +18,22 @@ use crate::ir::{
 };
 
 #[derive(Debug)]
-pub struct LoweredQuery {
+pub struct CompiledQuery {
     pub logical_plan: LogicalPlan,
     pub scans: Vec<Arc<PgScanSpec>>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LowerConfig {
+pub struct CompileConfig {
     pub identifier_max_bytes: usize,
     pub first_scan_id: u64,
 }
 
-pub fn lower_query<R: CatalogResolver + Send + Sync>(
+pub fn compile_query<R: CatalogResolver + Send + Sync>(
     query: PgQuery,
     resolver: &R,
-    config: LowerConfig,
-) -> Result<LoweredQuery, PgFrontendError> {
+    config: CompileConfig,
+) -> Result<CompiledQuery, PgFrontendError> {
     validate_supported_query_shape(&query)?;
     let relation = single_relation(&query)?;
     let table_ref = datafusion_common::TableReference::partial(
@@ -47,7 +47,7 @@ pub fn lower_query<R: CatalogResolver + Send + Sync>(
     let filter = query
         .selection
         .as_ref()
-        .map(|expr| lower_expr(expr, &query, &resolved))
+        .map(|expr| compile_expr(expr, &query, &resolved))
         .transpose()?;
     let filters = filter.into_iter().collect::<Vec<_>>();
     let scan_projection = visible_target_projection(&query, &resolved)?;
@@ -71,11 +71,11 @@ pub fn lower_query<R: CatalogResolver + Send + Sync>(
     let mut plan = PgScanNode::new(Arc::clone(&spec)).into_logical_plan();
 
     let projection = visible_targets(&query)
-        .map(|target| lower_target_expr(target, &query, &resolved))
+        .map(|target| compile_target_expr(target, &query, &resolved))
         .collect::<Result<Vec<_>, _>>()?;
     plan = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(plan))?);
 
-    Ok(LoweredQuery {
+    Ok(CompiledQuery {
         logical_plan: plan,
         scans: vec![spec],
     })
@@ -206,13 +206,13 @@ fn collect_target_var_indices(
     }
 }
 
-fn lower_target_expr(
+fn compile_target_expr(
     target: &PgTarget,
     query: &PgQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     validate_target_expr(&target.expr)?;
-    let expr = lower_expr(&target.expr, query, resolved)?;
+    let expr = compile_expr(&target.expr, query, resolved)?;
     Ok(match &target.name {
         Some(name) => expr.alias(name.clone()),
         None => expr,
@@ -231,14 +231,14 @@ fn validate_target_expr(expr: &PgExpr) -> Result<(), PgFrontendError> {
     }
 }
 
-fn lower_expr(
+fn compile_expr(
     expr: &PgExpr,
     query: &PgQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     match expr {
-        PgExpr::Var(var) => lower_var(*var, query, resolved),
-        PgExpr::Const(constant) => lower_const_expr(constant),
+        PgExpr::Var(var) => compile_var(*var, query, resolved),
+        PgExpr::Const(constant) => compile_const_expr(constant),
         PgExpr::Param(param) if param.kind == PgParamKind::External => {
             let data_type = arrow_type(param.pg_type).ok_or_else(|| {
                 PgFrontendError::unsupported(format!(
@@ -255,17 +255,17 @@ fn lower_expr(
             "parameter kind {:?} is not supported by pg_frontend v1",
             param.kind
         ))),
-        PgExpr::RelabelType(inner) => lower_expr(inner, query, resolved),
-        PgExpr::Bool { op, args } => lower_bool(*op, args, query, resolved),
+        PgExpr::RelabelType(inner) => compile_expr(inner, query, resolved),
+        PgExpr::Bool { op, args } => compile_bool(*op, args, query, resolved),
         PgExpr::BinaryOp {
             op, left, right, ..
         } => Ok(binary_expr(
-            lower_expr(left, query, resolved)?,
+            compile_expr(left, query, resolved)?,
             operator(*op),
-            lower_expr(right, query, resolved)?,
+            compile_expr(right, query, resolved)?,
         )),
         PgExpr::NullTest { arg, is_null } => {
-            let arg = Box::new(lower_expr(arg, query, resolved)?);
+            let arg = Box::new(compile_expr(arg, query, resolved)?);
             Ok(if *is_null {
                 Expr::IsNull(arg)
             } else {
@@ -275,7 +275,7 @@ fn lower_expr(
     }
 }
 
-fn lower_var(
+fn compile_var(
     var: PgVar,
     query: &PgQuery,
     resolved: &ResolvedTable,
@@ -316,7 +316,7 @@ fn var_column_index(
     Ok(index)
 }
 
-fn lower_bool(
+fn compile_bool(
     op: PgBoolOp,
     args: &[PgExpr],
     query: &PgQuery,
@@ -334,13 +334,13 @@ fn lower_bool(
             } else {
                 Operator::Or
             };
-            let mut lowered = args
+            let mut compiled = args
                 .iter()
-                .map(|arg| lower_expr(arg, query, resolved))
+                .map(|arg| compile_expr(arg, query, resolved))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter();
-            let first = lowered.next().expect("checked non-empty args");
-            Ok(lowered.fold(first, |left, right| binary_expr(left, operator, right)))
+            let first = compiled.next().expect("checked non-empty args");
+            Ok(compiled.fold(first, |left, right| binary_expr(left, operator, right)))
         }
         PgBoolOp::Not => {
             if args.len() != 1 {
@@ -348,7 +348,9 @@ fn lower_bool(
                     "NOT expressions must have exactly one argument",
                 ));
             }
-            Ok(Expr::Not(Box::new(lower_expr(&args[0], query, resolved)?)))
+            Ok(Expr::Not(Box::new(compile_expr(
+                &args[0], query, resolved,
+            )?)))
         }
     }
 }
@@ -372,13 +374,13 @@ fn operator(op: PgOperator) -> Operator {
     }
 }
 
-fn lower_const(constant: &PgConst) -> Result<ScalarValue, PgFrontendError> {
+fn compile_const_scalar(constant: &PgConst) -> Result<ScalarValue, PgFrontendError> {
     scalar_for_pg_const(constant.value.as_ref(), constant.pg_type)
         .map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
-fn lower_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
-    let literal = lower_const(constant)?;
+fn compile_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
+    let literal = compile_const_scalar(constant)?;
     let metadata = is_text_like_type(constant.pg_type.oid).then(|| {
         pg_type_metadata(
             constant.pg_type.oid,
@@ -523,9 +525,9 @@ mod tests {
             value: Some(PgConstValue::Text("a ".into())),
         };
 
-        let expr = lower_const_expr(&constant).unwrap();
+        let expr = compile_const_expr(&constant).unwrap();
         let Expr::Literal(ScalarValue::Utf8View(Some(value)), Some(metadata)) = expr else {
-            panic!("bpchar constant must lower to Utf8View literal with PostgreSQL metadata");
+            panic!("bpchar constant must compile to Utf8View literal with PostgreSQL metadata");
         };
 
         assert_eq!(value, "a ");

@@ -9,13 +9,13 @@ use crate::error::PgFrontendError;
 use crate::ir::PgOperator;
 
 /// Return the DataFusion operator for PostgreSQL comparison operators that v1
-/// can lower.
+/// can compile.
 ///
 /// PostgreSQL operator names are user-extensible, so matching only by spelling
 /// would silently turn a user-defined `=` into DataFusion's builtin operator.
 /// PostgreSQL already resolved `OpExpr.opno`; this function validates that the
 /// resolved operator is a safe `pg_catalog` binary comparison over supported
-/// scalar types before lowering it.
+/// scalar types before compiling it.
 pub(crate) unsafe fn supported_operator(opno: pg_sys::Oid) -> Result<PgOperator, PgFrontendError> {
     let tuple = unsafe {
         pg_sys::SearchSysCache1(

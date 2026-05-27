@@ -2,25 +2,25 @@
 //!
 //! This crate is the first step away from SQL-text planning at the
 //! PostgreSQL/DataFusion boundary. It copies PostgreSQL's analyzed type
-//! metadata into a stable Rust IR, then lowers the supported subset into a
+//! metadata into a stable Rust IR, then compiles the supported subset into a
 //! DataFusion logical plan with `PgScanNode` leaves.
 //!
 //! The current version is intentionally narrow and fail-closed. It is not wired
 //! into the production planner hook by default.
 
 mod adapter;
+mod compiler;
 mod error;
 mod ir;
-mod lower;
 mod operator;
 pub mod shippability;
 
+pub use compiler::CompiledQuery;
 pub use error::PgFrontendError;
 pub use ir::{
     PgBoolOp, PgColumnRef, PgCommand, PgConst, PgConstValue, PgExpr, PgFromItem, PgOperator,
     PgParam, PgParamKind, PgQuery, PgRelationRef, PgTarget, PgTypeRef, PgVar,
 };
-pub use lower::LoweredQuery;
 
 use df_catalog::{CatalogResolver, PgrxCatalogResolver};
 use pgrx::pg_sys;
@@ -90,10 +90,10 @@ where
         query: *mut pg_sys::Query,
     ) -> Result<PgFrontendOutput, PgFrontendError> {
         let pg_query = unsafe { adapter::read_query(query) }?;
-        let result = lower::lower_query(
+        let result = compiler::compile_query(
             pg_query.clone(),
             &self.resolver,
-            lower::LowerConfig {
+            compiler::CompileConfig {
                 identifier_max_bytes: self.config.identifier_max_bytes,
                 first_scan_id: self.config.first_scan_id,
             },

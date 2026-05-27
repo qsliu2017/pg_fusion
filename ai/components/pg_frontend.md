@@ -11,12 +11,12 @@ importance: 0.7
 
 `pg/frontend` is the experimental PostgreSQL typed-tree frontend. It reads a
 live analyzed `pg_sys::Query`, copies PostgreSQL OID/typmod/collation metadata
-into a stable Rust IR, and lowers the supported subset into a DataFusion
+into a stable Rust IR, and compiles the supported subset into a DataFusion
 `LogicalPlan` with `PgScanNode` leaves.
 
 PostgreSQL major-version layout differences terminate at `adapter/`. Each build
 targets exactly one PostgreSQL major selected by Cargo feature; today only
-`pg17` is wired. The stable `PgQuery` IR and lowering code must stay free of
+`pg17` is wired. The stable `PgQuery` IR and compiler code must stay free of
 PostgreSQL-version `cfg`.
 
 v1 is intentionally fail-closed and is not wired into the production planner
@@ -46,13 +46,13 @@ and PostgreSQL result import. Non-finite float constants also fail closed
 because PostgreSQL and Arrow/DataFusion disagree on `NaN` comparison semantics.
 `TIME '24:00:00'` constants fail closed because scan SQL renders time literals
 through interval arithmetic that PostgreSQL normalizes modulo one day.
-Operator lowering reads the resolved `OpExpr.opno` from PostgreSQL's syscache
+Operator compilation reads the resolved `OpExpr.opno` from PostgreSQL's syscache
 and accepts only binary `pg_catalog` comparison operators over identical
 supported scalar operand types with `bool` results. This keeps user-defined
 operators with builtin spellings, mixed-type comparison operators, arithmetic,
 and PostgreSQL-specific operator semantics fail-closed until scan SQL can
 preserve them explicitly.
 `WHERE` filters must fully compile into PostgreSQL scan SQL; residual
-DataFusion filters are rejected. `SELECT` targets do not lower PostgreSQL
+DataFusion filters are rejected. `SELECT` targets do not compile PostgreSQL
 operator expressions in v1 because scan SQL cannot yet project expressions
 with PostgreSQL semantics.

@@ -4,7 +4,7 @@
 `pg_fusion`.
 
 The crate reads PostgreSQL's analyzed `Query` tree, copies the PostgreSQL type
-metadata that matters at the engine boundary, and lowers the supported subset
+metadata that matters at the engine boundary, and compiles the supported subset
 into a DataFusion logical plan with `PgScanNode` leaves.
 
 The first version is intentionally fail-closed and is not wired into the
