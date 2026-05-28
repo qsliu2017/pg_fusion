@@ -63,8 +63,9 @@ use std::ffi::CString;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion_common::TableReference;
+use pg_type::{arrow_type_for_pg_type, PgTypeRef};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::{PgRelation, PgTryBuilder};
@@ -223,12 +224,12 @@ fn resolve_relation_by_oid(
             if attr.is_dropped() {
                 continue;
             }
-            let data_type = oid_to_arrow_type(attr.atttypid, attr.atttypmod).ok_or_else(|| {
-                ResolveError::UnsupportedType {
+            let data_type =
+                arrow_type_for_pg_type(PgTypeRef::new(attr.atttypid.to_u32(), attr.atttypmod, 0))
+                    .ok_or_else(|| ResolveError::UnsupportedType {
                     column: attr.name().to_owned(),
                     type_oid: attr.atttypid.to_u32(),
-                }
-            })?;
+                })?;
             fields.push(Field::new(attr.name(), data_type, !attr.attnotnull));
             column_attnums.push(attr.attnum);
         }
@@ -297,55 +298,6 @@ fn validate_relkind(rel: &PgRelation) -> Result<(), ResolveError> {
     Err(ResolveError::UnsupportedRelationKind(relkind))
 }
 
-const NUMERIC_FALLBACK_PRECISION: u8 = 38;
-const NUMERIC_FALLBACK_SCALE: i8 = 16;
-
-fn oid_to_arrow_type(oid: pg_sys::Oid, atttypmod: i32) -> Option<arrow_schema::DataType> {
-    match oid {
-        o if o == pg_sys::BOOLOID => Some(DataType::Boolean),
-        o if o == pg_sys::TEXTOID
-            || o == pg_sys::VARCHAROID
-            || o == pg_sys::BPCHAROID
-            || o == pg_sys::NAMEOID =>
-        {
-            Some(DataType::Utf8View)
-        }
-        o if o == pg_sys::INT2OID => Some(DataType::Int16),
-        o if o == pg_sys::INT4OID => Some(DataType::Int32),
-        o if o == pg_sys::INT8OID => Some(DataType::Int64),
-        o if o == pg_sys::FLOAT4OID => Some(DataType::Float32),
-        o if o == pg_sys::FLOAT8OID => Some(DataType::Float64),
-        o if o == pg_sys::UUIDOID => Some(DataType::FixedSizeBinary(16)),
-        o if o == pg_sys::BYTEAOID => Some(DataType::BinaryView),
-        o if o == pg_sys::DATEOID => Some(DataType::Date32),
-        o if o == pg_sys::TIMEOID => Some(DataType::Time64(TimeUnit::Microsecond)),
-        o if o == pg_sys::TIMESTAMPOID || o == pg_sys::TIMESTAMPTZOID => {
-            Some(DataType::Timestamp(TimeUnit::Microsecond, None))
-        }
-        o if o == pg_sys::INTERVALOID => Some(DataType::Interval(IntervalUnit::MonthDayNano)),
-        o if o == pg_sys::NUMERICOID => {
-            let (precision, scale) = numeric_shape_from_typmod(atttypmod)?;
-            Some(DataType::Decimal128(precision, scale))
-        }
-        _ => None,
-    }
-}
-
-fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
-    if atttypmod < 0 {
-        return Some((NUMERIC_FALLBACK_PRECISION, NUMERIC_FALLBACK_SCALE));
-    }
-
-    let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
-    let precision = (typmod >> 16) & 0xffff;
-    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
-    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
-        return None;
-    }
-
-    Some((precision as u8, scale as i8))
-}
-
 fn resolve_error_from_caught_error(error: CaughtError) -> ResolveError {
     let message = match error {
         CaughtError::PostgresError(report)
@@ -360,6 +312,11 @@ fn resolve_error_from_caught_error(error: CaughtError) -> ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::{DataType, IntervalUnit, TimeUnit};
+
+    fn oid_to_arrow_type(oid: pg_sys::Oid, typmod: i32) -> Option<DataType> {
+        arrow_type_for_pg_type(PgTypeRef::new(oid.to_u32(), typmod, 0))
+    }
 
     #[test]
     fn oid_to_arrow_type_maps_supported_oids() {

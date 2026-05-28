@@ -1,6 +1,7 @@
 use crate::error::oid_u32;
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
+use pg_type::{numeric_shape_from_typmod, type_tag_for_pg_type, PgTypeRef};
 use pgrx_pg_sys as pg_sys;
 use std::ffi::CStr;
 use std::ptr;
@@ -8,9 +9,6 @@ use std::slice;
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicI32, Ordering};
-
-const NUMERIC_FALLBACK_PRECISION: u8 = 38;
-const NUMERIC_FALLBACK_SCALE: i8 = 16;
 
 #[cfg(target_endian = "little")]
 const VARLENA_1B_FLAG: u8 = 0x01;
@@ -30,32 +28,8 @@ pub(crate) fn validate_pg_layout_type(
     atttypmod: i32,
     type_tag: TypeTag,
 ) -> Result<(), ConfigError> {
-    let ok = match type_tag {
-        TypeTag::Boolean => oid == pg_sys::BOOLOID,
-        TypeTag::Int16 => oid == pg_sys::INT2OID,
-        TypeTag::Int32 => oid == pg_sys::INT4OID,
-        TypeTag::Int64 => oid == pg_sys::INT8OID,
-        TypeTag::Float32 => oid == pg_sys::FLOAT4OID,
-        TypeTag::Float64 => oid == pg_sys::FLOAT8OID,
-        TypeTag::Uuid => oid == pg_sys::UUIDOID,
-        TypeTag::Decimal128 => {
-            oid == pg_sys::NUMERICOID && numeric_shape_from_typmod(atttypmod).is_some()
-        }
-        TypeTag::IntervalMonthDayNano => oid == pg_sys::INTERVALOID,
-        TypeTag::Date32 => oid == pg_sys::DATEOID,
-        TypeTag::Time64Microsecond => oid == pg_sys::TIMEOID,
-        TypeTag::TimestampMicrosecond => {
-            oid == pg_sys::TIMESTAMPOID || oid == pg_sys::TIMESTAMPTZOID
-        }
-        TypeTag::Utf8View => {
-            oid == pg_sys::TEXTOID
-                || oid == pg_sys::VARCHAROID
-                || oid == pg_sys::BPCHAROID
-                || oid == pg_sys::NAMEOID
-        }
-        TypeTag::BinaryView => oid == pg_sys::BYTEAOID,
-    };
-    if ok {
+    let pg_type = PgTypeRef::new(oid_u32(oid), atttypmod, 0);
+    if type_tag_for_pg_type(pg_type) == Some(type_tag) {
         Ok(())
     } else {
         Err(ConfigError::PgLayoutTypeMismatch {
@@ -64,13 +38,6 @@ pub(crate) fn validate_pg_layout_type(
             type_tag,
         })
     }
-}
-
-pub(crate) fn pg_oid_needs_detoast(oid: pg_sys::Oid) -> bool {
-    oid == pg_sys::TEXTOID
-        || oid == pg_sys::VARCHAROID
-        || oid == pg_sys::BPCHAROID
-        || oid == pg_sys::BYTEAOID
 }
 
 #[cfg(not(test))]
@@ -292,21 +259,6 @@ unsafe fn numeric_text(
         });
     unsafe { pg_sys::pfree(cstr_ptr.cast()) };
     text
-}
-
-fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
-    if atttypmod < 0 {
-        return Some((NUMERIC_FALLBACK_PRECISION, NUMERIC_FALLBACK_SCALE));
-    }
-
-    let typmod = atttypmod.checked_sub(pg_sys::VARHDRSZ as i32)?;
-    let precision = (typmod >> 16) & 0xffff;
-    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
-    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
-        return None;
-    }
-
-    Some((precision as u8, scale as i8))
 }
 
 fn parse_numeric_text_to_decimal128(

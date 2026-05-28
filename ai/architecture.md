@@ -40,9 +40,12 @@ page-backed Arrow batches.
   `pg/slot_encoder`, `pg/slot_import`: page-backed Arrow layout,
   PostgreSQL-free row-to-page encoding, PostgreSQL slot adaptation, and result
   projection.
-- `pg/df_catalog`, `pg/plan_builder`, `pg/scan_node`, `pg/scan_sql`,
+- `pg/type`, `pg/df_catalog`, `pg/plan_builder`, `pg/scan_node`, `pg/scan_sql`,
   `pg/slot_scan`: backend-side DataFusion planning and trusted PostgreSQL scan
-  SQL execution.
+  SQL execution. `pg/type` owns the shared PostgreSQL type policy for supported
+  OIDs, typmods, collations, Arrow transport types, and page-layout type tags.
+  PostgreSQL-bound crates still own raw `Datum`, TOAST, varlena,
+  memory-context, and tuple-slot mechanics.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
   by both backend planning and worker/codec decoding. Its `format(text, ...)`
   scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width

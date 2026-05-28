@@ -20,6 +20,7 @@ members = [
   "pg/df_catalog",
   "pg/df_functions",
   "pg/backend_service",
+  "pg/type",
   "pg/plan_builder",
   "pg/statistics",
   "pg/row_estimator_seed",

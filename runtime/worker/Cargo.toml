@@ -27,6 +27,7 @@ issuance = { path = "../../page/issuance", version = "25.0" }
 plan_flow = { path = "../../page/plan_flow", version = "25.0" }
 pool = { path = "../../page/pool", version = "25.0" }
 row_estimator = { path = "../../page/row_estimator", version = "25.0" }
+pg_type = { path = "../../pg/type", version = "25.0" }
 protocol = { path = "../protocol", version = "25.0" }
 metrics = { path = "../metrics", version = "25.0" }
 filter = { path = "../filter", version = "25.0" }

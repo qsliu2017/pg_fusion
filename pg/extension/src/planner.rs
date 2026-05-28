@@ -3,8 +3,9 @@ use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::ptr::null_mut;
 
-use arrow_schema::{DataType, IntervalUnit};
+use arrow_schema::DataType;
 use datafusion::logical_expr::LogicalPlan;
+use pg_type::pg_oid_for_arrow_type;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
     list_append_unique_ptr, list_make1_impl, palloc0, planner_hook, planner_hook_type,
@@ -374,25 +375,7 @@ unsafe fn pstrdup(value: &str) -> *mut i8 {
 }
 
 fn type_to_oid(data_type: &DataType) -> Option<Oid> {
-    match data_type {
-        DataType::Boolean => Some(pgrx::pg_sys::BOOLOID),
-        DataType::Int16 => Some(pgrx::pg_sys::INT2OID),
-        DataType::Int32 => Some(pgrx::pg_sys::INT4OID),
-        DataType::Int64 => Some(pgrx::pg_sys::INT8OID),
-        DataType::Float32 => Some(pgrx::pg_sys::FLOAT4OID),
-        DataType::Float64 => Some(pgrx::pg_sys::FLOAT8OID),
-        DataType::Decimal128(_, _) => Some(pgrx::pg_sys::NUMERICOID),
-        DataType::Utf8 | DataType::Utf8View => Some(pgrx::pg_sys::TEXTOID),
-        DataType::Binary | DataType::BinaryView => Some(pgrx::pg_sys::BYTEAOID),
-        DataType::FixedSizeBinary(16) => Some(pgrx::pg_sys::UUIDOID),
-        DataType::Interval(IntervalUnit::MonthDayNano) => Some(pgrx::pg_sys::INTERVALOID),
-        DataType::Date32 => Some(pgrx::pg_sys::DATEOID),
-        DataType::Time64(arrow_schema::TimeUnit::Microsecond) => Some(pgrx::pg_sys::TIMEOID),
-        DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None) => {
-            Some(pgrx::pg_sys::TIMESTAMPOID)
-        }
-        _ => None,
-    }
+    pg_oid_for_arrow_type(data_type).map(Oid::from_u32)
 }
 
 // TODO(darthunix): add ParamListInfo -> ScalarValue bridging for bind params in

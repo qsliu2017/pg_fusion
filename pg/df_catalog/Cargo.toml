@@ -17,5 +17,6 @@ pg17 = ["pgrx/pg17"]
 arrow-schema = { workspace = true }
 datafusion-common = { workspace = true }
 pgrx = { workspace = true }
+pg_type = { path = "../type", version = "25.0" }
 scan_sql = { path = "../scan_sql", version = "25.0" }
 thiserror = "2.0"

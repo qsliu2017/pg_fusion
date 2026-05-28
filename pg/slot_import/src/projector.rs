@@ -8,6 +8,7 @@ use arrow_array::{
 use arrow_layout::TypeTag;
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use import::{ArrowPageDecoder, OwnedPage};
+use pg_type::{oid as pg_oid, type_tag_for_pg_type, PgTypeRef};
 use pgrx::fcinfo::direct_function_call_as_datum;
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -561,19 +562,29 @@ fn projector_for_attr(
     type_tag: TypeTag,
     data_type: &DataType,
 ) -> Result<ColumnProjector, ConfigError> {
-    let projector = match (type_tag, oid) {
-        (TypeTag::Boolean, oid) if oid == pg_sys::BOOLOID => ColumnProjector::Boolean,
-        (TypeTag::Int16, oid) if oid == pg_sys::INT2OID => ColumnProjector::Int16,
-        (TypeTag::Int32, oid) if oid == pg_sys::INT4OID => ColumnProjector::Int32,
-        (TypeTag::Int64, oid) if oid == pg_sys::INT8OID => ColumnProjector::Int64,
-        (TypeTag::Float32, oid) if oid == pg_sys::FLOAT4OID => ColumnProjector::Float32,
-        (TypeTag::Float64, oid) if oid == pg_sys::FLOAT8OID => ColumnProjector::Float64,
-        (TypeTag::Uuid, oid) if oid == pg_sys::UUIDOID => ColumnProjector::Uuid,
-        (TypeTag::Decimal128, oid) if oid == pg_sys::NUMERICOID => {
+    let oid = oid.to_u32();
+    let pg_type = PgTypeRef::new(oid, atttypmod, 0);
+    if type_tag_for_pg_type(pg_type) != Some(type_tag) {
+        return Err(ConfigError::PgLayoutTypeMismatch {
+            index,
+            oid,
+            type_tag,
+        });
+    }
+
+    let projector = match oid {
+        pg_oid::BOOLOID => ColumnProjector::Boolean,
+        pg_oid::INT2OID => ColumnProjector::Int16,
+        pg_oid::INT4OID => ColumnProjector::Int32,
+        pg_oid::INT8OID => ColumnProjector::Int64,
+        pg_oid::FLOAT4OID => ColumnProjector::Float32,
+        pg_oid::FLOAT8OID => ColumnProjector::Float64,
+        pg_oid::UUIDOID => ColumnProjector::Uuid,
+        pg_oid::NUMERICOID => {
             let DataType::Decimal128(_, scale) = data_type else {
                 return Err(ConfigError::PgLayoutTypeMismatch {
                     index,
-                    oid: oid.to_u32(),
+                    oid,
                     type_tag,
                 });
             };
@@ -587,61 +598,49 @@ fn projector_for_attr(
                     && matches!(data_type, DataType::Decimal128(38, 16)),
             }
         }
-        (TypeTag::IntervalMonthDayNano, oid) if oid == pg_sys::INTERVALOID => {
-            ColumnProjector::Interval
-        }
-        (TypeTag::Date32, oid) if oid == pg_sys::DATEOID => ColumnProjector::Date32,
-        (TypeTag::Time64Microsecond, oid) if oid == pg_sys::TIMEOID => {
+        pg_oid::INTERVALOID => ColumnProjector::Interval,
+        pg_oid::DATEOID => ColumnProjector::Date32,
+        pg_oid::TIMEOID => {
             let DataType::Time64(TimeUnit::Microsecond) = data_type else {
                 return Err(ConfigError::PgLayoutTypeMismatch {
                     index,
-                    oid: oid.to_u32(),
+                    oid,
                     type_tag,
                 });
             };
             ColumnProjector::Time64Microsecond
         }
-        (TypeTag::TimestampMicrosecond, oid)
-            if oid == pg_sys::TIMESTAMPOID || oid == pg_sys::TIMESTAMPTZOID =>
-        {
+        pg_oid::TIMESTAMPOID | pg_oid::TIMESTAMPTZOID => {
             let DataType::Timestamp(TimeUnit::Microsecond, None) = data_type else {
                 return Err(ConfigError::PgLayoutTypeMismatch {
                     index,
-                    oid: oid.to_u32(),
+                    oid,
                     type_tag,
                 });
             };
             ColumnProjector::TimestampMicrosecond
         }
-        (TypeTag::Utf8View, oid) if oid == pg_sys::TEXTOID => {
-            ColumnProjector::TextLike(TextLikeProjector {
-                kind: TextLikeKind::Text,
-                atttypmod,
-            })
-        }
-        (TypeTag::Utf8View, oid) if oid == pg_sys::VARCHAROID => {
-            ColumnProjector::TextLike(TextLikeProjector {
-                kind: TextLikeKind::Varchar,
-                atttypmod,
-            })
-        }
-        (TypeTag::Utf8View, oid) if oid == pg_sys::BPCHAROID => {
-            ColumnProjector::TextLike(TextLikeProjector {
-                kind: TextLikeKind::Bpchar,
-                atttypmod,
-            })
-        }
-        (TypeTag::Utf8View, oid) if oid == pg_sys::NAMEOID => {
-            ColumnProjector::TextLike(TextLikeProjector {
-                kind: TextLikeKind::Name,
-                atttypmod,
-            })
-        }
-        (TypeTag::BinaryView, oid) if oid == pg_sys::BYTEAOID => ColumnProjector::Bytea,
+        pg_oid::TEXTOID => ColumnProjector::TextLike(TextLikeProjector {
+            kind: TextLikeKind::Text,
+            atttypmod,
+        }),
+        pg_oid::VARCHAROID => ColumnProjector::TextLike(TextLikeProjector {
+            kind: TextLikeKind::Varchar,
+            atttypmod,
+        }),
+        pg_oid::BPCHAROID => ColumnProjector::TextLike(TextLikeProjector {
+            kind: TextLikeKind::Bpchar,
+            atttypmod,
+        }),
+        pg_oid::NAMEOID => ColumnProjector::TextLike(TextLikeProjector {
+            kind: TextLikeKind::Name,
+            atttypmod,
+        }),
+        pg_oid::BYTEAOID => ColumnProjector::Bytea,
         _ => {
             return Err(ConfigError::PgLayoutTypeMismatch {
                 index,
-                oid: oid.to_u32(),
+                oid,
                 type_tag,
             });
         }

@@ -1,11 +1,12 @@
 use crate::datum::{
-    database_encoding, pg_oid_needs_detoast, read_bool, read_f32, read_f64, read_fixed_bytes,
-    read_i16, read_i32, read_i64, read_interval_month_day_nano, read_name_bytes,
-    read_numeric_decimal128, read_numeric_decimal128_with_scale, read_packed_varlena,
-    validate_pg_layout_type, with_detoasted_slot_datum,
+    database_encoding, read_bool, read_f32, read_f64, read_fixed_bytes, read_i16, read_i32,
+    read_i64, read_interval_month_day_nano, read_name_bytes, read_numeric_decimal128,
+    read_numeric_decimal128_with_scale, read_packed_varlena, validate_pg_layout_type,
+    with_detoasted_slot_datum,
 };
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
+use pg_type::pg_oid_needs_detoast;
 use pgrx_pg_sys as pg_sys;
 use row_encoder::{CellRef, FixedWidthCell, FixedWidthRowSource, PageRowEncoder, RowSource};
 use std::ptr;
@@ -532,7 +533,7 @@ pub unsafe fn with_filter_key<R>(
             let bytes = unsafe { read_name_bytes(datum, source_index)? };
             Ok(f(Some(SlotFilterKeyRef::Utf8(bytes))))
         }
-        SlotFilterKeyType::Utf8View if pg_oid_needs_detoast(attr.atttypid) => {
+        SlotFilterKeyType::Utf8View if pg_oid_needs_detoast(attr.atttypid.to_u32()) => {
             if attr.atttypid == pg_sys::BYTEAOID {
                 return Err(EncodeError::UnsupportedRowAccess {
                     index: source_index,
@@ -697,7 +698,7 @@ impl RowSource for PgSlotRow {
                 let bytes = unsafe { read_name_bytes(datum, index)? };
                 self.write_cell(CellRef::Utf8(bytes), f)
             }
-            oid if pg_oid_needs_detoast(oid) => {
+            oid if pg_oid_needs_detoast(oid.to_u32()) => {
                 with_detoasted_slot_datum(datum, index, |detoasted| {
                     let bytes = unsafe { read_packed_varlena(detoasted, index)? };
                     if oid == pg_sys::BYTEAOID {

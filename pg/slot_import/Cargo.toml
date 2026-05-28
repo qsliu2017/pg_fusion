@@ -20,5 +20,6 @@ arrow_layout = { path = "../../page/arrow_layout", version = "25.0" }
 import = { path = "../../page/import", version = "25.0" }
 pgrx = { workspace = true }
 pgrx-pg-sys = { workspace = true }
+pg_type = { path = "../type", version = "25.0" }
 thiserror = "2.0"
 transfer = { path = "../../page/transfer", version = "25.0" }

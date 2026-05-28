@@ -1,0 +1,481 @@
+//! Shared PostgreSQL type policy for Arrow transport.
+//!
+//! This crate owns pg_fusion's supported PostgreSQL type surface and the
+//! mapping from PostgreSQL type identity to Arrow/page transport types. It is
+//! intentionally PostgreSQL-runtime free: pgrx-specific Datum decoding and
+//! tuple-slot projection stay in the PostgreSQL-bound crates.
+
+use std::sync::Arc;
+
+use arrow_layout::{ColumnSpec, TypeTag};
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
+use thiserror::Error;
+
+pub mod oid {
+    pub const BOOLOID: u32 = 16;
+    pub const BYTEAOID: u32 = 17;
+    pub const NAMEOID: u32 = 19;
+    pub const INT8OID: u32 = 20;
+    pub const INT2OID: u32 = 21;
+    pub const INT4OID: u32 = 23;
+    pub const TEXTOID: u32 = 25;
+    pub const FLOAT4OID: u32 = 700;
+    pub const FLOAT8OID: u32 = 701;
+    pub const BPCHAROID: u32 = 1042;
+    pub const VARCHAROID: u32 = 1043;
+    pub const DATEOID: u32 = 1082;
+    pub const TIMEOID: u32 = 1083;
+    pub const TIMESTAMPOID: u32 = 1114;
+    pub const TIMESTAMPTZOID: u32 = 1184;
+    pub const INTERVALOID: u32 = 1186;
+    pub const TIMETZOID: u32 = 1266;
+    pub const NUMERICOID: u32 = 1700;
+    pub const REGCLASSOID: u32 = 2205;
+    pub const UUIDOID: u32 = 2950;
+    pub const JSONBOID: u32 = 3802;
+
+    pub const DEFAULT_COLLATION_OID: u32 = 100;
+    pub const C_COLLATION_OID: u32 = 950;
+    pub const PG_CATALOG_NAMESPACE: u32 = 11;
+}
+
+pub const VARHDRSZ: i32 = 4;
+pub const NUMERIC_FALLBACK_PRECISION: u8 = 38;
+pub const NUMERIC_FALLBACK_SCALE: i8 = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PgTypeRef {
+    pub oid: u32,
+    pub typmod: i32,
+    pub collation: u32,
+}
+
+impl PgTypeRef {
+    pub const fn new(oid: u32, typmod: i32, collation: u32) -> Self {
+        Self {
+            oid,
+            typmod,
+            collation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgTypeMetadata {
+    pub oid: u32,
+    pub typmod: i32,
+    pub collation: u32,
+}
+
+impl From<PgTypeRef> for PgTypeMetadata {
+    fn from(value: PgTypeRef) -> Self {
+        Self {
+            oid: value.oid,
+            typmod: value.typmod,
+            collation: value.collation,
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum PgTypeError {
+    #[error("PostgreSQL type oid {oid} is not supported by pg_fusion")]
+    UnsupportedType { oid: u32 },
+    #[error("non-null PostgreSQL constant type {type_name} is not supported by pg_fusion")]
+    UnsupportedConstType { type_name: String },
+    #[error("non-default collation oid {collation} is not supported by pg_fusion")]
+    UnsupportedCollation { collation: u32 },
+    #[error("numeric typmod {typmod} cannot be represented as Arrow Decimal128")]
+    UnsupportedNumericTypmod { typmod: i32 },
+    #[error("Arrow type {data_type} at column {index} is not supported by pg_fusion transport")]
+    UnsupportedArrowType { index: usize, data_type: String },
+    #[error("pg_fusion result transport requires at least one output column")]
+    EmptyResultSchema,
+}
+
+pub fn validate_supported_value_type(pg_type: PgTypeRef) -> Result<(), PgTypeError> {
+    validate_supported_collation(pg_type)?;
+    if is_supported_value_type(pg_type.oid) {
+        Ok(())
+    } else {
+        Err(PgTypeError::UnsupportedType { oid: pg_type.oid })
+    }
+}
+
+pub fn validate_supported_non_null_const_type(pg_type: PgTypeRef) -> Result<(), PgTypeError> {
+    validate_supported_collation(pg_type)?;
+    if is_supported_non_null_const_type(pg_type.oid) {
+        Ok(())
+    } else {
+        Err(PgTypeError::UnsupportedConstType {
+            type_name: type_name(pg_type.oid),
+        })
+    }
+}
+
+pub fn validate_supported_collation(pg_type: PgTypeRef) -> Result<(), PgTypeError> {
+    if pg_type.collation != 0
+        && pg_type.collation != oid::DEFAULT_COLLATION_OID
+        && !(pg_type.oid == oid::NAMEOID && pg_type.collation == oid::C_COLLATION_OID)
+    {
+        return Err(PgTypeError::UnsupportedCollation {
+            collation: pg_type.collation,
+        });
+    }
+    Ok(())
+}
+
+pub fn is_supported_scalar_type(oid: u32) -> bool {
+    is_supported_value_type(oid)
+}
+
+pub fn is_supported_value_type(oid: u32) -> bool {
+    matches!(
+        oid,
+        oid::BOOLOID
+            | oid::INT2OID
+            | oid::INT4OID
+            | oid::INT8OID
+            | oid::FLOAT4OID
+            | oid::FLOAT8OID
+            | oid::TEXTOID
+            | oid::VARCHAROID
+            | oid::BPCHAROID
+            | oid::NAMEOID
+            | oid::BYTEAOID
+            | oid::UUIDOID
+            | oid::DATEOID
+            | oid::TIMEOID
+            | oid::TIMESTAMPOID
+            | oid::TIMESTAMPTZOID
+            | oid::INTERVALOID
+            | oid::NUMERICOID
+    )
+}
+
+pub fn is_supported_non_null_const_type(oid: u32) -> bool {
+    matches!(
+        oid,
+        oid::BOOLOID
+            | oid::INT2OID
+            | oid::INT4OID
+            | oid::INT8OID
+            | oid::FLOAT4OID
+            | oid::FLOAT8OID
+            | oid::TEXTOID
+            | oid::VARCHAROID
+            | oid::BPCHAROID
+            | oid::NAMEOID
+            | oid::BYTEAOID
+            | oid::TIMEOID
+    )
+}
+
+pub fn is_text_like_type(oid: u32) -> bool {
+    matches!(
+        oid,
+        oid::TEXTOID | oid::VARCHAROID | oid::BPCHAROID | oid::NAMEOID
+    )
+}
+
+pub fn is_temporal_type(oid: u32) -> bool {
+    matches!(
+        oid,
+        oid::DATEOID | oid::TIMEOID | oid::TIMESTAMPOID | oid::TIMESTAMPTZOID
+    )
+}
+
+pub fn pg_oid_needs_detoast(oid: u32) -> bool {
+    matches!(
+        oid,
+        oid::TEXTOID | oid::VARCHAROID | oid::BPCHAROID | oid::BYTEAOID
+    )
+}
+
+pub fn type_name(oid: u32) -> String {
+    match oid {
+        oid::BOOLOID => "boolean".into(),
+        oid::BYTEAOID => "bytea".into(),
+        oid::NAMEOID => "name".into(),
+        oid::INT2OID => "int2".into(),
+        oid::INT4OID => "int4".into(),
+        oid::INT8OID => "int8".into(),
+        oid::FLOAT4OID => "float4".into(),
+        oid::FLOAT8OID => "float8".into(),
+        oid::TEXTOID => "text".into(),
+        oid::VARCHAROID => "varchar".into(),
+        oid::BPCHAROID => "bpchar".into(),
+        oid::UUIDOID => "uuid".into(),
+        oid::DATEOID => "date".into(),
+        oid::TIMEOID => "time".into(),
+        oid::TIMESTAMPOID => "timestamp".into(),
+        oid::TIMESTAMPTZOID => "timestamptz".into(),
+        oid::INTERVALOID => "interval".into(),
+        oid::NUMERICOID => "numeric".into(),
+        _ => format!("oid {oid}"),
+    }
+}
+
+pub fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
+    if atttypmod < 0 {
+        return Some((NUMERIC_FALLBACK_PRECISION, NUMERIC_FALLBACK_SCALE));
+    }
+
+    let typmod = atttypmod.checked_sub(VARHDRSZ)?;
+    let precision = (typmod >> 16) & 0xffff;
+    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
+    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
+        return None;
+    }
+
+    Some((precision as u8, scale as i8))
+}
+
+pub fn text_typmod_length(typmod: i32) -> Option<i32> {
+    (typmod > VARHDRSZ).then_some(typmod - VARHDRSZ)
+}
+
+pub fn arrow_type_for_pg_type(pg_type: PgTypeRef) -> Option<DataType> {
+    match pg_type.oid {
+        oid::BOOLOID => Some(DataType::Boolean),
+        oid::INT2OID => Some(DataType::Int16),
+        oid::INT4OID => Some(DataType::Int32),
+        oid::INT8OID => Some(DataType::Int64),
+        oid::FLOAT4OID => Some(DataType::Float32),
+        oid::FLOAT8OID => Some(DataType::Float64),
+        oid::TEXTOID | oid::VARCHAROID | oid::BPCHAROID | oid::NAMEOID => Some(DataType::Utf8View),
+        oid::BYTEAOID => Some(DataType::BinaryView),
+        oid::UUIDOID => Some(DataType::FixedSizeBinary(16)),
+        oid::DATEOID => Some(DataType::Date32),
+        oid::TIMEOID => Some(DataType::Time64(TimeUnit::Microsecond)),
+        oid::TIMESTAMPOID | oid::TIMESTAMPTZOID => {
+            Some(DataType::Timestamp(TimeUnit::Microsecond, None))
+        }
+        oid::INTERVALOID => Some(DataType::Interval(IntervalUnit::MonthDayNano)),
+        oid::NUMERICOID => {
+            let (precision, scale) = numeric_shape_from_typmod(pg_type.typmod)?;
+            Some(DataType::Decimal128(precision, scale))
+        }
+        _ => None,
+    }
+}
+
+pub fn type_tag_for_pg_type(pg_type: PgTypeRef) -> Option<TypeTag> {
+    Some(match pg_type.oid {
+        oid::BOOLOID => TypeTag::Boolean,
+        oid::INT2OID => TypeTag::Int16,
+        oid::INT4OID => TypeTag::Int32,
+        oid::INT8OID => TypeTag::Int64,
+        oid::FLOAT4OID => TypeTag::Float32,
+        oid::FLOAT8OID => TypeTag::Float64,
+        oid::TEXTOID | oid::VARCHAROID | oid::BPCHAROID | oid::NAMEOID => TypeTag::Utf8View,
+        oid::BYTEAOID => TypeTag::BinaryView,
+        oid::UUIDOID => TypeTag::Uuid,
+        oid::DATEOID => TypeTag::Date32,
+        oid::TIMEOID => TypeTag::Time64Microsecond,
+        oid::TIMESTAMPOID | oid::TIMESTAMPTZOID => TypeTag::TimestampMicrosecond,
+        oid::INTERVALOID => TypeTag::IntervalMonthDayNano,
+        oid::NUMERICOID if numeric_shape_from_typmod(pg_type.typmod).is_some() => {
+            TypeTag::Decimal128
+        }
+        _ => return None,
+    })
+}
+
+pub fn column_spec_for_pg_type(pg_type: PgTypeRef, nullable: bool) -> Option<ColumnSpec> {
+    type_tag_for_pg_type(pg_type).map(|type_tag| ColumnSpec::new(type_tag, nullable))
+}
+
+pub fn pg_oid_for_arrow_type(data_type: &DataType) -> Option<u32> {
+    match data_type {
+        DataType::Boolean => Some(oid::BOOLOID),
+        DataType::Int16 => Some(oid::INT2OID),
+        DataType::Int32 => Some(oid::INT4OID),
+        DataType::Int64 => Some(oid::INT8OID),
+        DataType::Float32 => Some(oid::FLOAT4OID),
+        DataType::Float64 => Some(oid::FLOAT8OID),
+        DataType::Decimal128(_, _) => Some(oid::NUMERICOID),
+        DataType::Utf8 | DataType::Utf8View => Some(oid::TEXTOID),
+        DataType::Binary | DataType::BinaryView => Some(oid::BYTEAOID),
+        DataType::FixedSizeBinary(16) => Some(oid::UUIDOID),
+        DataType::Interval(IntervalUnit::MonthDayNano) => Some(oid::INTERVALOID),
+        DataType::Date32 => Some(oid::DATEOID),
+        DataType::Time64(TimeUnit::Microsecond) => Some(oid::TIMEOID),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => Some(oid::TIMESTAMPOID),
+        _ => None,
+    }
+}
+
+pub fn arrow_data_type_for_type_tag(type_tag: TypeTag) -> DataType {
+    match type_tag {
+        TypeTag::Boolean => DataType::Boolean,
+        TypeTag::Int16 => DataType::Int16,
+        TypeTag::Int32 => DataType::Int32,
+        TypeTag::Int64 => DataType::Int64,
+        TypeTag::Float32 => DataType::Float32,
+        TypeTag::Float64 => DataType::Float64,
+        TypeTag::Uuid => DataType::FixedSizeBinary(16),
+        TypeTag::Utf8View => DataType::Utf8View,
+        TypeTag::BinaryView => DataType::BinaryView,
+        TypeTag::Decimal128 => DataType::Decimal128(38, 16),
+        TypeTag::IntervalMonthDayNano => DataType::Interval(IntervalUnit::MonthDayNano),
+        TypeTag::Date32 => DataType::Date32,
+        TypeTag::Time64Microsecond => DataType::Time64(TimeUnit::Microsecond),
+        TypeTag::TimestampMicrosecond => DataType::Timestamp(TimeUnit::Microsecond, None),
+    }
+}
+
+pub fn normalize_arrow_transport_schema(
+    input_schema: &SchemaRef,
+) -> Result<SchemaRef, PgTypeError> {
+    let mut fields = Vec::with_capacity(input_schema.fields().len());
+    for (index, field) in input_schema.fields().iter().enumerate() {
+        fields.push(normalize_arrow_transport_field(index, field)?);
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+pub fn normalize_result_transport_schema(
+    input_schema: &SchemaRef,
+) -> Result<(SchemaRef, Vec<ColumnSpec>), PgTypeError> {
+    if input_schema.fields().is_empty() {
+        return Err(PgTypeError::EmptyResultSchema);
+    }
+
+    let transport_schema = normalize_arrow_transport_schema(input_schema)?;
+    let specs = column_specs_for_arrow_schema(&transport_schema)?;
+    Ok((transport_schema, specs))
+}
+
+pub fn column_specs_for_arrow_schema(schema: &SchemaRef) -> Result<Vec<ColumnSpec>, PgTypeError> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            TypeTag::from_arrow_data_type(index, field.data_type())
+                .map(|type_tag| ColumnSpec::new(type_tag, field.is_nullable()))
+                .map_err(|_| PgTypeError::UnsupportedArrowType {
+                    index,
+                    data_type: field.data_type().to_string(),
+                })
+        })
+        .collect()
+}
+
+pub fn normalize_arrow_transport_field(index: usize, field: &Field) -> Result<Field, PgTypeError> {
+    let data_type = match field.data_type() {
+        DataType::Boolean
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Date32
+        | DataType::Decimal128(_, _)
+        | DataType::Interval(IntervalUnit::MonthDayNano) => field.data_type().clone(),
+        DataType::Time64(TimeUnit::Microsecond)
+        | DataType::Timestamp(TimeUnit::Microsecond, None) => field.data_type().clone(),
+        DataType::FixedSizeBinary(width) if *width == 16 => field.data_type().clone(),
+        DataType::Utf8 | DataType::Utf8View => DataType::Utf8View,
+        DataType::Binary | DataType::BinaryView => DataType::BinaryView,
+        other => {
+            return Err(PgTypeError::UnsupportedArrowType {
+                index,
+                data_type: other.to_string(),
+            })
+        }
+    };
+    Ok(Field::new(field.name(), data_type, field.is_nullable())
+        .with_metadata(field.metadata().clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_supported_pg_types_to_arrow() {
+        let cases = [
+            (oid::BOOLOID, DataType::Boolean),
+            (oid::TEXTOID, DataType::Utf8View),
+            (oid::VARCHAROID, DataType::Utf8View),
+            (oid::BPCHAROID, DataType::Utf8View),
+            (oid::NAMEOID, DataType::Utf8View),
+            (oid::INT2OID, DataType::Int16),
+            (oid::INT4OID, DataType::Int32),
+            (oid::INT8OID, DataType::Int64),
+            (oid::FLOAT4OID, DataType::Float32),
+            (oid::FLOAT8OID, DataType::Float64),
+            (oid::UUIDOID, DataType::FixedSizeBinary(16)),
+            (oid::BYTEAOID, DataType::BinaryView),
+            (oid::DATEOID, DataType::Date32),
+            (oid::TIMEOID, DataType::Time64(TimeUnit::Microsecond)),
+            (
+                oid::TIMESTAMPOID,
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+            ),
+            (
+                oid::TIMESTAMPTZOID,
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+            ),
+            (
+                oid::INTERVALOID,
+                DataType::Interval(IntervalUnit::MonthDayNano),
+            ),
+        ];
+
+        for (oid, data_type) in cases {
+            assert_eq!(
+                arrow_type_for_pg_type(PgTypeRef::new(oid, -1, 0)),
+                Some(data_type)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_pg_types() {
+        assert_eq!(
+            arrow_type_for_pg_type(PgTypeRef::new(oid::TIMETZOID, -1, 0)),
+            None
+        );
+        assert_eq!(
+            arrow_type_for_pg_type(PgTypeRef::new(oid::JSONBOID, -1, 0)),
+            None
+        );
+    }
+
+    #[test]
+    fn maps_numeric_typmods() {
+        assert_eq!(numeric_shape_from_typmod(-1), Some((38, 16)));
+        assert_eq!(
+            numeric_shape_from_typmod(numeric_typmod(12, 3)),
+            Some((12, 3))
+        );
+        assert_eq!(
+            numeric_shape_from_typmod(numeric_typmod(38, 0)),
+            Some((38, 0))
+        );
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(39, 0)), None);
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(3, 4)), None);
+        assert_eq!(numeric_shape_from_typmod(numeric_typmod(3, -1)), None);
+    }
+
+    #[test]
+    fn normalizes_arrow_transport_types() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("txt", DataType::Utf8, true),
+            Field::new("bin", DataType::Binary, false),
+            Field::new("n", DataType::Int64, true),
+        ]));
+
+        let normalized = normalize_arrow_transport_schema(&schema).unwrap();
+        assert_eq!(normalized.field(0).data_type(), &DataType::Utf8View);
+        assert_eq!(normalized.field(1).data_type(), &DataType::BinaryView);
+        assert_eq!(normalized.field(2).data_type(), &DataType::Int64);
+    }
+
+    fn numeric_typmod(precision: i32, scale: i32) -> i32 {
+        ((precision << 16) | (scale & 0x7ff)) + VARHDRSZ
+    }
+}

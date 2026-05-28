@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_layout::{init_block, ColumnSpec, LayoutPlan, TypeTag};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_layout::{init_block, ColumnSpec, LayoutPlan};
+use arrow_schema::SchemaRef;
 use batch_encoder::BatchPageEncoder;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::StreamExt;
 use issuance::{IssuedOutboundPage, IssuedOwnedFrame, IssuedTx};
 use metrics::{MetricId, RuntimeMetrics};
+use pg_type::PgTypeError;
 use row_estimator::{EstimatorConfig, PageRowEstimator};
 
 use crate::WorkerRuntimeError;
@@ -307,26 +308,7 @@ impl ResultPageProducer {
 pub fn normalize_result_transport_schema(
     input_schema: &SchemaRef,
 ) -> Result<(SchemaRef, Vec<ColumnSpec>), WorkerRuntimeError> {
-    if input_schema.fields().is_empty() {
-        return Err(WorkerRuntimeError::EmptyResultSchema);
-    }
-
-    let transport_schema = normalize_scan_transport_schema(input_schema)?;
-    let specs = transport_schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(index, field)| {
-            TypeTag::from_arrow_data_type(index, field.data_type())
-                .map(|type_tag| ColumnSpec::new(type_tag, field.is_nullable()))
-                .map_err(|_| WorkerRuntimeError::UnsupportedResultColumnType {
-                    index,
-                    data_type: field.data_type().to_string(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok((transport_schema, specs))
+    pg_type::normalize_result_transport_schema(input_schema).map_err(worker_type_error)
 }
 
 /// Normalize a PostgreSQL scan output schema for Arrow-page transport.
@@ -336,42 +318,20 @@ pub fn normalize_result_transport_schema(
 pub fn normalize_scan_transport_schema(
     input_schema: &SchemaRef,
 ) -> Result<SchemaRef, WorkerRuntimeError> {
-    let mut fields = Vec::with_capacity(input_schema.fields().len());
-
-    for (index, field) in input_schema.fields().iter().enumerate() {
-        let normalized = normalize_field(index, field)?;
-        fields.push(normalized);
-    }
-
-    Ok(Arc::new(Schema::new(fields)))
+    pg_type::normalize_arrow_transport_schema(input_schema).map_err(worker_type_error)
 }
 
-fn normalize_field(index: usize, field: &Field) -> Result<Field, WorkerRuntimeError> {
-    let data_type = match field.data_type() {
-        DataType::Boolean
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Date32
-        | DataType::Decimal128(_, _)
-        | DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano) => field.data_type().clone(),
-        DataType::Time64(TimeUnit::Microsecond)
-        | DataType::Timestamp(TimeUnit::Microsecond, None) => field.data_type().clone(),
-        DataType::FixedSizeBinary(width) if *width == 16 => field.data_type().clone(),
-        DataType::Utf8 | DataType::Utf8View => DataType::Utf8View,
-        DataType::Binary | DataType::BinaryView => DataType::BinaryView,
-        other => {
-            return Err(WorkerRuntimeError::UnsupportedResultColumnType {
-                index,
-                data_type: other.to_string(),
-            });
+fn worker_type_error(err: PgTypeError) -> WorkerRuntimeError {
+    match err {
+        PgTypeError::EmptyResultSchema => WorkerRuntimeError::EmptyResultSchema,
+        PgTypeError::UnsupportedArrowType { index, data_type } => {
+            WorkerRuntimeError::UnsupportedResultColumnType { index, data_type }
         }
-    };
-
-    Ok(Field::new(field.name(), data_type, field.is_nullable())
-        .with_metadata(field.metadata().clone()))
+        other => WorkerRuntimeError::UnsupportedResultColumnType {
+            index: 0,
+            data_type: other.to_string(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +347,8 @@ mod tests {
         ArrayRef, BinaryArray, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
         StringViewArray,
     };
+    use arrow_layout::TypeTag;
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use datafusion::physical_plan::RecordBatchStream;
     use datafusion_common::Result as DFResult;
     use futures::Stream;

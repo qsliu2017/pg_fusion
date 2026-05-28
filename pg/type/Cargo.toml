@@ -1,0 +1,15 @@
+[package]
+name = "pg_type"
+version = "25.0.0"
+edition = "2021"
+description = "Shared PostgreSQL type policy for Arrow transport"
+readme = "README.md"
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[dependencies]
+arrow-schema = { workspace = true }
+arrow_layout = { path = "../../page/arrow_layout", version = "25.0" }
+thiserror = "2.0"

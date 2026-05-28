@@ -6,7 +6,7 @@ mod fsm;
 mod source;
 
 use arrow_layout::{ColumnSpec, TypeTag};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{Field, Schema, SchemaRef};
 use control_transport::{
     BackendLeaseSlot, BackendSlotLease, BackendTxError, CommitOutcome, TransportRegion, TxError,
 };
@@ -17,6 +17,7 @@ use fsm::backend_execution_flow::StateMachine as BackendExecutionMachine;
 pub use fsm::{BackendExecutionAction, BackendExecutionEvent, BackendExecutionState};
 use issuance::{encode_issued_frame, IssuedTx};
 use metrics::{MetricId, PageDirection, RuntimeMetrics};
+use pg_type::{arrow_data_type_for_type_tag, normalize_arrow_transport_field, PgTypeError};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::{PgRelation as PgrxRelation, PgTryBuilder};
@@ -1912,27 +1913,6 @@ fn standalone_page_source(
     ))
 }
 
-fn arrow_data_type_for_type_tag(type_tag: TypeTag) -> DataType {
-    match type_tag {
-        TypeTag::Boolean => DataType::Boolean,
-        TypeTag::Int16 => DataType::Int16,
-        TypeTag::Int32 => DataType::Int32,
-        TypeTag::Int64 => DataType::Int64,
-        TypeTag::Float32 => DataType::Float32,
-        TypeTag::Float64 => DataType::Float64,
-        TypeTag::Uuid => DataType::FixedSizeBinary(16),
-        TypeTag::Utf8View => DataType::Utf8View,
-        TypeTag::BinaryView => DataType::BinaryView,
-        TypeTag::Decimal128 => DataType::Decimal128(38, 16),
-        TypeTag::IntervalMonthDayNano => {
-            DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
-        }
-        TypeTag::Date32 => DataType::Date32,
-        TypeTag::Time64Microsecond => DataType::Time64(TimeUnit::Microsecond),
-        TypeTag::TimestampMicrosecond => DataType::Timestamp(TimeUnit::Microsecond, None),
-    }
-}
-
 fn standalone_scan_open(
     session_epoch: u64,
     scan_id: u64,
@@ -2193,25 +2173,33 @@ fn normalize_transport_field(
     field: &Field,
     scan_id: u64,
 ) -> Result<(Field, TypeTag), BackendServiceError> {
-    let (data_type, type_tag) = match field.data_type() {
-        DataType::Utf8 => (DataType::Utf8View, TypeTag::Utf8View),
-        DataType::Binary => (DataType::BinaryView, TypeTag::BinaryView),
-        other => {
-            let type_tag = TypeTag::from_arrow_data_type(index, other).map_err(|_| {
-                BackendServiceError::UnsupportedArrowType {
-                    scan_id,
-                    index,
-                    data_type: other.to_string(),
-                }
-            })?;
-            return Ok((field.clone(), type_tag));
+    let normalized = normalize_arrow_transport_field(index, field)
+        .map_err(|err| backend_type_error(scan_id, err))?;
+    let type_tag = TypeTag::from_arrow_data_type(index, normalized.data_type()).map_err(|_| {
+        BackendServiceError::UnsupportedArrowType {
+            scan_id,
+            index,
+            data_type: normalized.data_type().to_string(),
         }
-    };
+    })?;
+    Ok((normalized, type_tag))
+}
 
-    Ok((
-        Field::new(field.name(), data_type, field.is_nullable()),
-        type_tag,
-    ))
+fn backend_type_error(scan_id: u64, err: PgTypeError) -> BackendServiceError {
+    match err {
+        PgTypeError::UnsupportedArrowType { index, data_type } => {
+            BackendServiceError::UnsupportedArrowType {
+                scan_id,
+                index,
+                data_type,
+            }
+        }
+        other => BackendServiceError::UnsupportedArrowType {
+            scan_id,
+            index: 0,
+            data_type: other.to_string(),
+        },
+    }
 }
 
 fn normalize_scan_fetch_batch_rows(fetch_batch_rows: u32) -> usize {
