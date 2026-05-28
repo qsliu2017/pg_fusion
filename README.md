@@ -19,20 +19,6 @@ rows into page-backed Arrow batches in shared memory, send the work to a
 separate `pg_fusion` background worker that runs DataFusion, and import result
 pages back into PostgreSQL tuple slots.
 
-DataFusion is not copied into every backend process.
-
-```mermaid
-flowchart LR
-    pg[PostgreSQL backend / scan workers]
-    slots[TupleTableSlot rows]
-    scan_pages[Arrow blocks in shared page pool]
-    worker[pg_fusion DataFusion worker]
-    result_pages[Arrow result blocks]
-    result_slots[PostgreSQL tuple slots]
-
-    pg --> slots --> scan_pages --> worker --> result_pages --> result_slots
-```
-
 ## Try A Query
 
 After local setup, enable pg_fusion for the session and run an eligible
