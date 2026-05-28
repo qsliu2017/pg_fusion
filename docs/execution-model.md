@@ -4,6 +4,7 @@
 
 This page follows one eligible query from PostgreSQL planning to result rows.
 For the higher-level process and resource model, see [Architecture](architecture.md).
+For terminology, see [Glossary](glossary.md).
 
 ## Startup
 
@@ -23,8 +24,16 @@ include disabled `pg_fusion.enable`, non-`SELECT` statements, modifying CTEs,
 catalog or TOAST relations, function range entries, and bound parameters.
 
 Eligible queries are planned for DataFusion, but PostgreSQL table access is
-kept as PostgreSQL scan streams. pg_fusion tries to push filters and projections
-into those PostgreSQL scans before rows cross into Arrow pages.
+kept as PostgreSQL scan streams. PostgreSQL remains the authority for relation
+identity, snapshots, and PostgreSQL type metadata.
+
+pg_fusion tries to push filters and projections into PostgreSQL scan SQL before
+rows cross into Arrow pages:
+
+- pushed filters run inside PostgreSQL scan SQL;
+- projections remove unused columns before slot-to-Arrow encoding;
+- unsupported residual filters stay above the scan or make the shape
+  ineligible, depending on where they are discovered.
 
 For eligible inner and cross equi-join components, pg_fusion also uses
 PostgreSQL statistics with the DPHyp join-order optimizer to choose a better
@@ -43,14 +52,79 @@ The backend opens an execution session with the shared worker and starts scan
 producers for PostgreSQL table leaves. Each producer reads rows through
 PostgreSQL executor paths, using the query snapshot owned by the backend.
 
+## Scan Production
+
 Scan producers do not build an unbounded backend-local result set. They fill
 shared-memory pages with Arrow batches and hand those pages to the worker. If
 the shared page pool or scan channels are full, scan production waits for the
 worker to catch up.
 
+For ordinary leader-only scans, the backend drains a PostgreSQL portal and
+encodes selected tuple-slot values into Arrow blocks.
+
+For eligible heap scans, pg_fusion can parallelize scan production by CTID block
+range:
+
+1. A query-wide budget is taken from PostgreSQL's
+   `max_parallel_workers_per_gather`, capped by pg_fusion and by PostgreSQL
+   worker capacity.
+2. The leader divides the relation into disjoint CTID block ranges.
+3. Producer `0` stays in the leader backend.
+4. Additional dynamic PostgreSQL background workers receive standalone scan
+   descriptors for their ranges.
+5. Each producer reads through PostgreSQL executor paths and writes its own
+   Arrow pages into the shared page pool.
+6. The DataFusion worker fans producer streams into one logical `PgScanExec`.
+
+Every producer writes to pages it acquired from the shared page pool. Producers
+do not write into the same page concurrently.
+
+## Shared-Memory Transport
+
+Execution uses several shared-memory resources with separate purposes:
+
+- primary control rings carry execution lifecycle messages;
+- scan control rings let the worker open and coordinate individual scan
+  producers;
+- issued page descriptors transfer ownership of pages;
+- the page pool holds scan and result blocks;
+- runtime filter slots publish optional Bloom filters;
+- metrics record timing and counters.
+
+The page pool and block format are described in
+[Memory And Pages](memory-and-pages.md). The important execution rule is that
+shared-memory pages are reused. A page can return to the pool only after the
+last Arrow/page owner drops it.
+
+## Worker Execution
+
 The worker imports scan pages, runs DataFusion physical operators, and writes
-result pages back to shared memory. The backend imports those result pages and
-stores rows into the PostgreSQL tuple slot returned to the client.
+result pages back to shared memory. Tokio drives DataFusion execution inside the
+worker process. DataFusion may split physical operators into partitions and
+tasks; those tasks are scheduled inside the worker's Tokio runtime and run on
+the configured worker thread pool.
+
+PostgreSQL scan producers are not Tokio tasks. They remain PostgreSQL backend or
+background-worker execution paths because they call PostgreSQL APIs. Scan
+control slots coordinate those producer streams, but slots are fixed
+shared-memory channels. They do not create producer processes or DataFusion
+tasks.
+
+Streaming scan-adjacent DataFusion operators can consume imported page-backed
+Arrow batches without copying. When the physical plan reaches an operator that
+can retain input batches, such as a hash join build side, sort, window, or
+multi-use CTE materialization, pg_fusion inserts materialization so the shared
+page can be released and reused.
+
+## Result Import
+
+Worker result batches are encoded into Arrow blocks and sent back through the
+same page pool. The backend imports result pages and stores rows into the
+PostgreSQL tuple slot returned to the client.
+
+Some result values are copied into PostgreSQL memory because final tuple slots
+need PostgreSQL-owned datums. That is separate from worker-side zero-copy scan
+import.
 
 ## Runtime Filters
 
@@ -61,6 +135,14 @@ producers can then test probe-side rows before encoding them into Arrow pages.
 Runtime filters are an optimization, not a semantic requirement. If a filter is
 not available or no shared filter slot can be acquired, execution continues
 without it.
+
+Runtime filters are different from PostgreSQL pushdown filters:
+
+- pushdown filters come from planning and run as PostgreSQL scan SQL;
+- runtime filters are built while the query is already executing;
+- pushdown filters can remove rows based on the original query predicate;
+- runtime filters can only reject rows that are definitely absent from an
+  eligible hash join build side.
 
 ## Cancellation And Cleanup
 

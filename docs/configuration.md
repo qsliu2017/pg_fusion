@@ -7,8 +7,9 @@ worker, shared-memory transport, scan streaming, runtime filters, spill, and
 diagnostics.
 
 The [architecture](architecture.md) explains why the runtime is shaped as one
-background worker plus preallocated shared memory. This page lists the knobs
-that configure that shape.
+background worker plus preallocated shared memory. [Glossary](glossary.md)
+defines the DataFusion, Arrow, page-pool, filter, DPHyp, and CTID terms used
+below. This page lists the knobs that configure that shape.
 
 ## Required Preload
 
@@ -83,6 +84,10 @@ the backend.
 | `pg_fusion.page_count` | `256` | Number of shared pages. Also sizes the issued-page permit pool. |
 
 More pages can reduce backpressure but increase fixed shared-memory footprint.
+The page pool is shared by scan and result traffic, and pages return to the pool
+after the last owner releases them. See [Memory And Pages](memory-and-pages.md)
+for the block format, zero-copy imports, materialization boundaries, and the
+progress-not-fairness model.
 
 ## Tune Scan Streaming
 
@@ -95,6 +100,12 @@ worker.
 | `pg_fusion.scan_batch_channel_capacity` | `32` | User/session | Bounded worker scan batch channel capacity per PostgreSQL scan stream. |
 | `pg_fusion.scan_idle_poll_interval_us` | `50` | User/session | Worker scan idle poll interval in microseconds. |
 | `pg_fusion.estimator_initial_tail_bytes_per_row` | `64` | Postmaster | Initial variable-width Arrow page tail estimate. |
+
+Scan producers can be leader-only, or they can be dynamic PostgreSQL
+background workers scanning disjoint CTID block ranges for eligible heap scans.
+Each producer writes its own Arrow pages into the shared page pool. The worker
+fans those producer streams into one logical scan, as described in
+[Execution Model](execution-model.md#scan-production).
 
 If scan metrics show high backend page fill time, the bottleneck may be
 PostgreSQL scanning, tuple decoding, detoast, or slot-to-Arrow encoding rather
@@ -120,6 +131,12 @@ parallel_tuple_cost = 0.1
 
 These settings affect PostgreSQL-side scan planning. They do not configure
 DataFusion worker memory.
+
+`max_parallel_workers_per_gather` is especially important for pg_fusion CTID
+range scans. `0` keeps scan production leader-only. A positive value gives
+pg_fusion a query-wide budget for dynamic PostgreSQL scan producers, still
+capped by pg_fusion limits and by available PostgreSQL worker capacity. It does
+not control DataFusion's Tokio tasks or the DataFusion worker thread count.
 
 ## Configure Runtime Filters
 

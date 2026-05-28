@@ -8,6 +8,10 @@ title: pg_fusion Documentation
 shared DataFusion background worker. PostgreSQL still owns heap access,
 snapshots, MVCC visibility, TOAST, tuple decoding, and final result slots.
 
+DataFusion is a Rust analytical execution engine over Apache Arrow columnar
+batches. pg_fusion uses it for selected analytical execution above PostgreSQL
+scan streams; it does not replace PostgreSQL storage or MVCC.
+
 Start with the pages that answer operational questions first.
 
 ## Start Here
@@ -15,8 +19,12 @@ Start with the pages that answer operational questions first.
 | Topic | Use It For |
 | --- | --- |
 | [Quick start](quickstart.md) | Build the extension, configure a local pgrx cluster, and run a first query |
+| [Glossary](glossary.md) | Learn the terms: DataFusion, Arrow, slots, page pool, filters, DPHyp, CTID scans |
 | [Architecture](architecture.md) | Understand the backend/worker/shared-memory model and why rows cross into Arrow |
+| [Memory and pages](memory-and-pages.md) | Understand shared blocks, zero-copy imports, materialization, and page reuse |
+| [Execution model](execution-model.md) | Follow one eligible query from planning to result slots |
 | [Query support](query-support.md) | Check which query shapes and types are currently eligible |
+| [Workloads](workloads.md) | Evaluate good and poor workload candidates |
 | [Limitations](limitations.md) | Understand overhead cases, semantic boundaries, and unsupported features |
 
 ## Operate
@@ -34,7 +42,6 @@ Start with the pages that answer operational questions first.
 | [Development](development.md) | Set up Rust, pgrx, and the contributor workflow |
 | [Testing](testing.md) | Run standalone Rust tests and PostgreSQL-backed pgrx tests |
 | [Roadmap](roadmap.md) | Follow typed planning, PG18 support, compatibility, and testing direction |
-| [Workloads](workloads.md) | Evaluate good and poor workload candidates |
 
 ## Status
 

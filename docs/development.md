@@ -3,7 +3,9 @@
 [Documentation home](index.md)
 
 This page is for contributors working on the repository. User-facing runtime
-concepts are covered in [Architecture](architecture.md).
+terms are covered in [Glossary](glossary.md), [Architecture](architecture.md),
+[Execution Model](execution-model.md), and
+[Memory And Pages](memory-and-pages.md).
 
 ## Development Environment
 
@@ -76,6 +78,7 @@ The workspace is split by boundary.
 | `pg/slot_encoder/` | PostgreSQL slot to Arrow page encoding |
 | `pg/slot_import/` | Arrow result page to PostgreSQL tuple-slot projection |
 | `pg/statistics/` | PostgreSQL statistics bridge for join planning |
+| `pg/type/` | Shared PostgreSQL type policy used by catalog, planning, scan, and slot crates |
 
 ### Worker Runtime
 
@@ -95,9 +98,13 @@ The workspace is split by boundary.
 | `page/transfer/` | Page transfer primitives |
 | `page/issuance/` | Issued-frame lifecycle |
 | `page/arrow_layout/` | Arrow-compatible page layout |
+| `page/batch_encoder/` | Arrow batch to shared-page block encoding |
 | `page/import/` | Worker-side page import |
+| `page/plan_codec/` | Shared-memory physical-plan payload codec |
+| `page/plan_flow/` | Plan payload transfer flow |
 | `page/row_encoder/` | PostgreSQL-free row encoder helpers |
 | `page/row_estimator/` | Page row estimator |
+| `page/scan_flow/` | Scan stream page flow between producers and worker |
 
 ### Planning
 
@@ -105,6 +112,22 @@ The workspace is split by boundary.
 | --- | --- |
 | `join_order/` | Standalone compact join-order optimizer |
 | `pg/statistics/` | PostgreSQL estimates and relation statistics |
+
+## Transport And Materialization Boundaries
+
+Keep ownership boundaries explicit when changing scan, page, or DataFusion
+execution code:
+
+- `pg/slot_encoder` is where PostgreSQL `TupleTableSlot` values become
+  Arrow-compatible page blocks.
+- `page/import` creates Arrow arrays over shared page bytes and keeps the page
+  lease alive for zero-copy scan import.
+- `pg/scan_node` owns DataFusion scan nodes and inserts materialization before
+  operators that can retain page-backed batches.
+- `page/pool`, `page/issuance`, `page/scan_flow`, and `page/transfer` define
+  page ownership, reuse, and handoff.
+- `pg/slot_import` projects worker result pages back into PostgreSQL result
+  slots, where PostgreSQL-owned datums may require copies.
 
 ## Development Rules
 

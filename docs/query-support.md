@@ -6,40 +6,12 @@
 queries. Unsupported shapes are either bypassed before planning or rejected
 with controlled errors.
 
-The important practical rule is:
+If the terms are new, start with [Glossary](glossary.md). The data path and
+page lifetime rules are described in [Execution Model](execution-model.md) and
+[Memory And Pages](memory-and-pages.md).
 
-> The more rows and columns pg_fusion must move from PostgreSQL heap tuples into
-> Arrow pages, the more work the query must do in DataFusion to be worthwhile.
-
-## Good First Candidates
-
-Start with queries that have:
-
-- ordinary PostgreSQL heap tables;
-- join-heavy analytical work that creates large intermediate batches inside the
-  DataFusion worker;
-- joins where runtime filters can reject probe-side rows before scan encoding;
-- grouped aggregates after selective PostgreSQL-side filters;
-- sort or window work above a reduced scan stream;
-- filters that can be pushed into PostgreSQL scan SQL;
-- projections that use only a subset of table columns.
-
-These shapes are more likely to benefit from moving analytical work to the
-worker because pg_fusion can avoid encoding unused rows and columns, and
-worker-local intermediate batches stay in Arrow form.
-
-## Shapes To Be Careful With
-
-pg_fusion can be a poor fit when:
-
-- the query mostly returns raw table rows;
-- the projection is very wide;
-- filters cannot be pushed into PostgreSQL scans;
-- most of the runtime is PostgreSQL heap scan and tuple-to-Arrow encoding;
-- the SQL shape is outside the current supported subset.
-
-In those cases, the trip from PostgreSQL heap tuples to Arrow pages and back to
-PostgreSQL result slots can dominate the query.
+This page is about eligibility and supported shapes. For performance fit,
+including good and poor workload candidates, see [Workloads](workloads.md).
 
 ## Current Entry Point
 
@@ -90,6 +62,22 @@ into ordinary relational operators before PostgreSQL scan lowering. Surviving
 `EXISTS`, `IN (SELECT ...)`, scalar subqueries, correlated subqueries, and
 logical subquery plan nodes are rejected.
 
+## Scan Pushdown And Parallel Scan Producers
+
+PostgreSQL table access remains PostgreSQL-owned. pg_fusion can still reduce
+the amount of data crossing into Arrow by lowering scan filters and projections
+into PostgreSQL scan SQL:
+
+- pushdown filters run before slot-to-Arrow encoding;
+- projections avoid encoding unused columns;
+- unsupported scan expressions stay above the scan or make the shape
+  ineligible, depending on where they appear.
+
+For eligible heap scans, pg_fusion can also split scan production by CTID block
+ranges. This is PostgreSQL-side scan parallelism, separate from DataFusion
+worker tasks. The detailed lifecycle is described in
+[Execution Model](execution-model.md#scan-production).
+
 ## Joins And Runtime Filters
 
 Statistics-based join reordering is enabled for eligible inner or cross join
@@ -98,6 +86,10 @@ are simple equi-column pairs. Outer joins, residual join filters, unsupported
 expressions, and unsupported subquery shapes keep their DataFusion-planned
 order.
 
+The join-order search uses PostgreSQL statistics and the DPHyp algorithm. It is
+restricted to join components where pg_fusion can reason about the relation
+leaves and equi-column predicates safely.
+
 Runtime Bloom filters can be attached to eligible inner hash joins. The first
 implementation is intentionally narrow: simple `Column = Column` join keys,
 single-partition build side, supported scalar key types, and a PostgreSQL scan
@@ -105,6 +97,11 @@ on the probe side.
 
 Runtime filters help reduce the expensive boundary crossing: rows rejected by a
 ready filter can be skipped before slot-to-Arrow encoding.
+
+Runtime filters are not the same thing as PostgreSQL pushdown filters. Pushdown
+filters come from query predicates during planning. Runtime Bloom filters are
+built while a hash join is already executing and can only reject values that are
+definitely absent from the build side.
 
 ## Type Support
 
@@ -144,4 +141,5 @@ SELECT ...;
 ```
 
 If pg_fusion is slower, inspect whether scan encoding and transport dominate
-the query. [Metrics](metrics.md) has diagnostic queries for that.
+the query, whether filters were pushed down, and whether retaining operators
+forced materialization. [Metrics](metrics.md) has diagnostic queries for that.

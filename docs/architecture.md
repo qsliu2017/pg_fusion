@@ -3,12 +3,11 @@
 [Documentation home](index.md)
 
 `pg_fusion` adds a DataFusion execution path to PostgreSQL without taking table
-access away from PostgreSQL.
+access away from PostgreSQL. If the terms are new, start with the
+[Glossary](glossary.md).
 
-The core boundary is:
-
-> PostgreSQL owns table access; DataFusion owns selected analytical execution
-> above PostgreSQL scan streams.
+The central rule is that PostgreSQL remains responsible for table access, while
+DataFusion runs the selected analytical operators above PostgreSQL scan streams.
 
 This page is written for administrators and users who need to understand what
 the extension adds to a PostgreSQL instance, where resources are spent, and why
@@ -19,8 +18,14 @@ some queries are a better fit than others.
 A running `pg_fusion` installation has three important pieces.
 
 **PostgreSQL backends** are the ordinary per-connection PostgreSQL processes.
-They receive SQL, run PostgreSQL hooks, own snapshots, and execute PostgreSQL
-table scans.
+They receive SQL, run PostgreSQL hooks, own snapshots, start pg_fusion custom
+scan execution, and return final tuple slots to the client.
+
+**PostgreSQL scan producers** are the processes that read table data for one
+pg_fusion scan. Producer `0` is the leader backend. For eligible heap scans,
+additional dynamic PostgreSQL background workers can scan disjoint CTID block
+ranges. Each producer reads through PostgreSQL executor paths and writes its own
+Arrow pages into shared memory.
 
 **The pg_fusion worker** is one PostgreSQL background worker process that hosts
 the DataFusion runtime. Eligible backends send plans and scan pages to this
@@ -44,9 +49,11 @@ For an eligible query:
    as PostgreSQL scan streams.
 3. The backend starts an execution session with the shared worker.
 4. PostgreSQL scan producers read heap tuples through PostgreSQL executor
-   paths.
-5. Scan rows are encoded into page-backed Arrow batches in shared memory.
-6. The worker imports those Arrow batches and runs DataFusion operators.
+   paths. Eligible heap scans may be split across CTID block ranges.
+5. Each producer encodes selected rows and columns into page-backed Arrow
+   blocks in shared memory.
+6. The worker imports those Arrow blocks, fans producer streams into logical
+   DataFusion scans, and runs DataFusion operators.
 7. Result batches are written back into shared-memory pages.
 8. The backend imports result pages and returns PostgreSQL tuple slots to the
    client.
@@ -71,12 +78,17 @@ boundary cost. For that reason, pg_fusion tries to keep scan output small:
 If a query sends many wide rows to the worker and does little analytical work
 after the scan, the round trip through Arrow pages can be a net cost.
 
+The shared page format and zero-copy lifetime rules are described in
+[Memory And Pages](memory-and-pages.md).
+
 ## Resource Model
 
 The intended operational model is a resource box.
 
 - PostgreSQL backends own sessions, snapshots, and table access.
 - Backend scan producers write output page by page into the shared page pool.
+  Eligible heap scans can use CTID range producers; see
+  [Execution Model](execution-model.md#scan-production).
 - The DataFusion worker owns analytical CPU scheduling, its memory pool, and
   worker spill files.
 - Shared memory owns fixed transport capacity: pages, execution channels, scan
@@ -92,6 +104,10 @@ area.
 The page pool bounds scan memory behavior. If scan pages or scan channels are
 exhausted, execution applies backpressure instead of allocating an unbounded
 amount of memory inside each backend.
+
+This bounded resource model is about progress, not strict fairness. The page
+lifetime and progress model are detailed in
+[Memory And Pages](memory-and-pages.md#progress-not-fairness).
 
 ## Shared Memory In Plain Terms
 
@@ -112,16 +128,6 @@ transport area, and [Metrics](metrics.md) for runtime diagnostics.
 
 ## What This Means In Practice
 
-`pg_fusion` is most interesting when the query has enough analytical work above
-the scan to justify the conversion cost. Join-heavy plans are especially useful
-to evaluate when they create large intermediate results inside the DataFusion
-worker: those intermediate columnar batches stay in Arrow form and do not pay
-the PostgreSQL heap-row to Arrow conversion cost again.
-
-Other useful candidates include grouped aggregation after selective filters,
-sort-heavy plans, and queries where PostgreSQL-side filters and projections
-remove much of the table before Arrow encoding.
-
-It is less interesting for raw table export, very wide projections, unsupported
-SQL shapes, or queries where PostgreSQL can already finish the work without
-moving many rows into another execution engine.
+The runtime shape is most useful when worker-side analytical work pays for the
+scan/result boundary crossing. See [Workloads](workloads.md) for candidate
+query shapes and what to collect when evaluating a workload.

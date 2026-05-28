@@ -4,6 +4,11 @@
 analytical `SELECT` queries through Apache DataFusion while PostgreSQL still
 owns table access.
 
+DataFusion is a Rust analytical execution engine that runs query operators over
+Apache Arrow columnar batches. A useful mental model is "LLVM-like execution
+infrastructure for analytical data processing in Rust", not a PostgreSQL storage
+engine.
+
 The core boundary is:
 
 > PostgreSQL owns table access; DataFusion owns selected analytical execution
@@ -16,25 +21,32 @@ pages back into PostgreSQL tuple slots.
 
 DataFusion is not copied into every backend process.
 
+```mermaid
+flowchart LR
+    pg[PostgreSQL backend / scan workers]
+    slots[TupleTableSlot rows]
+    scan_pages[Arrow blocks in shared page pool]
+    worker[pg_fusion DataFusion worker]
+    result_pages[Arrow result blocks]
+    result_slots[PostgreSQL tuple slots]
+
+    pg --> slots --> scan_pages --> worker --> result_pages --> result_slots
+```
+
 ## Try A Query
 
+After local setup, enable pg_fusion for the session and run an eligible
+analytical `SELECT`:
+
 ```sql
-CREATE TABLE t (a int PRIMARY KEY, b int);
-
-INSERT INTO t
-SELECT g, g % 1000
-FROM generate_series(1, 1000000) g;
-
-ANALYZE t;
-
 SET pg_fusion.enable = on;
 
 SELECT count(*)
-FROM t o
-JOIN t i USING (b);
+FROM orders
+JOIN lineitem USING (orderkey);
 ```
 
-See [Quick start](docs/quickstart.md) for the local pgrx setup.
+See [Quick start](docs/quickstart.md) for a runnable local table setup.
 
 ## How It Works
 
@@ -49,6 +61,12 @@ push filters and narrow projections into PostgreSQL scans before rows are
 encoded into Arrow pages. Sending unused rows or columns to the worker can cost
 more than the DataFusion execution saves.
 
+For eligible heap scans, PostgreSQL scan work can be split by CTID block ranges.
+The shared page pool can import streaming Arrow batches zero-copy, while
+retaining operators materialize owned buffers so pages can be reused. See
+[Execution model](docs/execution-model.md) and
+[Memory and pages](docs/memory-and-pages.md) for the detailed lifecycle.
+
 The DataFusion worker is a shared resource box:
 
 - backend processes keep PostgreSQL session and table-access work;
@@ -58,7 +76,8 @@ The DataFusion worker is a shared resource box:
 ## When It Can Help
 
 `pg_fusion` is intended for analytical reads where the work above PostgreSQL
-scans is large enough to justify tuple-to-Arrow conversion and transport:
+scans is large enough to justify tuple-to-Arrow conversion and transport.
+Typical candidates include:
 
 - join-heavy plans that create large intermediate batches inside the DataFusion
   worker;
@@ -67,9 +86,8 @@ scans is large enough to justify tuple-to-Arrow conversion and transport:
 - sort and window-like analytical execution;
 - queries where pushed filters and projections greatly reduce scan output.
 
-It is less likely to help when the query mostly returns raw rows, needs many
-wide columns, cannot push selective filters into PostgreSQL, or uses SQL shapes
-that are not supported yet.
+See [Workloads](docs/workloads.md) for performance fit and
+[Query support](docs/query-support.md) for eligibility.
 
 ## Status
 
@@ -80,22 +98,13 @@ experiments.
 
 ## Documentation
 
-The rendered documentation site is published at
-[darthunix.github.io/pg_fusion](https://darthunix.github.io/pg_fusion/).
+The full documentation index is published at
+[darthunix.github.io/pg_fusion](https://darthunix.github.io/pg_fusion/) and
+lives in [docs/index.md](docs/index.md).
 
-| Topic | Description |
-| --- | --- |
-| [Quick start](docs/quickstart.md) | Build, configure, and run a first local query |
-| [Architecture](docs/architecture.md) | Runtime model, data movement, and resource boundary |
-| [Query support](docs/query-support.md) | What query shapes are currently eligible |
-| [Configuration](docs/configuration.md) | GUCs for the worker, shared memory, scans, filters, and spill |
-| [Metrics](docs/metrics.md) | Diagnostic workflows for scan, worker, result, filter, and spill metrics |
-| [Benchmarks](docs/benchmarks.md) | Local diagnostic benchmark workflow |
-| [Workloads](docs/workloads.md) | Good and poor workload candidates |
-| [Limitations](docs/limitations.md) | Practical restrictions and overhead cases |
-| [Development](docs/development.md) | Contributor environment and workspace map |
-| [Testing](docs/testing.md) | Standalone Rust and pgrx test commands |
-| [Roadmap](docs/roadmap.md) | Typed planning, PG18 support, compatibility, and testing direction |
+Start with [Quick start](docs/quickstart.md), [Glossary](docs/glossary.md),
+[Architecture](docs/architecture.md), [Query support](docs/query-support.md),
+and [Configuration](docs/configuration.md).
 
 ## Development
 

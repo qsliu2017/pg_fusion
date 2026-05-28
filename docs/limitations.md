@@ -19,6 +19,9 @@ This can be slower than PostgreSQL when the query returns many raw rows, uses
 wide projections, cannot push selective filters into PostgreSQL scans, or does
 little analytical work above the scan.
 
+See [Workloads](workloads.md) for workload fit and
+[Memory And Pages](memory-and-pages.md) for page transport costs.
+
 ## SQL Coverage
 
 The current planner path does not support every PostgreSQL SQL shape.
@@ -39,22 +42,14 @@ Known limitations include:
 Some PostgreSQL values do not have a lossless Arrow/DataFusion representation in
 the current transport.
 
-Known restrictions include:
-
-- `timetz` is unsupported;
-- PostgreSQL `numeric` `NaN` and `Infinity` are unsupported;
-- finite `numeric` is restricted to the Decimal128 subset;
-- interval infinities are unsupported.
+The current supported and restricted type list lives in
+[Query Support](query-support.md#type-support).
 
 ## Spill
 
 Worker spill is owned by the pg_fusion worker runtime and uses OS temporary
-storage. It does not currently integrate with PostgreSQL `temp_tablespaces`,
-`temp_file_limit`, or `ResourceOwner` cleanup.
-
-On the current DataFusion version used by the project, spill support depends on
-the physical operator. Sort and row-hash aggregate paths can spill; ordinary
-hash joins should not be assumed to spill.
+storage, not PostgreSQL temporary-file infrastructure. Configuration details
+and diagnostics are covered in [Configuration](configuration.md#worker-spill).
 
 ## Planning Boundary
 

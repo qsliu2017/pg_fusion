@@ -70,6 +70,27 @@ python3 benches/tpch/scripts/tpch_bench.py \
 - `fusion_fail`: PostgreSQL succeeded but pg_fusion failed.
 - `pg_fail`: PostgreSQL failed, so the comparison is invalid.
 
+## Latest Checked-In SF1 Snapshot
+
+The latest checked-in SF1 summary is
+`benches/tpch/results/tpch_sf_1_20260518T132909Z.csv`. It contains 19 `ok`
+queries with matching PostgreSQL and pg_fusion results.
+
+The ratio column is `fusion_median_ms / pg_median_ms`, so lower is better for
+pg_fusion. This snapshot uses a +/-10% bucket for "about the same". The faster
+numbers below are speedups; the slower numbers are slowdowns.
+
+| Bucket | Queries |
+| --- | --- |
+| Faster | `q01` 1.19x, `q02` 1.78x, `q04` 1.25x, `q09` 1.85x, `q13` 3.03x, `q16` 2.28x, `q18` 2.93x |
+| About the same | `q06` 1.01x |
+| Slower | `q03` 1.23x, `q05` 1.81x, `q07` 1.42x, `q08` 1.52x, `q10` 1.23x, `q11` 1.14x, `q12` 2.68x, `q14` 1.57x, `q15` 1.53x, `q19` 1.33x, `q22` 1.44x |
+
+Recent SF1 observations also show `q20` and `q21` as orders-of-magnitude
+pg_fusion wins. They are not included in the table above because this checked-in
+SF1 summary does not contain `q20` or `q21` rows, so exact timings are omitted
+here.
+
 ## Interpreting Results
 
 Do not look only at absolute timings. PostgreSQL scan timing can vary with data
