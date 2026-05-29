@@ -13,5 +13,5 @@ doctest = false
 arrow-schema = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
+pg_type = { path = "../type", version = "25.0", features = ["datafusion"] }
 thiserror = "2.0"
-

@@ -1,9 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PgTypeRef {
-    pub oid: u32,
-    pub typmod: i32,
-    pub collation: u32,
-}
+pub use pg_type::{PgConstValue, PgTypeRef};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PgQuery {
@@ -95,19 +90,6 @@ pub struct PgVar {
 pub struct PgConst {
     pub pg_type: PgTypeRef,
     pub value: Option<PgConstValue>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PgConstValue {
-    Bool(bool),
-    Int16(i16),
-    Int32(i32),
-    Int64(i64),
-    Float32(f32),
-    Float64(f64),
-    Text(String),
-    Binary(Vec<u8>),
-    Time64Microsecond(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

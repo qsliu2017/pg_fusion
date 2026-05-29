@@ -1,14 +1,9 @@
 use arrow_schema::DataType;
 use datafusion_common::{metadata::FieldMetadata, ScalarValue};
+use pg_type::pg_text_cast_target;
 
 use crate::metadata::{read_pg_type_metadata, PgTypeMetadata};
 use crate::quote::encode_hex;
-
-const TEXT_OID: u32 = 25;
-const BPCHAR_OID: u32 = 1042;
-const VARCHAR_OID: u32 = 1043;
-const NAME_OID: u32 = 19;
-const VARHDRSZ: i32 = 4;
 
 pub(crate) fn render_literal(
     literal: &ScalarValue,
@@ -122,7 +117,7 @@ pub(crate) fn render_literal(
 }
 
 fn render_pg_typed_literal(literal: &ScalarValue, pg_type: PgTypeMetadata) -> Option<String> {
-    let target = render_pg_text_cast_target(pg_type)?;
+    let target = pg_text_cast_target(pg_type)?;
     match literal {
         ScalarValue::Null => Some(format!("CAST(NULL AS {target})")),
         ScalarValue::Utf8(value) | ScalarValue::Utf8View(value) | ScalarValue::LargeUtf8(value) => {
@@ -133,37 +128,6 @@ fn render_pg_typed_literal(literal: &ScalarValue, pg_type: PgTypeMetadata) -> Op
         }
         ScalarValue::Dictionary(_, value) => render_pg_typed_literal(value, pg_type),
         _ => None,
-    }
-}
-
-fn render_pg_text_cast_target(pg_type: PgTypeMetadata) -> Option<String> {
-    match pg_type.oid {
-        TEXT_OID => Some("TEXT".into()),
-        VARCHAR_OID => {
-            if pg_type.typmod == -1 {
-                Some("CHARACTER VARYING".into())
-            } else {
-                render_typmod_length(pg_type.typmod)
-                    .map(|length| format!("CHARACTER VARYING({length})"))
-            }
-        }
-        BPCHAR_OID => {
-            if pg_type.typmod == -1 {
-                Some("pg_catalog.bpchar".into())
-            } else {
-                render_typmod_length(pg_type.typmod).map(|length| format!("CHARACTER({length})"))
-            }
-        }
-        NAME_OID => Some("NAME".into()),
-        _ => None,
-    }
-}
-
-fn render_typmod_length(typmod: i32) -> Option<i32> {
-    if typmod > VARHDRSZ {
-        Some(typmod - VARHDRSZ)
-    } else {
-        None
     }
 }
 

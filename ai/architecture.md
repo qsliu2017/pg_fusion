@@ -43,14 +43,15 @@ page-backed Arrow batches.
 - `pg/type`, `pg/df_catalog`, `pg/frontend`, `pg/plan_builder`, `pg/scan_node`,
   `pg/scan_sql`, `pg/slot_scan`: backend-side DataFusion planning and trusted
   PostgreSQL scan SQL execution. `pg/type` owns the shared PostgreSQL type
-  policy for supported OIDs, typmods, collations, Arrow transport types, and
-  page-layout type tags. PostgreSQL-bound crates still own raw `Datum`, TOAST,
-  varlena, memory-context, and tuple-slot mechanics. `pg/frontend` is the
-  experimental typed PostgreSQL `Query` tree frontend; it copies analyzed
-  PostgreSQL type metadata into a stable IR and lowers the supported
-  fail-closed subset directly to DataFusion logical plans. The production
-  planner hook still uses the SQL-text `plan_builder` path until this frontend
-  covers prepared statements and PostgreSQL-specific type semantics end to end.
+  policy for supported OIDs, typmods, collations, Arrow transport types,
+  page-layout type tags, typed literal metadata, and typed NULL/constant scalar
+  conversion. PostgreSQL-bound crates still own raw `Datum`, TOAST, varlena,
+  memory-context, and tuple-slot mechanics. `pg/frontend` is the experimental typed
+  PostgreSQL `Query` tree frontend; it copies analyzed PostgreSQL type metadata
+  into a stable IR and lowers the supported fail-closed subset directly to
+  DataFusion logical plans. The production planner hook still uses the SQL-text
+  `plan_builder` path until this frontend covers prepared statements and
+  PostgreSQL-specific type semantics end to end.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
   by both backend planning and worker/codec decoding. Its `format(text, ...)`
   scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width

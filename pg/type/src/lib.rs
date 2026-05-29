@@ -1,14 +1,18 @@
-//! Shared PostgreSQL type policy for Arrow transport.
+//! Shared PostgreSQL type policy for Arrow/DataFusion transport.
 //!
 //! This crate owns pg_fusion's supported PostgreSQL type surface and the
 //! mapping from PostgreSQL type identity to Arrow/page transport types. It is
 //! intentionally PostgreSQL-runtime free: pgrx-specific Datum decoding and
 //! tuple-slot projection stay in the PostgreSQL-bound crates.
 
-use std::sync::Arc;
-
 use arrow_layout::{ColumnSpec, TypeTag};
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
+#[cfg(feature = "datafusion")]
+use datafusion_common::{metadata::FieldMetadata, ScalarValue};
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "datafusion")]
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use thiserror::Error;
 
 pub mod oid {
@@ -43,7 +47,11 @@ pub const VARHDRSZ: i32 = 4;
 pub const NUMERIC_FALLBACK_PRECISION: u8 = 38;
 pub const NUMERIC_FALLBACK_SCALE: i8 = 16;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub const PG_TYPE_OID_METADATA_KEY: &str = "pg_fusion.pg_type_oid";
+pub const PG_TYPE_TYPMOD_METADATA_KEY: &str = "pg_fusion.pg_type_typmod";
+pub const PG_TYPE_COLLATION_METADATA_KEY: &str = "pg_fusion.pg_type_collation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PgTypeRef {
     pub oid: u32,
     pub typmod: i32,
@@ -77,6 +85,19 @@ impl From<PgTypeRef> for PgTypeMetadata {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PgConstValue {
+    Bool(bool),
+    Int16(i16),
+    Int32(i32),
+    Int64(i64),
+    Float32(f32),
+    Float64(f64),
+    Text(String),
+    Binary(Vec<u8>),
+    Time64Microsecond(i64),
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PgTypeError {
     #[error("PostgreSQL type oid {oid} is not supported by pg_fusion")]
@@ -91,6 +112,10 @@ pub enum PgTypeError {
     UnsupportedArrowType { index: usize, data_type: String },
     #[error("pg_fusion result transport requires at least one output column")]
     EmptyResultSchema,
+    #[error("PostgreSQL type oid {oid} cannot be represented as a typed NULL")]
+    UnsupportedTypedNull { oid: u32 },
+    #[error("PostgreSQL constant value cannot be represented as Arrow scalar for type oid {oid}")]
+    UnsupportedConstValue { oid: u32 },
 }
 
 pub fn validate_supported_value_type(pg_type: PgTypeRef) -> Result<(), PgTypeError> {
@@ -233,6 +258,29 @@ pub fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
 
 pub fn text_typmod_length(typmod: i32) -> Option<i32> {
     (typmod > VARHDRSZ).then_some(typmod - VARHDRSZ)
+}
+
+pub fn pg_text_cast_target(pg_type: PgTypeMetadata) -> Option<String> {
+    match pg_type.oid {
+        oid::TEXTOID => Some("TEXT".into()),
+        oid::VARCHAROID => {
+            if pg_type.typmod == -1 {
+                Some("CHARACTER VARYING".into())
+            } else {
+                text_typmod_length(pg_type.typmod)
+                    .map(|length| format!("CHARACTER VARYING({length})"))
+            }
+        }
+        oid::BPCHAROID => {
+            if pg_type.typmod == -1 {
+                Some("pg_catalog.bpchar".into())
+            } else {
+                text_typmod_length(pg_type.typmod).map(|length| format!("CHARACTER({length})"))
+            }
+        }
+        oid::NAMEOID => Some("NAME".into()),
+        _ => None,
+    }
 }
 
 pub fn arrow_type_for_pg_type(pg_type: PgTypeRef) -> Option<DataType> {
@@ -390,12 +438,95 @@ pub fn normalize_arrow_transport_field(index: usize, field: &Field) -> Result<Fi
         .with_metadata(field.metadata().clone()))
 }
 
+#[cfg(feature = "datafusion")]
+pub fn pg_type_metadata(oid: u32, typmod: i32, collation: u32) -> FieldMetadata {
+    FieldMetadata::from(BTreeMap::from([
+        (PG_TYPE_OID_METADATA_KEY.to_string(), oid.to_string()),
+        (PG_TYPE_TYPMOD_METADATA_KEY.to_string(), typmod.to_string()),
+        (
+            PG_TYPE_COLLATION_METADATA_KEY.to_string(),
+            collation.to_string(),
+        ),
+    ]))
+}
+
+#[cfg(feature = "datafusion")]
+pub fn read_pg_type_metadata(metadata: &FieldMetadata) -> Option<Option<PgTypeMetadata>> {
+    let values = metadata.inner();
+    let has_pg_key = values.contains_key(PG_TYPE_OID_METADATA_KEY)
+        || values.contains_key(PG_TYPE_TYPMOD_METADATA_KEY)
+        || values.contains_key(PG_TYPE_COLLATION_METADATA_KEY);
+    if !has_pg_key {
+        return Some(None);
+    }
+
+    let oid = values.get(PG_TYPE_OID_METADATA_KEY)?.parse().ok()?;
+    let typmod = values.get(PG_TYPE_TYPMOD_METADATA_KEY)?.parse().ok()?;
+    let collation = values.get(PG_TYPE_COLLATION_METADATA_KEY)?.parse().ok()?;
+    Some(Some(PgTypeMetadata {
+        oid,
+        typmod,
+        collation,
+    }))
+}
+
+#[cfg(feature = "datafusion")]
+pub fn scalar_for_pg_const(
+    value: Option<&PgConstValue>,
+    pg_type: PgTypeRef,
+) -> Result<ScalarValue, PgTypeError> {
+    match value {
+        None => typed_null_scalar(pg_type),
+        Some(PgConstValue::Bool(value)) => Ok(ScalarValue::Boolean(Some(*value))),
+        Some(PgConstValue::Int16(value)) => Ok(ScalarValue::Int16(Some(*value))),
+        Some(PgConstValue::Int32(value)) => Ok(ScalarValue::Int32(Some(*value))),
+        Some(PgConstValue::Int64(value)) => Ok(ScalarValue::Int64(Some(*value))),
+        Some(PgConstValue::Float32(value)) => Ok(ScalarValue::Float32(Some(*value))),
+        Some(PgConstValue::Float64(value)) => Ok(ScalarValue::Float64(Some(*value))),
+        Some(PgConstValue::Text(value)) => Ok(ScalarValue::Utf8View(Some(value.clone()))),
+        Some(PgConstValue::Binary(value)) => Ok(ScalarValue::BinaryView(Some(value.clone()))),
+        Some(PgConstValue::Time64Microsecond(value)) => {
+            Ok(ScalarValue::Time64Microsecond(Some(*value)))
+        }
+    }
+}
+
+#[cfg(feature = "datafusion")]
+pub fn typed_null_scalar(pg_type: PgTypeRef) -> Result<ScalarValue, PgTypeError> {
+    match pg_type.oid {
+        oid::BOOLOID => Ok(ScalarValue::Boolean(None)),
+        oid::INT2OID => Ok(ScalarValue::Int16(None)),
+        oid::INT4OID => Ok(ScalarValue::Int32(None)),
+        oid::INT8OID => Ok(ScalarValue::Int64(None)),
+        oid::FLOAT4OID => Ok(ScalarValue::Float32(None)),
+        oid::FLOAT8OID => Ok(ScalarValue::Float64(None)),
+        oid if is_text_like_type(oid) => Ok(ScalarValue::Utf8View(None)),
+        oid::BYTEAOID => Ok(ScalarValue::BinaryView(None)),
+        oid::UUIDOID => Ok(ScalarValue::FixedSizeBinary(16, None)),
+        oid::DATEOID => Ok(ScalarValue::Date32(None)),
+        oid::TIMEOID => Ok(ScalarValue::Time64Microsecond(None)),
+        oid::TIMESTAMPOID | oid::TIMESTAMPTZOID => {
+            Ok(ScalarValue::TimestampMicrosecond(None, None))
+        }
+        oid::INTERVALOID => Ok(ScalarValue::IntervalMonthDayNano(None)),
+        oid::NUMERICOID => {
+            let (precision, scale) = numeric_shape_from_typmod(pg_type.typmod).ok_or(
+                PgTypeError::UnsupportedNumericTypmod {
+                    typmod: pg_type.typmod,
+                },
+            )?;
+            Ok(ScalarValue::Decimal128(None, precision, scale))
+        }
+        oid => Err(PgTypeError::UnsupportedTypedNull { oid }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn maps_supported_pg_types_to_arrow() {
+    fn maps_supported_pg_type_to_arrow() {
         let cases = [
             (oid::BOOLOID, DataType::Boolean),
             (oid::TEXTOID, DataType::Utf8View),
@@ -434,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_pg_types() {
+    fn rejects_unsupported_pg_type() {
         assert_eq!(
             arrow_type_for_pg_type(PgTypeRef::new(oid::TIMETZOID, -1, 0)),
             None

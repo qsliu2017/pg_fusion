@@ -2,14 +2,20 @@
 name = "pg_type"
 version = "25.0.0"
 edition = "2021"
-description = "Shared PostgreSQL type policy for Arrow transport"
+description = "Shared PostgreSQL type policy for Arrow/DataFusion transport"
 readme = "README.md"
 
 [lib]
 crate-type = ["lib"]
 doctest = false
 
+[features]
+default = []
+datafusion = ["dep:datafusion-common"]
+
 [dependencies]
 arrow-schema = { workspace = true }
 arrow_layout = { path = "../../page/arrow_layout", version = "25.0" }
+datafusion-common = { workspace = true, optional = true }
+serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"

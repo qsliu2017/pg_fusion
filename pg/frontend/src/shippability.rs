@@ -1,4 +1,10 @@
 use crate::ir::PgTypeRef;
+use pg_type::{
+    is_supported_non_null_const_type as pg_is_supported_non_null_const_type,
+    is_supported_scalar_type as pg_is_supported_scalar_type,
+    is_supported_value_type as pg_is_supported_value_type, validate_supported_non_null_const_type,
+    validate_supported_value_type,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedReason {
@@ -18,111 +24,27 @@ pub fn supported_type(pg_type: PgTypeRef) -> Result<(), UnsupportedReason> {
 }
 
 pub fn supported_value_type(pg_type: PgTypeRef) -> Result<(), UnsupportedReason> {
-    validate_collation(pg_type)?;
-
-    if is_supported_value_type(pg_type.oid) {
-        Ok(())
-    } else {
-        Err(UnsupportedReason::new(format!(
-            "PostgreSQL type oid {} is not supported by pg_frontend v1",
-            pg_type.oid
-        )))
-    }
+    validate_supported_value_type(pg_type).map_err(|err| UnsupportedReason::new(err.to_string()))
 }
 
 pub fn supported_non_null_const_type(pg_type: PgTypeRef) -> Result<(), UnsupportedReason> {
-    validate_collation(pg_type)?;
-
-    if is_supported_non_null_const_type(pg_type.oid) {
-        Ok(())
-    } else {
-        Err(UnsupportedReason::new(format!(
-            "non-null PostgreSQL constant type {} is not supported by pg_frontend v1",
-            type_name(pg_type.oid)
-        )))
-    }
-}
-
-fn validate_collation(pg_type: PgTypeRef) -> Result<(), UnsupportedReason> {
-    if pg_type.collation != 0
-        && !is_default_collation(pg_type.collation)
-        && !is_name_c_collation(pg_type)
-    {
-        return Err(UnsupportedReason::new(format!(
-            "non-default collation oid {} is not supported by pg_frontend v1",
-            pg_type.collation
-        )));
-    }
-    Ok(())
-}
-
-fn is_default_collation(collation: u32) -> bool {
-    collation == oid_u32(pgrx::pg_sys::DEFAULT_COLLATION_OID)
-}
-
-fn is_name_c_collation(pg_type: PgTypeRef) -> bool {
-    pg_type.oid == oid_u32(pgrx::pg_sys::NAMEOID)
-        && pg_type.collation == oid_u32(pgrx::pg_sys::C_COLLATION_OID)
+    validate_supported_non_null_const_type(pg_type)
+        .map_err(|err| UnsupportedReason::new(err.to_string()))
 }
 
 pub fn is_supported_scalar_type(oid: u32) -> bool {
-    is_supported_value_type(oid)
+    pg_is_supported_scalar_type(oid)
 }
 
 pub fn is_supported_value_type(oid: u32) -> bool {
-    oid == oid_u32(pgrx::pg_sys::BOOLOID)
-        || oid == oid_u32(pgrx::pg_sys::INT2OID)
-        || oid == oid_u32(pgrx::pg_sys::INT4OID)
-        || oid == oid_u32(pgrx::pg_sys::INT8OID)
-        || oid == oid_u32(pgrx::pg_sys::FLOAT4OID)
-        || oid == oid_u32(pgrx::pg_sys::FLOAT8OID)
-        || oid == oid_u32(pgrx::pg_sys::TEXTOID)
-        || oid == oid_u32(pgrx::pg_sys::VARCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::BPCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::NAMEOID)
-        || oid == oid_u32(pgrx::pg_sys::BYTEAOID)
-        || oid == oid_u32(pgrx::pg_sys::UUIDOID)
-        || oid == oid_u32(pgrx::pg_sys::DATEOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMEOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMESTAMPOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMESTAMPTZOID)
-        || oid == oid_u32(pgrx::pg_sys::INTERVALOID)
-        || oid == oid_u32(pgrx::pg_sys::NUMERICOID)
+    pg_is_supported_value_type(oid)
 }
 
 pub fn is_supported_non_null_const_type(oid: u32) -> bool {
-    oid == oid_u32(pgrx::pg_sys::BOOLOID)
-        || oid == oid_u32(pgrx::pg_sys::INT2OID)
-        || oid == oid_u32(pgrx::pg_sys::INT4OID)
-        || oid == oid_u32(pgrx::pg_sys::INT8OID)
-        || oid == oid_u32(pgrx::pg_sys::FLOAT4OID)
-        || oid == oid_u32(pgrx::pg_sys::FLOAT8OID)
-        || oid == oid_u32(pgrx::pg_sys::TEXTOID)
-        || oid == oid_u32(pgrx::pg_sys::VARCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::BPCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::NAMEOID)
-        || oid == oid_u32(pgrx::pg_sys::BYTEAOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMEOID)
+    pg_is_supported_non_null_const_type(oid)
 }
 
-fn type_name(oid: u32) -> String {
-    if oid == oid_u32(pgrx::pg_sys::NUMERICOID) {
-        "numeric".into()
-    } else if oid == oid_u32(pgrx::pg_sys::DATEOID) {
-        "date".into()
-    } else if oid == oid_u32(pgrx::pg_sys::TIMESTAMPOID) {
-        "timestamp".into()
-    } else if oid == oid_u32(pgrx::pg_sys::TIMESTAMPTZOID) {
-        "timestamptz".into()
-    } else if oid == oid_u32(pgrx::pg_sys::UUIDOID) {
-        "uuid".into()
-    } else if oid == oid_u32(pgrx::pg_sys::INTERVALOID) {
-        "interval".into()
-    } else {
-        format!("oid {oid}")
-    }
-}
-
+#[cfg(test)]
 fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
     u32::from(oid)
 }

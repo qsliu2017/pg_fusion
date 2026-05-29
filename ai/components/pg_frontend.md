@@ -28,7 +28,9 @@ subqueries return structured unsupported errors.
 The design rule is that PostgreSQL analyzed metadata is the boundary source of
 truth. DataFusion schema is a transport/execution representation, not authority
 for PostgreSQL result OIDs, typmods, collations, or temporal/text/numeric
-semantics.
+semantics. The shared PostgreSQL/Arrow type policy lives in `pg/type`;
+`pg_frontend` should call that crate for supported type checks, Arrow type
+mapping, typed literal metadata, and typed NULL/constant scalar construction.
 
 Shippability distinguishes value types from non-null constant types. Value
 types can appear as columns, typed NULLs, and external parameter metadata;
@@ -44,10 +46,12 @@ and PostgreSQL result import. Non-finite float constants also fail closed
 because PostgreSQL and Arrow/DataFusion disagree on `NaN` comparison semantics.
 `TIME '24:00:00'` constants fail closed because scan SQL renders time literals
 through interval arithmetic that PostgreSQL normalizes modulo one day.
-Operator lowering is whitelisted by builtin `pg_catalog.pg_operator` OID, not
-operator name, so user-defined operators with builtin spellings are rejected.
-Arithmetic operator OIDs fail closed until operand casts preserve the analyzed
-PostgreSQL operator semantics in rendered scan SQL.
+Operator lowering reads the resolved `OpExpr.opno` from PostgreSQL's syscache
+and accepts only binary `pg_catalog` comparison operators over identical
+supported scalar operand types with `bool` results. This keeps user-defined
+operators with builtin spellings, mixed-type comparison operators, arithmetic,
+and PostgreSQL-specific operator semantics fail-closed until scan SQL can
+preserve them explicitly.
 `WHERE` filters must fully compile into PostgreSQL scan SQL; residual
 DataFusion filters are rejected. `SELECT` targets do not lower PostgreSQL
 operator expressions in v1 because scan SQL cannot yet project expressions

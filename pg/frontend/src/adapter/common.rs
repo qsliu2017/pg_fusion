@@ -50,12 +50,7 @@ pub(super) fn unsupported_temporal_const(type_name: &str) -> PgFrontendError {
 }
 
 pub(super) fn read_operator(opno: pg_sys::Oid) -> Result<PgOperator, PgFrontendError> {
-    supported_operator(u32::from(opno)).ok_or_else(|| {
-        PgFrontendError::unsupported(format!(
-            "operator oid {} is not supported by pg_frontend v1",
-            u32::from(opno)
-        ))
-    })
+    unsafe { supported_operator(opno) }
 }
 
 pub(super) fn bool_op(op: pg_sys::BoolExprType::Type) -> Result<PgBoolOp, PgFrontendError> {
@@ -88,11 +83,7 @@ pub(super) unsafe fn expr_type_ref(expr: *const pg_sys::Node) -> PgTypeRef {
 }
 
 pub(super) fn type_ref(oid: pg_sys::Oid, typmod: i32, collation: pg_sys::Oid) -> PgTypeRef {
-    PgTypeRef {
-        oid: u32::from(oid),
-        typmod,
-        collation: u32::from(collation),
-    }
+    PgTypeRef::new(u32::from(oid), typmod, u32::from(collation))
 }
 
 pub(super) unsafe fn list_len(list: *mut pg_sys::List) -> i32 {

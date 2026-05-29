@@ -1,19 +1,20 @@
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit};
+use arrow_schema::{DataType, Field};
 use datafusion_common::{Column, DFSchema, ScalarValue};
 use datafusion_expr::expr::{BinaryExpr, Placeholder};
 use datafusion_expr::logical_plan::LogicalPlan;
 use datafusion_expr::logical_plan::Projection;
 use datafusion_expr::{Expr, Operator};
 use df_catalog::{CatalogResolver, ResolvedTable};
+use pg_type::{arrow_type_for_pg_type, is_text_like_type, scalar_for_pg_const};
 use scan_node::{PgScanId, PgScanNode, PgScanSpec};
 use scan_sql::{compile_scan, pg_type_metadata, CompileScanInput, LimitLowering};
 
 use crate::error::PgFrontendError;
 use crate::ir::{
-    PgBoolOp, PgConst, PgConstValue, PgExpr, PgFromItem, PgOperator, PgParamKind, PgQuery,
-    PgRelationRef, PgTarget, PgTypeRef, PgVar,
+    PgBoolOp, PgConst, PgExpr, PgFromItem, PgOperator, PgParamKind, PgQuery, PgRelationRef,
+    PgTarget, PgTypeRef, PgVar,
 };
 
 #[derive(Debug)]
@@ -372,25 +373,13 @@ fn operator(op: PgOperator) -> Operator {
 }
 
 fn lower_const(constant: &PgConst) -> Result<ScalarValue, PgFrontendError> {
-    match (&constant.value, constant.pg_type.oid) {
-        (None, _) => typed_null(constant.pg_type),
-        (Some(PgConstValue::Bool(value)), _) => Ok(ScalarValue::Boolean(Some(*value))),
-        (Some(PgConstValue::Int16(value)), _) => Ok(ScalarValue::Int16(Some(*value))),
-        (Some(PgConstValue::Int32(value)), _) => Ok(ScalarValue::Int32(Some(*value))),
-        (Some(PgConstValue::Int64(value)), _) => Ok(ScalarValue::Int64(Some(*value))),
-        (Some(PgConstValue::Float32(value)), _) => Ok(ScalarValue::Float32(Some(*value))),
-        (Some(PgConstValue::Float64(value)), _) => Ok(ScalarValue::Float64(Some(*value))),
-        (Some(PgConstValue::Text(value)), _) => Ok(ScalarValue::Utf8View(Some(value.clone()))),
-        (Some(PgConstValue::Binary(value)), _) => Ok(ScalarValue::BinaryView(Some(value.clone()))),
-        (Some(PgConstValue::Time64Microsecond(value)), _) => {
-            Ok(ScalarValue::Time64Microsecond(Some(*value)))
-        }
-    }
+    scalar_for_pg_const(constant.value.as_ref(), constant.pg_type)
+        .map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
 fn lower_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
     let literal = lower_const(constant)?;
-    let metadata = text_like_pg_type(constant.pg_type.oid).then(|| {
+    let metadata = is_text_like_type(constant.pg_type.oid).then(|| {
         pg_type_metadata(
             constant.pg_type.oid,
             constant.pg_type.typmod,
@@ -400,119 +389,17 @@ fn lower_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
     Ok(Expr::Literal(literal, metadata))
 }
 
-fn text_like_pg_type(oid: u32) -> bool {
-    oid == oid_u32(pgrx::pg_sys::TEXTOID)
-        || oid == oid_u32(pgrx::pg_sys::VARCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::BPCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::NAMEOID)
-}
-
+#[cfg(test)]
 fn typed_null(pg_type: PgTypeRef) -> Result<ScalarValue, PgFrontendError> {
-    let oid = pg_type.oid;
-    if oid == oid_u32(pgrx::pg_sys::BOOLOID) {
-        Ok(ScalarValue::Boolean(None))
-    } else if oid == oid_u32(pgrx::pg_sys::INT2OID) {
-        Ok(ScalarValue::Int16(None))
-    } else if oid == oid_u32(pgrx::pg_sys::INT4OID) {
-        Ok(ScalarValue::Int32(None))
-    } else if oid == oid_u32(pgrx::pg_sys::INT8OID) {
-        Ok(ScalarValue::Int64(None))
-    } else if oid == oid_u32(pgrx::pg_sys::FLOAT4OID) {
-        Ok(ScalarValue::Float32(None))
-    } else if oid == oid_u32(pgrx::pg_sys::FLOAT8OID) {
-        Ok(ScalarValue::Float64(None))
-    } else if oid == oid_u32(pgrx::pg_sys::TEXTOID)
-        || oid == oid_u32(pgrx::pg_sys::VARCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::BPCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::NAMEOID)
-    {
-        Ok(ScalarValue::Utf8View(None))
-    } else if oid == oid_u32(pgrx::pg_sys::BYTEAOID) {
-        Ok(ScalarValue::BinaryView(None))
-    } else if oid == oid_u32(pgrx::pg_sys::UUIDOID) {
-        Ok(ScalarValue::FixedSizeBinary(16, None))
-    } else if oid == oid_u32(pgrx::pg_sys::DATEOID) {
-        Ok(ScalarValue::Date32(None))
-    } else if oid == oid_u32(pgrx::pg_sys::TIMEOID) {
-        Ok(ScalarValue::Time64Microsecond(None))
-    } else if oid == oid_u32(pgrx::pg_sys::TIMESTAMPOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMESTAMPTZOID)
-    {
-        Ok(ScalarValue::TimestampMicrosecond(None, None))
-    } else if oid == oid_u32(pgrx::pg_sys::INTERVALOID) {
-        Ok(ScalarValue::IntervalMonthDayNano(None))
-    } else if oid == oid_u32(pgrx::pg_sys::NUMERICOID) {
-        let (precision, scale) = numeric_shape_from_typmod(pg_type.typmod).ok_or_else(|| {
-            PgFrontendError::unsupported(format!(
-                "numeric typmod {} cannot be represented as Arrow Decimal128",
-                pg_type.typmod
-            ))
-        })?;
-        Ok(ScalarValue::Decimal128(None, precision, scale))
-    } else {
-        Err(PgFrontendError::unsupported(format!(
-            "type oid {oid} cannot be represented as a typed NULL"
-        )))
-    }
+    pg_type::typed_null_scalar(pg_type)
+        .map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
 fn arrow_type(pg_type: PgTypeRef) -> Option<DataType> {
-    let oid = pg_type.oid;
-    if oid == oid_u32(pgrx::pg_sys::BOOLOID) {
-        Some(DataType::Boolean)
-    } else if oid == oid_u32(pgrx::pg_sys::INT2OID) {
-        Some(DataType::Int16)
-    } else if oid == oid_u32(pgrx::pg_sys::INT4OID) {
-        Some(DataType::Int32)
-    } else if oid == oid_u32(pgrx::pg_sys::INT8OID) {
-        Some(DataType::Int64)
-    } else if oid == oid_u32(pgrx::pg_sys::FLOAT4OID) {
-        Some(DataType::Float32)
-    } else if oid == oid_u32(pgrx::pg_sys::FLOAT8OID) {
-        Some(DataType::Float64)
-    } else if oid == oid_u32(pgrx::pg_sys::TEXTOID)
-        || oid == oid_u32(pgrx::pg_sys::VARCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::BPCHAROID)
-        || oid == oid_u32(pgrx::pg_sys::NAMEOID)
-    {
-        Some(DataType::Utf8View)
-    } else if oid == oid_u32(pgrx::pg_sys::BYTEAOID) {
-        Some(DataType::BinaryView)
-    } else if oid == oid_u32(pgrx::pg_sys::UUIDOID) {
-        Some(DataType::FixedSizeBinary(16))
-    } else if oid == oid_u32(pgrx::pg_sys::DATEOID) {
-        Some(DataType::Date32)
-    } else if oid == oid_u32(pgrx::pg_sys::TIMEOID) {
-        Some(DataType::Time64(TimeUnit::Microsecond))
-    } else if oid == oid_u32(pgrx::pg_sys::TIMESTAMPOID)
-        || oid == oid_u32(pgrx::pg_sys::TIMESTAMPTZOID)
-    {
-        Some(DataType::Timestamp(TimeUnit::Microsecond, None))
-    } else if oid == oid_u32(pgrx::pg_sys::INTERVALOID) {
-        Some(DataType::Interval(IntervalUnit::MonthDayNano))
-    } else if oid == oid_u32(pgrx::pg_sys::NUMERICOID) {
-        let (precision, scale) = numeric_shape_from_typmod(pg_type.typmod)?;
-        Some(DataType::Decimal128(precision, scale))
-    } else {
-        None
-    }
+    arrow_type_for_pg_type(pg_type)
 }
 
-fn numeric_shape_from_typmod(atttypmod: i32) -> Option<(u8, i8)> {
-    if atttypmod < 0 {
-        return Some((38, 16));
-    }
-
-    let typmod = atttypmod.checked_sub(pgrx::pg_sys::VARHDRSZ as i32)?;
-    let precision = (typmod >> 16) & 0xffff;
-    let scale = ((typmod & 0x7ff) ^ 1024) - 1024;
-    if !(1..=38).contains(&precision) || scale < 0 || scale > precision {
-        return None;
-    }
-
-    Some((precision as u8, scale as i8))
-}
-
+#[cfg(test)]
 fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
     u32::from(oid)
 }
@@ -521,6 +408,7 @@ fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
 mod tests {
     use super::*;
     use crate::ir::{PgCommand, PgConst, PgConstValue, PgFromItem, PgOperator, PgVar};
+    use arrow_schema::IntervalUnit;
 
     #[test]
     fn rejects_group_by_having_and_row_locks() {

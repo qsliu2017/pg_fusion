@@ -1,30 +1,114 @@
+use std::ffi::c_char;
+use std::slice;
+use std::str;
+
+use pg_type::is_supported_scalar_type;
+use pgrx::pg_sys;
+
+use crate::error::PgFrontendError;
 use crate::ir::PgOperator;
 
-/// Return the DataFusion operator for pg_catalog comparison operators that v1 can lower.
+/// Return the DataFusion operator for PostgreSQL comparison operators that v1
+/// can lower.
 ///
-/// PostgreSQL operator names are user-extensible, so matching by spelling would
-/// silently turn a user-defined `=` or `+` into DataFusion's builtin operator.
-/// These OIDs are the stable builtin pg_catalog operator OIDs from
-/// `pg_operator.dat`; unsupported OIDs fail closed.
-pub(crate) fn supported_operator(opno: u32) -> Option<PgOperator> {
-    match opno {
-        // bool, int2, int4, int8, float4, float8, text, name, bpchar,
-        // bytea, date, time, timestamp, timestamptz, numeric.
-        91 | 94 | 96 | 410 | 620 | 670 | 98 | 93 | 1054 | 1955 | 1093 | 1108 | 2060 | 1320
-        | 1752 => Some(PgOperator::Eq),
-        85 | 519 | 518 | 411 | 621 | 671 | 531 | 643 | 1057 | 1956 | 1094 | 1109 | 2061 | 1321
-        | 1753 => Some(PgOperator::NotEq),
-        58 | 95 | 97 | 412 | 622 | 672 | 664 | 660 | 1058 | 1957 | 1095 | 1110 | 2062 | 1322
-        | 1754 => Some(PgOperator::Lt),
-        1694 | 522 | 523 | 414 | 624 | 673 | 665 | 661 | 1059 | 1958 | 1096 | 1111 | 2063
-        | 1323 | 1755 => Some(PgOperator::LtEq),
-        59 | 520 | 521 | 413 | 623 | 674 | 666 | 662 | 1060 | 1959 | 1097 | 1112 | 2064 | 1324
-        | 1756 => Some(PgOperator::Gt),
-        1695 | 524 | 525 | 415 | 625 | 675 | 667 | 663 | 1061 | 1960 | 1098 | 1113 | 2065
-        | 1325 | 1757 => Some(PgOperator::GtEq),
+/// PostgreSQL operator names are user-extensible, so matching only by spelling
+/// would silently turn a user-defined `=` into DataFusion's builtin operator.
+/// PostgreSQL already resolved `OpExpr.opno`; this function validates that the
+/// resolved operator is a safe `pg_catalog` binary comparison over supported
+/// scalar types before lowering it.
+pub(crate) unsafe fn supported_operator(opno: pg_sys::Oid) -> Result<PgOperator, PgFrontendError> {
+    let tuple = unsafe {
+        pg_sys::SearchSysCache1(
+            pg_sys::SysCacheIdentifier::OPEROID as i32,
+            pg_sys::ObjectIdGetDatum(opno),
+        )
+    };
+    if tuple.is_null() {
+        return Err(PgFrontendError::unsupported(format!(
+            "operator oid {} is not present in pg_operator",
+            u32::from(opno)
+        )));
+    }
 
+    let form = unsafe { pg_sys::GETSTRUCT(tuple) as pg_sys::Form_pg_operator };
+    let metadata = unsafe { OperatorMetadata::from_pg_operator(&*form) };
+    unsafe { pg_sys::ReleaseSysCache(tuple) };
+
+    classify_operator(&metadata).ok_or_else(|| {
+        PgFrontendError::unsupported(format!(
+            "operator oid {} ({}) is not supported by pg_frontend v1",
+            u32::from(opno),
+            metadata.describe()
+        ))
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperatorMetadata {
+    name: String,
+    namespace: u32,
+    kind: c_char,
+    left: u32,
+    right: u32,
+    result: u32,
+}
+
+impl OperatorMetadata {
+    unsafe fn from_pg_operator(form: &pg_sys::FormData_pg_operator) -> Self {
+        Self {
+            name: decode_name_data(&form.oprname),
+            namespace: u32::from(form.oprnamespace),
+            kind: form.oprkind,
+            left: u32::from(form.oprleft),
+            right: u32::from(form.oprright),
+            result: u32::from(form.oprresult),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "name {:?}, namespace {}, left {}, right {}, result {}",
+            self.name, self.namespace, self.left, self.right, self.result
+        )
+    }
+}
+
+fn classify_operator(metadata: &OperatorMetadata) -> Option<PgOperator> {
+    if metadata.namespace != pg_sys::PG_CATALOG_NAMESPACE {
+        return None;
+    }
+    if metadata.kind != b'b' as c_char {
+        return None;
+    }
+    if metadata.left != metadata.right {
+        return None;
+    }
+    if !is_supported_scalar_type(metadata.left) {
+        return None;
+    }
+    if metadata.result != u32::from(pg_sys::BOOLOID) {
+        return None;
+    }
+
+    match metadata.name.as_str() {
+        "=" => Some(PgOperator::Eq),
+        "<>" => Some(PgOperator::NotEq),
+        "<" => Some(PgOperator::Lt),
+        "<=" => Some(PgOperator::LtEq),
+        ">" => Some(PgOperator::Gt),
+        ">=" => Some(PgOperator::GtEq),
         _ => None,
     }
+}
+
+fn decode_name_data(name: &pg_sys::NameData) -> String {
+    let bytes = &name.data;
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    let raw = unsafe { slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), end) };
+    str::from_utf8(raw).unwrap_or("").to_owned()
 }
 
 #[cfg(test)]
@@ -32,23 +116,130 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_builtin_operator_oids() {
-        assert_eq!(supported_operator(96), Some(PgOperator::Eq));
-        assert_eq!(supported_operator(518), Some(PgOperator::NotEq));
-        assert_eq!(supported_operator(664), Some(PgOperator::Lt));
-        assert_eq!(supported_operator(1325), Some(PgOperator::GtEq));
+    fn accepts_catalog_comparison_over_same_supported_type() {
+        assert_eq!(
+            classify_operator(&operator(
+                "=",
+                pg_sys::INT4OID,
+                pg_sys::INT4OID,
+                pg_sys::BOOLOID
+            )),
+            Some(PgOperator::Eq)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "<>",
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(PgOperator::NotEq)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "<",
+                pg_sys::FLOAT8OID,
+                pg_sys::FLOAT8OID,
+                pg_sys::BOOLOID,
+            )),
+            Some(PgOperator::Lt)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                ">=",
+                pg_sys::DATEOID,
+                pg_sys::DATEOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(PgOperator::GtEq)
+        );
     }
 
     #[test]
-    fn rejects_unknown_operator_oids() {
-        assert_eq!(supported_operator(0), None);
-        assert_eq!(supported_operator(999_999), None);
+    fn rejects_non_catalog_operator_namespace() {
+        let metadata = OperatorMetadata {
+            namespace: 999_999,
+            ..operator("=", pg_sys::INT4OID, pg_sys::INT4OID, pg_sys::BOOLOID)
+        };
+        assert_eq!(classify_operator(&metadata), None);
     }
 
     #[test]
-    fn rejects_arithmetic_operator_oids() {
-        assert_eq!(supported_operator(551), None);
-        assert_eq!(supported_operator(593), None);
-        assert_eq!(supported_operator(1758), None);
+    fn rejects_mixed_operand_types_for_v1() {
+        assert_eq!(
+            classify_operator(&operator(
+                "=",
+                pg_sys::INT2OID,
+                pg_sys::INT4OID,
+                pg_sys::BOOLOID
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_operand_type() {
+        assert_eq!(
+            classify_operator(&operator(
+                "=",
+                pg_sys::REGCLASSOID,
+                pg_sys::REGCLASSOID,
+                pg_sys::BOOLOID
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_non_boolean_result() {
+        assert_eq!(
+            classify_operator(&operator(
+                "=",
+                pg_sys::INT4OID,
+                pg_sys::INT4OID,
+                pg_sys::INT4OID
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_arithmetic_operator_names() {
+        for name in ["+", "-", "*", "/"] {
+            assert_eq!(
+                classify_operator(&operator(
+                    name,
+                    pg_sys::INT4OID,
+                    pg_sys::INT4OID,
+                    pg_sys::INT4OID,
+                )),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unary_operator_kind() {
+        let metadata = OperatorMetadata {
+            kind: b'l' as c_char,
+            ..operator("=", pg_sys::INT4OID, pg_sys::INT4OID, pg_sys::BOOLOID)
+        };
+        assert_eq!(classify_operator(&metadata), None);
+    }
+
+    fn operator(
+        name: &str,
+        left: pg_sys::Oid,
+        right: pg_sys::Oid,
+        result: pg_sys::Oid,
+    ) -> OperatorMetadata {
+        OperatorMetadata {
+            name: name.into(),
+            namespace: pg_sys::PG_CATALOG_NAMESPACE,
+            kind: b'b' as c_char,
+            left: u32::from(left),
+            right: u32::from(right),
+            result: u32::from(result),
+        }
     }
 }
