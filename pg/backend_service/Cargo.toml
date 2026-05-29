@@ -29,6 +29,7 @@ issuance = { path = "../../page/issuance", version = "25.0" }
 pgrx = { workspace = true }
 pg_frontend = { path = "../frontend", version = "25.0" }
 pg_type = { path = "../type", version = "25.0" }
+plan_codec = { path = "../../page/plan_codec", version = "25.0" }
 plan_builder = { path = "../plan_builder", version = "25.0" }
 plan_flow = { path = "../../page/plan_flow", version = "25.0" }
 row_estimator = { path = "../../page/row_estimator", version = "25.0" }

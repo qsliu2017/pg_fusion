@@ -162,6 +162,16 @@ mod tests {
     }
 
     #[pg_test]
+    fn bs_unit_encoded_built_plan_prepares() {
+        super::backend_service_unit::encoded_built_plan_prepares_from_plan_codec_payload();
+    }
+
+    #[pg_test]
+    fn bs_unit_encoded_built_plan_deduplicates_scan_refs() {
+        super::backend_service_unit::encoded_built_plan_deduplicates_repeated_scan_references();
+    }
+
+    #[pg_test]
     fn bs_unit_scan_descriptor_exact_match() {
         super::backend_service_unit::scan_descriptor_matches_accepts_exact_ordered_match();
     }
@@ -199,6 +209,11 @@ mod tests {
     #[pg_test]
     fn df_catalog_resolves_schema_qualified_tables() {
         super::df_catalog::df_catalog_resolves_schema_qualified_tables();
+    }
+
+    #[pg_test]
+    fn df_catalog_resolves_relation_oid_identity() {
+        super::df_catalog::df_catalog_resolves_relation_oid_identity();
     }
 
     #[pg_test]

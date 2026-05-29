@@ -59,7 +59,7 @@
 
 mod error;
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
@@ -118,6 +118,13 @@ pub trait CatalogResolver {
     /// Schema-qualified references resolve through PostgreSQL explicit-namespace
     /// lookup. Catalog-qualified references are rejected.
     fn resolve_table(&self, table: &TableReference) -> Result<ResolvedTable, ResolveError>;
+
+    /// Resolve one PostgreSQL relation by already-analyzed relation OID.
+    ///
+    /// Typed PostgreSQL query-tree planning should use this path when the
+    /// analyzed tree already carries `RTE_RELATION.relid`; schema/table names
+    /// remain display and scan-SQL rendering metadata, not lookup authority.
+    fn resolve_relation_oid(&self, relid: u32) -> Result<ResolvedTable, ResolveError>;
 }
 
 /// DataFusion planning source for a resolved PostgreSQL relation.
@@ -175,7 +182,11 @@ impl PgrxCatalogResolver {
 impl CatalogResolver for PgrxCatalogResolver {
     fn resolve_table(&self, table: &TableReference) -> Result<ResolvedTable, ResolveError> {
         let rel_oid = resolve_relation_oid(table)?;
-        resolve_relation_by_oid(table, rel_oid)
+        resolve_relation_by_oid(Some(table), rel_oid)
+    }
+
+    fn resolve_relation_oid(&self, relid: u32) -> Result<ResolvedTable, ResolveError> {
+        resolve_relation_by_oid(None, pg_sys::Oid::from(relid))
     }
 }
 
@@ -241,7 +252,7 @@ fn resolve_qualified_relation_oid(schema: &str, table: &str) -> Result<pg_sys::O
 }
 
 fn resolve_relation_by_oid(
-    input: &TableReference,
+    input: Option<&TableReference>,
     rel_oid: pg_sys::Oid,
 ) -> Result<ResolvedTable, ResolveError> {
     PgTryBuilder::new(AssertUnwindSafe(|| unsafe {
@@ -249,11 +260,14 @@ fn resolve_relation_by_oid(
         validate_relkind(&rel)?;
 
         let relation = match input {
-            TableReference::Bare { table } => bare_relation_identity(table.as_ref(), &rel),
-            TableReference::Partial { schema, table } => {
+            Some(TableReference::Bare { table }) => bare_relation_identity(table.as_ref(), &rel),
+            Some(TableReference::Partial { schema, table }) => {
                 ScanRelation::new(Some(schema.as_ref()), table.as_ref())
             }
-            TableReference::Full { .. } => unreachable!("full references are rejected earlier"),
+            Some(TableReference::Full { .. }) => {
+                unreachable!("full references are rejected earlier")
+            }
+            None => oid_relation_identity(&rel)?,
         };
         let tuple_desc = rel.tuple_desc();
         let field_count = tuple_desc.iter().filter(|attr| !attr.is_dropped()).count();
@@ -311,6 +325,25 @@ fn bare_relation_identity(input_table: &str, rel: &PgRelation) -> ScanRelation {
         rel.namespace()
     };
     ScanRelation::new(Some(namespace), input_table)
+}
+
+unsafe fn oid_relation_identity(rel: &PgRelation) -> Result<ScanRelation, ResolveError> {
+    let namespace = if relation_is_temp(rel) {
+        "pg_temp".to_owned()
+    } else {
+        rel.namespace().to_owned()
+    };
+    let name = cstr_from_pg(pg_sys::get_rel_name(rel.oid()))?;
+    Ok(ScanRelation::new(Some(namespace), name))
+}
+
+unsafe fn cstr_from_pg(ptr: *const std::ffi::c_char) -> Result<String, ResolveError> {
+    if ptr.is_null() {
+        return Err(ResolveError::Postgres(
+            "PostgreSQL returned a null relation name".into(),
+        ));
+    }
+    Ok(CStr::from_ptr(ptr).to_string_lossy().into_owned())
 }
 
 fn relation_is_temp(rel: &PgRelation) -> bool {

@@ -6,14 +6,13 @@ use std::time::Duration;
 
 use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
 use ::worker::normalize_result_transport_schema;
-use arrow_schema::SchemaRef;
 use backend_service::{
     build_standalone_scan_descriptor, ActiveScanDriver, BackendService, BackendServiceError,
     BeginExecutionOutput, CtidBlockRange, DiagnosticLogLevel, ExecutionKey, ExecutionPlanSource,
     ExplainInput, ExplainRenderOptions, ExplainScanParallelism, ExplainScanParallelismStrategy,
-    ExplainScanProducer, ExplainScanProducerRole, OpenScanInput, PlanSchemaInput, ScanStreamStep,
-    ScanWorkerLaunchInput, ScanWorkerLaunchOutput, ScanWorkerLauncher, ScanWorkerProducer,
-    ScanWorkerQueryInput, StartExecutionInput,
+    ExplainScanProducer, ExplainScanProducerRole, OpenScanInput, PrepareExecutionPlanInput,
+    ScanStreamStep, ScanWorkerLaunchInput, ScanWorkerLaunchOutput, ScanWorkerLauncher,
+    ScanWorkerProducer, ScanWorkerQueryInput, StartPreparedExecutionInput,
 };
 use control_transport::{
     BackendLeaseSlot, BackendSlotLease, BackendTxError, TxError, WorkerTransport,
@@ -354,7 +353,14 @@ unsafe extern "C-unwind" fn begin_pg_fusion_scan(
     let scan_worker_jobs = attach_scan_worker_jobs();
     let page_pool = attach_page_pool();
     let issuance_pool = attach_issuance_pool();
-    let transport_schema = build_transport_schema(&state.plan_source, backend_config.clone())
+    let prepared_plan = BackendService::prepare_execution_plan(PrepareExecutionPlanInput {
+        plan_source: state.plan_source.as_execution_source(),
+        config: backend_config.clone(),
+    })
+    .unwrap_or_else(|err| error!("pg_fusion plan preparation failed: {err}"));
+    let output_schema = prepared_plan.output_schema();
+    let (transport_schema, _) = normalize_result_transport_schema(&output_schema)
+        .map_err(|err| err.to_string())
         .unwrap_or_else(|err| error!("pg_fusion schema preparation failed: {err}"));
     let control_lease = BackendSlotLease::acquire(&control_region)
         .unwrap_or_else(|err| error!("pg_fusion failed to acquire primary control slot: {err}"));
@@ -374,9 +380,9 @@ unsafe extern "C-unwind" fn begin_pg_fusion_scan(
     };
     let begin = {
         let _planner_bypass = PlannerBypassGuard::enter();
-        BackendService::begin_execution(StartExecutionInput {
+        BackendService::begin_prepared_execution(StartPreparedExecutionInput {
             slot_id: control_lease.slot_id(),
-            plan_source: state.plan_source.as_execution_source(),
+            plan: prepared_plan,
             plan_tx,
             scan_slot_region: &scan_region,
             config: backend_config,
@@ -1383,20 +1389,6 @@ fn decode_primary_inbound(bytes: &[u8]) -> Result<PrimaryInbound, Box<dyn std::e
     }
 }
 
-fn build_transport_schema(
-    plan_source: &CustomScanPlanSource,
-    config: backend_service::BackendServiceConfig,
-) -> Result<SchemaRef, String> {
-    let output_schema = BackendService::output_schema_for_plan_source(PlanSchemaInput {
-        plan_source: plan_source.as_execution_source(),
-        config,
-    })
-    .map_err(|err| err.to_string())?;
-    let (schema, _) =
-        normalize_result_transport_schema(&output_schema).map_err(|err| err.to_string())?;
-    Ok(schema)
-}
-
 struct DynamicScanWorkerLauncher {
     jobs: ScanWorkerJobRegistryHandle,
     budgets: BTreeMap<u64, ScanWorkerBudget>,
@@ -2109,6 +2101,7 @@ impl CustomScanPlanSource {
                 params: Vec::new(),
             },
             Self::FrontendQuery(query) => ExecutionPlanSource::FrontendQuery { query },
+            Self::FrontendPlan(bytes) => ExecutionPlanSource::EncodedBuiltPlan { bytes },
         }
     }
 }

@@ -1,9 +1,12 @@
+use arrow_schema::{DataType, Field, Schema};
 use backend_service::{
     scan_descriptor_matches_for_tests, BackendExecutionState, BackendService, BackendServiceConfig,
-    BackendServiceError, ExecutionPlanSource, ExplainInput,
+    BackendServiceError, ExecutionPlanSource, ExplainInput, PrepareExecutionPlanInput,
 };
-use datafusion_expr::logical_plan::{EmptyRelation, LogicalPlan};
+use datafusion_common::{DFSchema, TableReference};
+use datafusion_expr::logical_plan::{EmptyRelation, LogicalPlan, Union};
 use issuance::{IssuanceConfig, IssuancePool, IssuedTx};
+use plan_codec::{EncodeProgress, PlanEncodeSession};
 use plan_flow::{BackendPlanError, BackendPlanRole, FlowId as PlanFlowId, PlanOpen};
 use pool::{PagePool, PagePoolConfig};
 use protocol::{
@@ -12,6 +15,8 @@ use protocol::{
     ScanFlowDescriptor, WorkerScanToBackend, WorkerScanToBackendRef,
 };
 use scan_flow::{FlowId, ProducerDescriptor, ScanOpen};
+use scan_node::{PgCteRefNode, PgScanId, PgScanNode, PgScanSpec};
+use scan_sql::{CompiledScan, PgRelation};
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -89,6 +94,61 @@ fn canonical_scan_open() -> ScanOpen {
         vec![ProducerDescriptor::leader(0), ProducerDescriptor::worker(1)],
     )
     .expect("canonical scan open")
+}
+
+fn encode_plan_for_tests(plan: &LogicalPlan) -> Vec<u8> {
+    let mut session = PlanEncodeSession::new(plan).expect("create plan encoder");
+    let mut encoded = Vec::new();
+    loop {
+        let mut chunk = [0_u8; 31];
+        match session.write_chunk(&mut chunk).expect("encode plan chunk") {
+            EncodeProgress::NeedMoreOutput { written } => {
+                assert!(written > 0, "encoder must make progress");
+                encoded.extend_from_slice(&chunk[..written]);
+            }
+            EncodeProgress::Done { written } => {
+                encoded.extend_from_slice(&chunk[..written]);
+                break;
+            }
+        }
+    }
+    encoded
+}
+
+fn scan_plan_for_tests(scan_id: PgScanId) -> LogicalPlan {
+    let arrow_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let df_schema = DFSchema::try_from_qualified_schema(
+        TableReference::partial("public", "encoded_users"),
+        &arrow_schema,
+    )
+    .expect("df schema");
+    let compiled = CompiledScan {
+        sql: "SELECT \"id\" FROM \"public\".\"encoded_users\"".into(),
+        requested_limit: None,
+        sql_limit: None,
+        selected_columns: vec![0],
+        output_columns: vec![0],
+        filter_only_columns: Vec::new(),
+        residual_filter_columns: Vec::new(),
+        pushed_filters: Vec::new(),
+        residual_filters: Vec::new(),
+        all_filters_compiled: true,
+        uses_dummy_projection: false,
+    };
+    let spec = PgScanSpec::try_new(
+        scan_id,
+        42,
+        PgRelation::new(Some("public"), "encoded_users"),
+        &df_schema,
+        compiled,
+    )
+    .expect("scan spec");
+    PgScanNode::new(Arc::new(spec)).into_logical_plan()
+}
+
+fn encoded_scan_plan_for_tests() -> Vec<u8> {
+    let plan = scan_plan_for_tests(PgScanId::new(7));
+    encode_plan_for_tests(&plan)
 }
 
 fn assert_scan_descriptor_match(
@@ -185,6 +245,52 @@ pub fn render_explain_is_rejected_while_execution_is_active() {
     })
     .unwrap_err();
     assert!(matches!(err, BackendServiceError::ExecutionAlreadyActive));
+}
+
+pub fn encoded_built_plan_prepares_from_plan_codec_payload() {
+    BackendService::reset_for_tests();
+    let encoded = encoded_scan_plan_for_tests();
+
+    let prepared = BackendService::prepare_execution_plan(PrepareExecutionPlanInput {
+        plan_source: ExecutionPlanSource::EncodedBuiltPlan { bytes: &encoded },
+        config: BackendServiceConfig::default(),
+    })
+    .expect("encoded built plan should prepare");
+
+    let schema = prepared.output_schema();
+    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.field(0).name(), "id");
+    assert_eq!(schema.field(0).data_type(), &DataType::Int64);
+}
+
+pub fn encoded_built_plan_deduplicates_repeated_scan_references() {
+    BackendService::reset_for_tests();
+
+    let scan_plan = scan_plan_for_tests(PgScanId::new(7));
+    let projected_schema = Arc::clone(scan_plan.schema());
+    let first_ref = PgCteRefNode::new(
+        1,
+        "cte",
+        scan_plan.clone(),
+        Arc::clone(&projected_schema),
+        None,
+        None,
+    )
+    .into_logical_plan();
+    let second_ref =
+        PgCteRefNode::new(1, "cte", scan_plan, projected_schema, None, None).into_logical_plan();
+    let plan = LogicalPlan::Union(
+        Union::try_new(vec![Arc::new(first_ref), Arc::new(second_ref)]).expect("cte union plan"),
+    );
+    let encoded = encode_plan_for_tests(&plan);
+
+    let prepared = BackendService::prepare_execution_plan(PrepareExecutionPlanInput {
+        plan_source: ExecutionPlanSource::EncodedBuiltPlan { bytes: &encoded },
+        config: BackendServiceConfig::default(),
+    })
+    .expect("repeated scan references should prepare");
+
+    assert_eq!(prepared.scan_count_for_tests(), 1);
 }
 
 pub fn finalize_execution_start_error_preserves_starting_runtime() {

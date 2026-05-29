@@ -1,21 +1,26 @@
-use pg_frontend::{decode_query_ir, encode_query_ir, PgQuery};
+use datafusion::logical_expr::LogicalPlan;
+use pg_frontend::{decode_query_ir, PgQuery};
+use plan_codec::{EncodeProgress, PlanEncodeSession};
 use thiserror::Error;
 
 const PAYLOAD_PREFIX: &str = "PGFUSION_CUSTOM_SCAN_V1\n";
 const SQL_TAG: &str = "sql\n";
 const FRONTEND_TAG: &str = "frontend\n";
+const FRONTEND_PLAN_TAG: &str = "frontend_plan\n";
+const PLAN_ENCODE_CHUNK_LEN: usize = 8192;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CustomScanPlanSource {
     SqlText(String),
     FrontendQuery(PgQuery),
+    FrontendPlan(Vec<u8>),
 }
 
 impl CustomScanPlanSource {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::SqlText(_) => "sql_text",
-            Self::FrontendQuery(_) => "pg_frontend",
+            Self::FrontendQuery(_) | Self::FrontendPlan(_) => "pg_frontend",
         }
     }
 }
@@ -24,14 +29,16 @@ impl CustomScanPlanSource {
 pub(crate) enum PlanPayloadError {
     #[error("PostgreSQL query IR codec failed: {0}")]
     QueryCodec(#[from] pg_frontend::PgFrontendCodecError),
+    #[error("PostgreSQL built plan codec failed: {0}")]
+    PlanCodec(String),
     #[error("invalid custom scan plan payload: {0}")]
     Invalid(String),
 }
 
-pub(crate) fn encode_frontend_query(query: &PgQuery) -> Result<String, PlanPayloadError> {
-    let bytes = encode_query_ir(query)?;
+pub(crate) fn encode_frontend_plan(plan: &LogicalPlan) -> Result<String, PlanPayloadError> {
+    let bytes = encode_plan(plan)?;
     Ok(format!(
-        "{PAYLOAD_PREFIX}{FRONTEND_TAG}{}",
+        "{PAYLOAD_PREFIX}{FRONTEND_PLAN_TAG}{}",
         hex_encode(&bytes)
     ))
 }
@@ -50,6 +57,9 @@ pub(crate) fn decode_plan_source(value: &str) -> Result<CustomScanPlanSource, Pl
             .map_err(|err| PlanPayloadError::Invalid(format!("SQL payload is not UTF-8: {err}")))?;
         return Ok(CustomScanPlanSource::SqlText(sql));
     }
+    if let Some(hex) = rest.strip_prefix(FRONTEND_PLAN_TAG) {
+        return Ok(CustomScanPlanSource::FrontendPlan(hex_decode(hex)?));
+    }
     let Some(hex) = rest.strip_prefix(FRONTEND_TAG) else {
         return Err(PlanPayloadError::Invalid(
             "unknown custom scan payload tag".into(),
@@ -59,6 +69,30 @@ pub(crate) fn decode_plan_source(value: &str) -> Result<CustomScanPlanSource, Pl
     Ok(CustomScanPlanSource::FrontendQuery(decode_query_ir(
         &bytes,
     )?))
+}
+
+fn encode_plan(plan: &LogicalPlan) -> Result<Vec<u8>, PlanPayloadError> {
+    let mut session =
+        PlanEncodeSession::new(plan).map_err(|err| PlanPayloadError::PlanCodec(err.to_string()))?;
+    let mut encoded = Vec::new();
+
+    loop {
+        let mut chunk = [0_u8; PLAN_ENCODE_CHUNK_LEN];
+        match session
+            .write_chunk(&mut chunk)
+            .map_err(|err| PlanPayloadError::PlanCodec(err.to_string()))?
+        {
+            EncodeProgress::NeedMoreOutput { written } => {
+                encoded.extend_from_slice(&chunk[..written]);
+            }
+            EncodeProgress::Done { written } => {
+                encoded.extend_from_slice(&chunk[..written]);
+                break;
+            }
+        }
+    }
+
+    Ok(encoded)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -125,5 +159,15 @@ mod tests {
         let bytes = b"\x00hello\xff";
         let encoded = hex_encode(bytes);
         assert_eq!(hex_decode(&encoded).unwrap(), bytes);
+    }
+
+    #[test]
+    fn frontend_plan_payload_decodes_raw_plan_bytes() {
+        let decoded =
+            decode_plan_source(&format!("{PAYLOAD_PREFIX}{FRONTEND_PLAN_TAG}0001ff")).unwrap();
+        match decoded {
+            CustomScanPlanSource::FrontendPlan(bytes) => assert_eq!(bytes, vec![0x00, 0x01, 0xff]),
+            other => panic!("unexpected payload {other:?}"),
+        }
     }
 }

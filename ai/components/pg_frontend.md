@@ -12,7 +12,8 @@ importance: 0.7
 `pg/frontend` is the experimental PostgreSQL typed-tree frontend. It reads a
 live analyzed `pg_sys::Query`, copies PostgreSQL OID/typmod/collation metadata
 into a stable Rust IR, and compiles the supported subset into an ordinary
-DataFusion `LogicalPlan` with resolved PostgreSQL table-source leaves. The
+DataFusion `LogicalPlan` with PostgreSQL table-source leaves resolved by
+`RTE_RELATION.relid`, not by schema/table name lookup. The
 host-side planning pipeline then builds those leaves into PostgreSQL scan nodes
 and normalizes root output types. This keeps `pg_frontend` focused on
 PostgreSQL query-tree semantics instead of duplicating scan-building policy.
@@ -35,14 +36,15 @@ when the analyzed tree still contains `Param` nodes or an `RTE.inh = false`
 relation, so prepared/generic parameter values and `ONLY` semantics remain
 PostgreSQL-owned until the IR and scan SQL can preserve them explicitly.
 
-Frontend `CustomScan` nodes store a versioned serialized `PgQuery` IR in
-`custom_private`. They must not store raw PostgreSQL `Query*` pointers or Rust
-`Arc<LogicalPlan>` values because PostgreSQL plan nodes can be copied and
-serialized by core code. `BeginCustomScan` deserializes the IR, recompiles it
-through `pg_frontend`, and sends the resulting typed DataFusion plan through
-the frontend scan-building pipeline before execution. Supported frontend
-queries avoid SQL re-parsing during execution while staying
-PostgreSQL-plan-node safe.
+Frontend `CustomScan` nodes store a versioned text-safe wrapper around
+`plan_codec` bytes in `custom_private`. The encoded payload contains the
+already built DataFusion logical plan plus the `PgScanSpec` table; it is not a
+raw PostgreSQL `Query*` pointer or Rust `Arc<LogicalPlan>` because PostgreSQL
+plan nodes can be copied and serialized by core code. `BeginCustomScan`
+decodes this built plan once, uses its output schema for result transport, and
+starts execution with the same decoded plan. Supported frontend queries avoid
+SQL re-parsing, frontend recompilation, catalog re-resolution, and scan SQL
+rebuilding during execution while staying PostgreSQL-plan-node safe.
 
 The design rule is that PostgreSQL analyzed metadata is the boundary source of
 truth. DataFusion schema is a transport/execution representation, not authority

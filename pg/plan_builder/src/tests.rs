@@ -34,6 +34,14 @@ impl CatalogResolver for FakeResolver {
                 table: table.table().to_owned(),
             })
     }
+
+    fn resolve_relation_oid(&self, relid: u32) -> Result<ResolvedTable, ResolveError> {
+        self.tables
+            .values()
+            .find(|table| table.table_oid == relid)
+            .cloned()
+            .ok_or_else(|| ResolveError::Postgres(format!("relation oid {relid} not found")))
+    }
 }
 
 fn user_table() -> ResolvedTable {

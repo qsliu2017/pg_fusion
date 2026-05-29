@@ -69,6 +69,24 @@ pub fn df_catalog_resolves_schema_qualified_tables() {
     );
 }
 
+pub fn df_catalog_resolves_relation_oid_identity() {
+    Spi::run("DROP SCHEMA IF EXISTS df_catalog_oid CASCADE").unwrap();
+    Spi::run("CREATE SCHEMA df_catalog_oid").unwrap();
+    Spi::run("CREATE TABLE df_catalog_oid.t_oid (id int4 NOT NULL, payload text)").unwrap();
+    let relid = Spi::get_one::<i32>("SELECT 'df_catalog_oid.t_oid'::regclass::oid::int4")
+        .unwrap()
+        .expect("relation oid") as u32;
+
+    let resolved = resolver()
+        .resolve_relation_oid(relid)
+        .expect("resolve relation oid");
+
+    assert_eq!(resolved.table_oid, relid);
+    assert_eq!(resolved.relation.schema.as_deref(), Some("df_catalog_oid"));
+    assert_eq!(resolved.relation.table, "t_oid");
+    assert_eq!(resolved.column_attnums, vec![1, 2]);
+}
+
 pub fn df_catalog_maps_text_like_columns_to_utf8view() {
     Spi::run("DROP TABLE IF EXISTS public.df_catalog_text_like").unwrap();
     Spi::run(

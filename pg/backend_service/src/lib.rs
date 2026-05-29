@@ -10,6 +10,7 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use control_transport::{
     BackendLeaseSlot, BackendSlotLease, BackendTxError, CommitOutcome, TransportRegion, TxError,
 };
+use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion_common::ScalarValue;
 use datafusion_expr::logical_plan::LogicalPlan;
 use filter::RuntimeFilterPool;
@@ -23,6 +24,7 @@ use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::{PgRelation as PgrxRelation, PgTryBuilder};
 use plan_builder::{PlanBuildInput, PlanBuilder};
+use plan_codec::{DecodeProgress, PlanDecodeSession};
 use plan_flow::{BackendPlanRole, BackendPlanStep, PlanOpen};
 use protocol::{
     decode_worker_scan_to_backend, encode_backend_scan_to_worker_into, BackendExecutionToWorker,
@@ -36,7 +38,7 @@ use scan_flow::{
     BackendProducerRole, BackendProducerStep, BackendScanCoordinator, FlowId as ScanFlowId,
     LogicalTerminal, ProducerDescriptor, ProducerRoleKind, ScanOpen,
 };
-use scan_node::PgScanSpec;
+use scan_node::{PgScanNode, PgScanSpec};
 use scan_sql::{render_unprojected_ctid_block_scan_sql, render_unprojected_scan_sql};
 use slot_scan::{prepare_scan, ExecutionSpiContext, PreparedScan, ScanOptions};
 pub use slot_scan::{DiagnosticLogLevel, DiagnosticsConfig};
@@ -197,6 +199,15 @@ pub struct StartExecutionInput<'a> {
     pub scan_worker_launcher: Option<&'a mut dyn ScanWorkerLauncher>,
 }
 
+pub struct StartPreparedExecutionInput<'a> {
+    pub slot_id: u32,
+    pub plan: PreparedExecutionPlan,
+    pub plan_tx: IssuedTx,
+    pub scan_slot_region: &'a TransportRegion,
+    pub config: BackendServiceConfig,
+    pub scan_worker_launcher: Option<&'a mut dyn ScanWorkerLauncher>,
+}
+
 pub enum ExecutionPlanSource<'a> {
     SqlText {
         sql: &'a str,
@@ -205,13 +216,16 @@ pub enum ExecutionPlanSource<'a> {
     FrontendQuery {
         query: &'a PgQuery,
     },
+    EncodedBuiltPlan {
+        bytes: &'a [u8],
+    },
 }
 
 impl ExecutionPlanSource<'_> {
     pub fn label(&self) -> &'static str {
         match self {
             Self::SqlText { .. } => "sql_text",
-            Self::FrontendQuery { .. } => "pg_frontend",
+            Self::FrontendQuery { .. } | Self::EncodedBuiltPlan { .. } => "pg_frontend",
         }
     }
 }
@@ -383,6 +397,11 @@ pub struct PlanSchemaInput<'a> {
     pub config: BackendServiceConfig,
 }
 
+pub struct PrepareExecutionPlanInput<'a> {
+    pub plan_source: ExecutionPlanSource<'a>,
+    pub config: BackendServiceConfig,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExplainRenderOptions {
     pub verbose: bool,
@@ -489,24 +508,49 @@ enum ScanDriveOutcome {
     FatalExecution(ScanStreamStep),
 }
 
-pub(crate) struct BuiltExecutionPlan {
-    pub logical_plan: LogicalPlan,
-    pub scans: Vec<Arc<PgScanSpec>>,
+pub struct PreparedExecutionPlan {
+    logical_plan: LogicalPlan,
+    scans: Vec<Arc<PgScanSpec>>,
+    output_schema: SchemaRef,
+}
+
+impl PreparedExecutionPlan {
+    pub fn output_schema(&self) -> SchemaRef {
+        Arc::clone(&self.output_schema)
+    }
+
+    #[cfg(any(test, feature = "pg_test"))]
+    pub fn scan_count_for_tests(&self) -> usize {
+        self.scans.len()
+    }
 }
 
 pub(crate) fn build_execution_plan(
     source: ExecutionPlanSource<'_>,
     config: &BackendServiceConfig,
-) -> Result<BuiltExecutionPlan, BackendServiceError> {
+) -> Result<PreparedExecutionPlan, BackendServiceError> {
+    let (logical_plan, scans) = match source {
+        ExecutionPlanSource::EncodedBuiltPlan { bytes } => decode_built_plan(bytes)?,
+        other => build_execution_plan_from_source(other, config)?,
+    };
+    let output_schema = output_schema_from_logical_plan(&logical_plan);
+    Ok(PreparedExecutionPlan {
+        logical_plan,
+        scans,
+        output_schema,
+    })
+}
+
+fn build_execution_plan_from_source(
+    source: ExecutionPlanSource<'_>,
+    config: &BackendServiceConfig,
+) -> Result<(LogicalPlan, Vec<Arc<PgScanSpec>>), BackendServiceError> {
     match source {
         ExecutionPlanSource::SqlText { sql, params } => {
             let built = PlanBuilder::new()
                 .with_config(config.plan_builder_config())
                 .build(PlanBuildInput { sql, params })?;
-            Ok(BuiltExecutionPlan {
-                logical_plan: built.logical_plan,
-                scans: built.scans,
-            })
+            Ok((built.logical_plan, built.scans))
         }
         ExecutionPlanSource::FrontendQuery { query } => {
             let output = PgFrontend::new()
@@ -516,12 +560,55 @@ pub(crate) fn build_execution_plan(
                 output.logical_plan,
                 config.plan_builder_config(),
             )?;
-            Ok(BuiltExecutionPlan {
-                logical_plan: built.logical_plan,
-                scans: built.scans,
-            })
+            Ok((built.logical_plan, built.scans))
+        }
+        ExecutionPlanSource::EncodedBuiltPlan { bytes } => decode_built_plan(bytes),
+    }
+}
+
+fn decode_built_plan(
+    bytes: &[u8],
+) -> Result<(LogicalPlan, Vec<Arc<PgScanSpec>>), BackendServiceError> {
+    let mut session = PlanDecodeSession::new();
+    for chunk in bytes.chunks(8192) {
+        let progress = session
+            .push_chunk(chunk)
+            .map_err(|err| BackendServiceError::PlanDecode(err.to_string()))?;
+        if !matches!(progress, DecodeProgress::NeedMoreInput) {
+            return Err(BackendServiceError::PlanDecode(
+                "plan decoder finished before EOF".into(),
+            ));
         }
     }
+    let logical_plan = match session
+        .finish_input()
+        .map_err(|err| BackendServiceError::PlanDecode(err.to_string()))?
+    {
+        DecodeProgress::Done(plan) => *plan,
+        DecodeProgress::NeedMoreInput => {
+            return Err(BackendServiceError::PlanDecode(
+                "plan decoder requires more input".into(),
+            ))
+        }
+    };
+    let scans = collect_pg_scans(&logical_plan)?;
+    Ok((logical_plan, scans))
+}
+
+fn collect_pg_scans(plan: &LogicalPlan) -> Result<Vec<Arc<PgScanSpec>>, BackendServiceError> {
+    let mut scans = BTreeMap::new();
+    plan.apply(|node| {
+        if let LogicalPlan::Extension(extension) = node {
+            if let Some(pg_scan) = extension.node.as_any().downcast_ref::<PgScanNode>() {
+                let spec = pg_scan.spec();
+                scans.entry(spec.scan_id).or_insert(spec);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .map_err(|err| BackendServiceError::PlanDecode(err.to_string()))?;
+
+    Ok(scans.into_values().collect())
 }
 
 fn output_schema_from_logical_plan(logical_plan: &LogicalPlan) -> SchemaRef {
@@ -745,15 +832,48 @@ impl Drop for ActiveScanDriver {
 }
 
 impl BackendService {
+    pub fn prepare_execution_plan(
+        input: PrepareExecutionPlanInput<'_>,
+    ) -> Result<PreparedExecutionPlan, BackendServiceError> {
+        build_execution_plan(input.plan_source, &input.config)
+    }
+
     pub fn output_schema_for_plan_source(
         input: PlanSchemaInput<'_>,
     ) -> Result<SchemaRef, BackendServiceError> {
-        let built = build_execution_plan(input.plan_source, &input.config)?;
-        Ok(output_schema_from_logical_plan(&built.logical_plan))
+        let prepared = Self::prepare_execution_plan(PrepareExecutionPlanInput {
+            plan_source: input.plan_source,
+            config: input.config,
+        })?;
+        Ok(prepared.output_schema())
     }
 
     pub fn begin_execution(
         input: StartExecutionInput<'_>,
+    ) -> Result<BeginExecutionOutput, BackendServiceError> {
+        ACTIVE_EXECUTION.with(|slot| {
+            if slot.borrow().is_some() {
+                Err(BackendServiceError::ExecutionAlreadyActive)
+            } else {
+                Ok(())
+            }
+        })?;
+        let prepared = Self::prepare_execution_plan(PrepareExecutionPlanInput {
+            plan_source: input.plan_source,
+            config: input.config.clone(),
+        })?;
+        Self::begin_prepared_execution(StartPreparedExecutionInput {
+            slot_id: input.slot_id,
+            plan: prepared,
+            plan_tx: input.plan_tx,
+            scan_slot_region: input.scan_slot_region,
+            config: input.config,
+            scan_worker_launcher: input.scan_worker_launcher,
+        })
+    }
+
+    pub fn begin_prepared_execution(
+        input: StartPreparedExecutionInput<'_>,
     ) -> Result<BeginExecutionOutput, BackendServiceError> {
         ACTIVE_EXECUTION.with(|slot| {
             if slot.borrow().is_some() {
@@ -768,12 +888,16 @@ impl BackendService {
                 session_epoch,
             };
 
-            let built = build_execution_plan(input.plan_source, &config)?;
+            let PreparedExecutionPlan {
+                logical_plan,
+                scans: built_scans,
+                output_schema: _,
+            } = input.plan;
 
             let mut scan_worker_launcher = input.scan_worker_launcher;
             if let Some(launcher) = scan_worker_launcher.as_deref_mut() {
                 launcher.prepare_query(ScanWorkerQueryInput {
-                    scans: &built.scans,
+                    scans: &built_scans,
                 })?;
             }
 
@@ -787,11 +911,11 @@ impl BackendService {
             );
 
             let mut plan_role = BackendPlanRole::new(input.plan_tx);
-            plan_role.open(plan_open, &built.logical_plan)?;
+            plan_role.open(plan_open, &logical_plan)?;
 
             let mut scans = BTreeMap::new();
             let mut scan_channels = Vec::new();
-            for spec in built.scans.iter().cloned() {
+            for spec in built_scans {
                 let scan_lease = BackendSlotLease::acquire(input.scan_slot_region)?;
                 let scan_peer = scan_lease.backend_lease_slot();
                 backend_diag_warning(|| {
@@ -874,7 +998,7 @@ impl BackendService {
             *slot.borrow_mut() = Some(ActiveExecution {
                 key,
                 snapshot,
-                _logical_plan: built.logical_plan,
+                _logical_plan: logical_plan,
                 machine,
                 config,
                 starting: Some(StartingRuntime { plan_role }),

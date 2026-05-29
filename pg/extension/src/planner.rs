@@ -9,15 +9,15 @@ use pg_frontend::{PgFrontend, PgFrontendConfig, PgTarget};
 use pg_type::pg_oid_for_arrow_type;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
-    list_append_unique_ptr, list_make1_impl, palloc0, planner_hook, planner_hook_type,
-    standard_planner, CommonTableExpr, Const, CustomScan, List, ListCell, Node, NodeTag, Oid,
-    ParamListInfo, Plan, PlannedStmt, Query, RangeTblEntry,
+    list_append_unique_oid, list_append_unique_ptr, list_make1_impl, palloc0, planner_hook,
+    planner_hook_type, standard_planner, CommonTableExpr, Const, CustomScan, List, ListCell, Node,
+    NodeTag, Oid, ParamListInfo, Plan, PlannedStmt, Query, RangeTblEntry,
 };
 use pgrx::prelude::*;
 
 use crate::custom_scan::scan_methods;
 use crate::guc::{FrontendMode, HostConfig, ENABLE};
-use crate::plan_payload::{encode_frontend_query, encode_sql_text};
+use crate::plan_payload::{encode_frontend_plan, encode_sql_text};
 use crate::utility_hook::skip_planner;
 
 static mut PREV_PLANNER_HOOK: planner_hook_type = None;
@@ -214,6 +214,7 @@ unsafe extern "C-unwind" fn build_planned_custom_scan(
 struct PlannedCustomScan {
     custom_scan: *mut CustomScan,
     query_id_seed: String,
+    relation_oids: Vec<u32>,
 }
 
 impl PlannedCustomScan {
@@ -238,7 +239,7 @@ impl PlannedCustomScan {
             subplans: null_mut(),
             rewindPlanIDs: null_mut(),
             rowMarks: null_mut(),
-            relationOids: null_mut(),
+            relationOids: relation_oid_list(&self.relation_oids),
             invalItems: null_mut(),
             paramExecTypes: null_mut(),
             utilityStmt: null_mut(),
@@ -265,14 +266,19 @@ unsafe fn build_frontend_plan(
     let output = frontend
         .build_query(pg_query.clone())
         .map_err(|err| err.to_string())?;
-    plan_builder::build_frontend_logical_plan(output.logical_plan, config.plan_builder_config())
-        .map_err(|err| err.to_string())?;
+    let built = plan_builder::build_frontend_logical_plan(
+        output.logical_plan,
+        config.plan_builder_config(),
+    )
+    .map_err(|err| err.to_string())?;
     let target_lists = build_custom_scan_target_lists_from_pg_targets(&output.result_targets)
         .map_err(|err| format!("pg_fusion frontend targetlist build failed: {err}"))?;
-    let payload = encode_frontend_query(&pg_query).map_err(|err| err.to_string())?;
+    let payload = encode_frontend_plan(&built.logical_plan).map_err(|err| err.to_string())?;
+    let relation_oids = relation_oids_from_scans(&built.scans);
     Ok(Some(PlannedCustomScan {
         custom_scan: pack_custom_scan_payload(&payload, target_lists),
         query_id_seed: payload,
+        relation_oids,
     }))
 }
 
@@ -295,7 +301,20 @@ unsafe fn build_sql_text_plan(
     PlannedCustomScan {
         custom_scan: pack_custom_scan_payload(&encode_sql_text(&sql), target_lists),
         query_id_seed: sql,
+        relation_oids: relation_oids_from_scans(&built.scans),
     }
+}
+
+fn relation_oids_from_scans(scans: &[std::sync::Arc<scan_node::PgScanSpec>]) -> Vec<u32> {
+    scans.iter().map(|scan| scan.table_oid).collect()
+}
+
+unsafe fn relation_oid_list(relation_oids: &[u32]) -> *mut List {
+    let mut list: *mut List = null_mut();
+    for oid in relation_oids {
+        list = list_append_unique_oid(list, Oid::from_u32(*oid));
+    }
+    list
 }
 
 unsafe fn query_contains_special_numeric_const(parse: *mut Query) -> bool {

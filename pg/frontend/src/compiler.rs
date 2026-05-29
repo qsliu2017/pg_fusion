@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use arrow_schema::{DataType, Field};
-use datafusion_common::{Column, ScalarValue};
+use datafusion_common::{Column, ScalarValue, TableReference};
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::logical_plan::{LogicalPlan, Projection, TableScan};
 use datafusion_expr::{Expr, Operator, TableSource};
@@ -36,13 +36,22 @@ pub fn compile_query<R: CatalogResolver + Send + Sync>(
 ) -> Result<CompiledQuery, PgFrontendError> {
     validate_supported_query_shape(&query)?;
     let relation = single_relation(&query)?;
-    validate_identifier_len(&relation.schema, config.identifier_max_bytes, "schema")?;
-    validate_identifier_len(&relation.name, config.identifier_max_bytes, "table")?;
-    let table_ref = datafusion_common::TableReference::partial(
-        relation.schema.as_str(),
-        relation.name.as_str(),
-    );
-    let resolved = resolver.resolve_table(&table_ref)?;
+    let resolved = resolver.resolve_relation_oid(relation.relid)?;
+    if resolved.table_oid != relation.relid {
+        return Err(PgFrontendError::unsupported(format!(
+            "catalog resolver returned relation oid {} for Query relid {}",
+            resolved.table_oid, relation.relid
+        )));
+    }
+    if let Some(schema) = resolved.relation.schema.as_deref() {
+        validate_identifier_len(schema, config.identifier_max_bytes, "schema")?;
+    }
+    validate_identifier_len(
+        &resolved.relation.table,
+        config.identifier_max_bytes,
+        "table",
+    )?;
+    let table_ref = table_reference_for_resolved_relation(&resolved.relation);
 
     let filter = query
         .selection
@@ -61,6 +70,13 @@ pub fn compile_query<R: CatalogResolver + Send + Sync>(
     plan = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(plan))?);
 
     Ok(CompiledQuery { logical_plan: plan })
+}
+
+fn table_reference_for_resolved_relation(relation: &scan_sql::PgRelation) -> TableReference {
+    match relation.schema.as_deref() {
+        Some(schema) => TableReference::partial(schema, relation.table.as_str()),
+        None => TableReference::bare(relation.table.as_str()),
+    }
 }
 
 fn validate_identifier_len(
@@ -370,8 +386,7 @@ fn compile_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
 
 #[cfg(test)]
 fn typed_null(pg_type: PgTypeRef) -> Result<ScalarValue, PgFrontendError> {
-    pg_type::typed_null_scalar(pg_type)
-        .map_err(|err| PgFrontendError::unsupported(err.to_string()))
+    pg_type::typed_null_scalar(pg_type).map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
 #[cfg(test)]
@@ -511,6 +526,45 @@ mod tests {
     }
 
     #[test]
+    fn compile_query_rejects_resolver_oid_mismatch() {
+        #[derive(Debug)]
+        struct MismatchResolver;
+
+        impl CatalogResolver for MismatchResolver {
+            fn resolve_table(
+                &self,
+                table: &datafusion_common::TableReference,
+            ) -> Result<ResolvedTable, df_catalog::ResolveError> {
+                Err(df_catalog::ResolveError::Postgres(format!(
+                    "unexpected name lookup for {table}"
+                )))
+            }
+
+            fn resolve_relation_oid(
+                &self,
+                _relid: u32,
+            ) -> Result<ResolvedTable, df_catalog::ResolveError> {
+                let mut resolved = resolved_table();
+                resolved.table_oid = 99;
+                Ok(resolved)
+            }
+        }
+
+        let err = compile_query(
+            query_for_resolved_table(),
+            &MismatchResolver,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect_err("oid mismatch must fail closed");
+        assert!(
+            err.to_string().contains("relation oid"),
+            "error {err} should mention relation oid mismatch"
+        );
+    }
+
+    #[test]
     fn typed_null_and_arrow_types_cover_uuid_and_interval() {
         assert_eq!(
             typed_null(type_ref(pgrx::pg_sys::UUIDOID)).unwrap(),
@@ -642,13 +696,21 @@ mod tests {
             &self,
             table: &datafusion_common::TableReference,
         ) -> Result<ResolvedTable, df_catalog::ResolveError> {
-            if table.schema() == Some("public") && table.table() == "t" {
+            Err(df_catalog::ResolveError::Postgres(format!(
+                "unexpected name lookup for {table}"
+            )))
+        }
+
+        fn resolve_relation_oid(
+            &self,
+            relid: u32,
+        ) -> Result<ResolvedTable, df_catalog::ResolveError> {
+            if relid == 42 {
                 Ok(resolved_table())
             } else {
-                Err(df_catalog::ResolveError::TableNotFound {
-                    schema: table.schema().map(ToOwned::to_owned),
-                    table: table.table().to_owned(),
-                })
+                Err(df_catalog::ResolveError::Postgres(format!(
+                    "relation oid {relid} not found"
+                )))
             }
         }
     }
