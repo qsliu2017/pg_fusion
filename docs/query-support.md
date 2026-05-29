@@ -58,7 +58,7 @@ The intended supported direction is:
   mappings in pg_fusion.
 
 Subqueries are accepted only when DataFusion can decorrelate or rewrite them
-into ordinary relational operators before PostgreSQL scan lowering. Surviving
+into ordinary relational operators before PostgreSQL scan building. Surviving
 `EXISTS`, `IN (SELECT ...)`, scalar subqueries, correlated subqueries, and
 logical subquery plan nodes are rejected.
 

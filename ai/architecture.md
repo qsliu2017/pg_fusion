@@ -48,10 +48,13 @@ page-backed Arrow batches.
   conversion. PostgreSQL-bound crates still own raw `Datum`, TOAST, varlena,
   memory-context, and tuple-slot mechanics. `pg/frontend` is the typed
   PostgreSQL `Query` tree frontend; it copies analyzed PostgreSQL type metadata
-  into a stable IR and lowers the supported fail-closed subset directly to
-  DataFusion logical plans. The production planner hook can try this frontend
-  first behind `pg_fusion.frontend_mode`; unsupported frontend shapes fall back
-  to the SQL-text `plan_builder` path unless the mode is `require`.
+  into a stable IR and plans the supported fail-closed subset as DataFusion
+  logical plans with resolved PostgreSQL table-source leaves. The host-side
+  frontend pipeline builds those leaves into PostgreSQL scan nodes before
+  generic DataFusion optimization can rewrite PostgreSQL-semantic scan
+  predicates. The production planner hook can try this frontend first behind
+  `pg_fusion.frontend_mode`; unsupported frontend shapes fall back to the
+  SQL-text `plan_builder` path unless the mode is `require`.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
   by both backend planning and worker/codec decoding. Its `format(text, ...)`
   scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width
@@ -85,15 +88,20 @@ page-backed Arrow batches.
    function/table-function range entries produced by PostgreSQL rewrite, then
    deparses wrapper query strings such as `EXPLAIN` and `COPY (SELECT ...)` back
    to the inner `Query` text so PostgreSQL can keep native wrapper execution
-   around a pg_fusion custom scan. Eligible user query text is parsed with
+   around a pg_fusion custom scan. The typed `pg_frontend` path can compile a
+   supported analyzed `Query` tree into a DataFusion logical plan without SQL
+   re-parsing, then hands that plan to the frontend scan-building pipeline so
+   PostgreSQL-typed predicates reach `scan_sql` before generic DataFusion
+   rewrites. The SQL-text fallback path parses eligible user query text with
    sqlparser's PostgreSQL dialect before DataFusion planning; deparsed casts to
    PostgreSQL's `unknown` pseudo-type are stripped so untyped NULL/string
    literals can still be coerced by DataFusion function planning. This accepts
    more PostgreSQL surface syntax but does not make unsupported PostgreSQL
-   semantics executable. It then resolves PostgreSQL catalog metadata
-   for eligible user queries, runs DataFusion logical optimization, then uses
-   `pg_statistics` plus `join_order` to reorder
-   eligible inner/cross join components before scan lowering. The reorder pass
+   semantics executable. Both paths resolve PostgreSQL catalog metadata for
+   eligible user queries. The SQL-text path runs DataFusion logical
+   optimization, then uses
+   `pg_statistics` plus `join_order` to reorder eligible inner/cross join
+   components before scan building. The reorder pass
    estimates each PostgreSQL leaf from the same pushed-down scan SQL that will
    later become a scan descriptor, maps join columns back to PostgreSQL attnums,
    and uses NDV/null fractions plus relation-wide unique keys for equi-join
@@ -116,14 +124,15 @@ page-backed Arrow batches.
    formatting/precision differences live in
    `pg/extension/pg_compat/limitations.sql`. Root `UInt64` and `LargeUtf8`
    outputs are cast to PostgreSQL-facing `bigint`/`text` Arrow types before
-   result transport. Scan leaves are then lowered to
+   result transport. Scan leaves are then built as
    `PgScanNode`/`scan_sql` descriptors. For the subset supported by
-   `pg_frontend`, the planner instead stores a serialized typed `PgQuery` IR in
-   `CustomScan.custom_private`; `BeginCustomScan` recompiles that IR without
-   SQL re-parsing. The SQL-text `plan_builder` path remains the fallback for
-   broader query coverage. Non-recursive CTEs
+   `pg_frontend`, the planner stores a serialized typed `PgQuery` IR in
+   `CustomScan.custom_private`; `BeginCustomScan` recompiles that IR and builds
+   scan leaves without SQL re-parsing. The SQL-text
+   `plan_builder` path remains the fallback for broader query coverage.
+   Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single
-   lowered CTE producer so worker execution materializes the CTE once and
+   built CTE producer so worker execution materializes the CTE once and
    reuses the owned batches. PostgreSQL text-like columns are represented as
    Arrow `Utf8View` in the DataFusion logical schema so scan pages can stay
    zero-copy for string payloads.

@@ -260,11 +260,12 @@ unsafe fn build_frontend_plan(
     }
     let frontend = PgFrontend::new().with_config(PgFrontendConfig {
         identifier_max_bytes: config.plan_builder_config().identifier_max_bytes,
-        first_scan_id: config.plan_builder_config().first_scan_id,
     });
     let pg_query = frontend.read_query(parse).map_err(|err| err.to_string())?;
     let output = frontend
         .build_query(pg_query.clone())
+        .map_err(|err| err.to_string())?;
+    plan_builder::build_frontend_logical_plan(output.logical_plan, config.plan_builder_config())
         .map_err(|err| err.to_string())?;
     let target_lists = build_custom_scan_target_lists_from_pg_targets(&output.result_targets)
         .map_err(|err| format!("pg_fusion frontend targetlist build failed: {err}"))?;

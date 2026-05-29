@@ -41,18 +41,32 @@ The target direction is:
   and output types.
 - PostgreSQL relation OIDs and attribute numbers are the source of truth for
   table and column identity.
-- PostgreSQL operator and function identity are preserved when lowering into
+- PostgreSQL operator and function identity are preserved when planning into
   DataFusion.
 - PostgreSQL scan leaves remain PostgreSQL-owned scan streams.
 
 This should reduce compatibility code around temporal values, numeric values,
 UUIDs, typmods, parameters, and pushed PostgreSQL scan SQL.
 
-The first production step is in place as a migration path: supported
+The first production steps are in place as a migration path: supported
 single-relation projection/filter queries can be planned through `pg_frontend`,
-while unsupported shapes fall back to the existing SQL-text planner unless the
+and the resulting typed DataFusion plan now flows through the same
+post-planning pipeline used by the SQL-text planner for PostgreSQL scan
+building and output normalization. The frontend path builds scans before
+generic DataFusion optimization can rewrite PostgreSQL-semantic predicates.
+Unsupported shapes still fall back to the existing SQL-text planner unless the
 frontend is explicitly required. The remaining work is to expand typed-query
 coverage until the fallback is no longer needed for common analytical queries.
+
+Removing the SQL-text fallback requires at least:
+
+- typed planning for joins, grouped aggregates, sorting, limits, CTEs, and the
+  expression/function subset already accepted by the SQL-text path;
+- parameter value propagation for prepared and extended-protocol queries;
+- PostgreSQL relid/attnum-based scan identity instead of relying on deparsed
+  relation names at the frontend boundary;
+- compatibility tests that compare supported typed-frontend results with
+  vanilla PostgreSQL before making the frontend mandatory.
 
 ## PostgreSQL Version Support
 

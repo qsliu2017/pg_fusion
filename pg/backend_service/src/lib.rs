@@ -126,7 +126,6 @@ impl BackendServiceConfig {
         let plan_config = self.plan_builder_config();
         PgFrontendConfig {
             identifier_max_bytes: plan_config.identifier_max_bytes,
-            first_scan_id: plan_config.first_scan_id,
         }
     }
 }
@@ -513,9 +512,13 @@ pub(crate) fn build_execution_plan(
             let output = PgFrontend::new()
                 .with_config(config.pg_frontend_config())
                 .build_query(query.clone())?;
+            let built = plan_builder::build_frontend_logical_plan(
+                output.logical_plan,
+                config.plan_builder_config(),
+            )?;
             Ok(BuiltExecutionPlan {
-                logical_plan: output.logical_plan,
-                scans: output.scans,
+                logical_plan: built.logical_plan,
+                scans: built.scans,
             })
         }
     }

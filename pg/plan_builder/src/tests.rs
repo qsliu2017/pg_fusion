@@ -5,8 +5,9 @@ use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::Column;
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::{lit, Operator};
+use df_catalog::ResolvedTable;
 use pg_statistics::{PgColumnStats, PgScanEstimate, PgUniqueKey};
-use scan_sql::PgRelation;
+use scan_sql::{pg_type_metadata, PgRelation};
 
 const TEST_IDENTIFIER_MAX_BYTES: usize = 63;
 
@@ -351,6 +352,89 @@ fn multiple_table_scans_get_sequential_ids() {
 }
 
 #[test]
+fn preplanned_logical_plan_uses_shared_scan_building() {
+    let source = Arc::new(PgPlanningTableSource::new(user_table())) as Arc<dyn TableSource>;
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::from_name("id"))),
+        Operator::Gt,
+        Box::new(lit(10_i64)),
+    ));
+    let table_scan = TableScan::try_new(
+        TableReference::bare("users"),
+        source,
+        Some(vec![0]),
+        vec![filter],
+        None,
+    )
+    .unwrap();
+
+    let built = build_preplanned_logical_plan(
+        LogicalPlan::TableScan(table_scan),
+        PlanBuilderConfig {
+            target_partitions: 1,
+            identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+            first_scan_id: 7,
+            ..PlanBuilderConfig::default()
+        },
+    )
+    .expect("preplanned logical plan should build scan leaves");
+
+    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scans[0].scan_id.get(), 7);
+    assert_eq!(
+        built.scans[0].compiled_scan.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"id\" > 10)"
+    );
+    assert!(!contains_table_scan(&built.logical_plan));
+    assert_eq!(count_pg_scan_nodes(&built.logical_plan), 1);
+}
+
+#[test]
+fn frontend_logical_plan_builds_scans_before_optimizer_can_fold_pg_typed_literals() {
+    let source = Arc::new(PgPlanningTableSource::new(user_table())) as Arc<dyn TableSource>;
+    let left = Expr::Literal(
+        datafusion_common::ScalarValue::Utf8View(Some("a ".into())),
+        Some(pg_type_metadata(1042, 6, 0)),
+    );
+    let right = Expr::Literal(
+        datafusion_common::ScalarValue::Utf8View(Some("a".into())),
+        Some(pg_type_metadata(1042, 5, 0)),
+    );
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(left),
+        Operator::Eq,
+        Box::new(right),
+    ));
+    let table_scan = TableScan::try_new(
+        TableReference::bare("users"),
+        source,
+        Some(vec![0]),
+        vec![filter],
+        None,
+    )
+    .unwrap();
+
+    let built = build_frontend_logical_plan(
+        LogicalPlan::TableScan(table_scan),
+        PlanBuilderConfig {
+            target_partitions: 1,
+            identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+            first_scan_id: 7,
+            ..PlanBuilderConfig::default()
+        },
+    )
+    .expect("frontend logical plan should build scans before DataFusion optimization");
+
+    assert_eq!(built.scans.len(), 1);
+    assert_eq!(
+        built.scans[0].compiled_scan.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (CAST('a ' AS CHARACTER(2)) = CAST('a' AS CHARACTER(1)))"
+    );
+    assert!(!contains_table_scan(&built.logical_plan));
+    assert_eq!(count_pg_scan_nodes(&built.logical_plan), 1);
+}
+
+#[test]
 fn residual_filters_are_restored_and_extra_columns_projected_away() {
     let source = Arc::new(PgPlanningTableSource::new(user_table())) as Arc<dyn TableSource>;
     let regex_filter = Expr::BinaryExpr(BinaryExpr::new(
@@ -366,21 +450,24 @@ fn residual_filters_are_restored_and_extra_columns_projected_away() {
         None,
     )
     .unwrap();
-    let mut lowerer = ScanLowerer::new(PlanBuilderConfig {
+    let mut scan_builder = PgScanBuilder::new(PlanBuilderConfig {
         target_partitions: 1,
         identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
         first_scan_id: 1,
         ..PlanBuilderConfig::default()
     });
 
-    let plan = lowerer
-        .lower(LogicalPlan::TableScan(table_scan))
-        .expect("lower residual scan");
+    let plan = scan_builder
+        .build_scans(LogicalPlan::TableScan(table_scan))
+        .expect("build residual scan");
 
-    assert_eq!(lowerer.scans.len(), 1);
-    assert_eq!(lowerer.scans[0].compiled_scan.output_columns, vec![0, 1]);
+    assert_eq!(scan_builder.scans.len(), 1);
     assert_eq!(
-        lowerer.scans[0].compiled_scan.residual_filter_columns,
+        scan_builder.scans[0].compiled_scan.output_columns,
+        vec![0, 1]
+    );
+    assert_eq!(
+        scan_builder.scans[0].compiled_scan.residual_filter_columns,
         vec![1]
     );
     assert_eq!(plan.schema().fields().len(), 1);
@@ -405,19 +492,22 @@ fn residual_filters_disable_local_row_cap_but_keep_planner_hint() {
         Some(10),
     )
     .unwrap();
-    let mut lowerer = ScanLowerer::new(PlanBuilderConfig {
+    let mut scan_builder = PgScanBuilder::new(PlanBuilderConfig {
         target_partitions: 1,
         identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
         first_scan_id: 1,
         ..PlanBuilderConfig::default()
     });
 
-    let _ = lowerer
-        .lower(LogicalPlan::TableScan(table_scan))
-        .expect("lower residual scan");
+    let _ = scan_builder
+        .build_scans(LogicalPlan::TableScan(table_scan))
+        .expect("build residual scan");
 
-    assert_eq!(lowerer.scans[0].fetch_hints.planner_fetch_hint, Some(10));
-    assert_eq!(lowerer.scans[0].fetch_hints.local_row_cap, None);
+    assert_eq!(
+        scan_builder.scans[0].fetch_hints.planner_fetch_hint,
+        Some(10)
+    );
+    assert_eq!(scan_builder.scans[0].fetch_hints.local_row_cap, None);
 }
 
 #[test]

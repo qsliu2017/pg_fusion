@@ -64,7 +64,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use arrow_schema::{Field, Schema, SchemaRef};
-use datafusion_common::TableReference;
+use datafusion_common::{Result as DataFusionResult, TableReference};
+use datafusion_expr::{Expr, TableProviderFilterPushDown, TableSource};
 use pg_type::{arrow_type_for_pg_type, PgTypeRef};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -117,6 +118,44 @@ pub trait CatalogResolver {
     /// Schema-qualified references resolve through PostgreSQL explicit-namespace
     /// lookup. Catalog-qualified references are rejected.
     fn resolve_table(&self, table: &TableReference) -> Result<ResolvedTable, ResolveError>;
+}
+
+/// DataFusion planning source for a resolved PostgreSQL relation.
+///
+/// This type intentionally lives with catalog resolution rather than with any
+/// SQL parser frontend. Typed query-tree lowering and SQL-text planning both
+/// use it as the DataFusion `TableSource` marker that later scan lowering
+/// recognizes and turns into a PostgreSQL-owned scan stream.
+#[derive(Debug)]
+pub struct PgPlanningTableSource {
+    resolved: ResolvedTable,
+}
+
+impl PgPlanningTableSource {
+    pub fn new(resolved: ResolvedTable) -> Self {
+        Self { resolved }
+    }
+
+    pub fn resolved(&self) -> &ResolvedTable {
+        &self.resolved
+    }
+}
+
+impl TableSource for PgPlanningTableSource {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.resolved.schema)
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+    }
 }
 
 /// pgrx-backed resolver against live PostgreSQL catalogs.

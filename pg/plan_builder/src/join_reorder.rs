@@ -8,7 +8,7 @@ use datafusion_expr::logical_plan::{
     TableScan,
 };
 use datafusion_expr::Expr;
-use df_catalog::ResolvedTable;
+use df_catalog::{PgPlanningTableSource, ResolvedTable};
 use join_order::{rel_bit, BuildSide, Edge, EdgeFlags, JoinKind, Problem, RelSet, RelStats};
 use pg_statistics::{
     estimate_equi_join_selectivity, EquiJoinInput, EstimateOptions, PgColumnStats, PgScanEstimate,
@@ -16,7 +16,7 @@ use pg_statistics::{
 };
 use scan_sql::{compile_scan, CompileScanInput, LimitLowering};
 
-use crate::{PgPlanningTableSource, PlanBuildError, PlanBuilderConfig};
+use crate::{PlanBuildError, PlanBuilderConfig};
 
 /// Statistics source used by join reordering.
 pub trait JoinStatsProvider: Clone + Send + Sync {

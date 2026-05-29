@@ -11,8 +11,11 @@ importance: 0.7
 
 `pg/frontend` is the experimental PostgreSQL typed-tree frontend. It reads a
 live analyzed `pg_sys::Query`, copies PostgreSQL OID/typmod/collation metadata
-into a stable Rust IR, and compiles the supported subset into a DataFusion
-`LogicalPlan` with `PgScanNode` leaves.
+into a stable Rust IR, and compiles the supported subset into an ordinary
+DataFusion `LogicalPlan` with resolved PostgreSQL table-source leaves. The
+host-side planning pipeline then builds those leaves into PostgreSQL scan nodes
+and normalizes root output types. This keeps `pg_frontend` focused on
+PostgreSQL query-tree semantics instead of duplicating scan-building policy.
 
 PostgreSQL major-version layout differences terminate at `adapter/`. Each build
 targets exactly one PostgreSQL major selected by Cargo feature; today only
@@ -35,9 +38,11 @@ PostgreSQL-owned until the IR and scan SQL can preserve them explicitly.
 Frontend `CustomScan` nodes store a versioned serialized `PgQuery` IR in
 `custom_private`. They must not store raw PostgreSQL `Query*` pointers or Rust
 `Arc<LogicalPlan>` values because PostgreSQL plan nodes can be copied and
-serialized by core code. `BeginCustomScan` deserializes the IR and recompiles it
-through `pg_frontend`, so supported frontend queries avoid SQL re-parsing during
-execution while staying PostgreSQL-plan-node safe.
+serialized by core code. `BeginCustomScan` deserializes the IR, recompiles it
+through `pg_frontend`, and sends the resulting typed DataFusion plan through
+the frontend scan-building pipeline before execution. Supported frontend
+queries avoid SQL re-parsing during execution while staying
+PostgreSQL-plan-node safe.
 
 The design rule is that PostgreSQL analyzed metadata is the boundary source of
 truth. DataFusion schema is a transport/execution representation, not authority
@@ -66,7 +71,9 @@ supported scalar operand types with `bool` results. This keeps user-defined
 operators with builtin spellings, mixed-type comparison operators, arithmetic,
 and PostgreSQL-specific operator semantics fail-closed until scan SQL can
 preserve them explicitly.
-`WHERE` filters must fully compile into PostgreSQL scan SQL; residual
-DataFusion filters are rejected. `SELECT` targets do not compile PostgreSQL
-operator expressions in v1 because scan SQL cannot yet project expressions
-with PostgreSQL semantics.
+Frontend `WHERE` filters must reach `scan_sql` before generic DataFusion
+optimization can fold or rewrite them. After scan building, those filters must
+fully compile into PostgreSQL scan SQL; residual DataFusion filters are
+rejected before execution. `SELECT` targets do not compile PostgreSQL operator
+expressions in v1 because scan SQL cannot yet project expressions with
+PostgreSQL semantics.

@@ -54,7 +54,7 @@ and diagnostics are covered in [Configuration](configuration.md#worker-spill).
 ## Planning Boundary
 
 The current runtime path still uses SQL-text DataFusion planning as a bootstrap.
-PostgreSQL analyzed query-tree lowering is the intended direction.
+PostgreSQL analyzed query-tree planning is the intended direction.
 
 See the [Roadmap](roadmap.md) for why that matters for PostgreSQL types, casts,
 collations, operators, and parameters.

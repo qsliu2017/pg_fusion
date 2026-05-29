@@ -1,7 +1,7 @@
 # plan_builder
 
 `plan_builder` builds backend-side DataFusion logical plans whose PostgreSQL
-table leaves are lowered into `scan_node::PgScanNode`.
+table leaves are built as `scan_node::PgScanNode`.
 
 The crate is intentionally a planning bridge:
 
@@ -11,7 +11,7 @@ The crate is intentionally a planning bridge:
 - PostgreSQL scan leaves are represented by `scan_node::PgScanSpec`
 - eligible inner/cross join components are reordered with PostgreSQL
   statistics through `pg_statistics` and the standalone `join_order` optimizer
-- non-recursive CTEs referenced more than once are lowered through
+- non-recursive CTEs referenced more than once are built through
   `scan_node::PgCteRefNode` so the worker can materialize them once and reuse
   the same batches
 - snapshot ownership, plan serialization, backend scan serving, and page
@@ -33,22 +33,22 @@ PostgreSQL plan that contains `Gather` or other PostgreSQL parallel scan nodes.
 
 Filter pushdown is deliberately two-stage. The planning `TableSource` reports
 filters as exactly pushable so DataFusion attaches them to `TableScan`. During
-lowering, `scan_sql` recompiles those filters and returns any unsupported
+scan building, `scan_sql` recompiles those filters and returns any unsupported
 predicates as residual filters. `plan_builder` restores those residual
 predicates above `PgScanNode` and projects away residual-only columns if needed.
 
 Subquery expressions are validated after DataFusion logical optimization. If
 DataFusion decorrelates or rewrites them into joins, aggregates, projections,
-and filters, `plan_builder` can lower the remaining table leaves normally.
+and filters, `plan_builder` can build the remaining table leaves normally.
 Residual `EXISTS (...)`, `IN (SELECT ...)`, scalar subqueries,
 `LogicalPlan::Subquery`, or correlated `OuterReferenceColumn` nodes are still
-rejected before lowering so the later `plan_codec` contract only needs to
+rejected before scan building so the later `plan_codec` contract only needs to
 round-trip ordinary relational operators plus PostgreSQL leaf scans.
 
 DataFusion normally clones CTE plans at every reference. Before calling
 `SqlToRel`, `plan_builder` rewrites multi-use CTE definitions to synthetic
 planning table sources and plans the original CTE body separately. During scan
-lowering, each synthetic source becomes a `PgCteRefNode` with the lowered CTE
+building, each synthetic source becomes a `PgCteRefNode` with the built CTE
 definition as its child. This preserves PostgreSQL-style "compute once, read
 many" behavior for floating aggregates and other non-bit-stable computations.
 

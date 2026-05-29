@@ -420,6 +420,36 @@ pub(crate) fn frontend_mode_smoke() {
         "supported frontend query should use pg_frontend path: {frontend_explain}"
     );
 
+    let const_bpchar_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("SELECT id FROM {table_name} WHERE id = 2 AND bpchar 'a ' = bpchar 'a'"),
+    );
+    assert_eq!(
+        const_bpchar_rows,
+        vec!["2"],
+        "frontend constant bpchar predicate should be evaluated by PostgreSQL scan SQL"
+    );
+
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TABLE {table_name}_bpchar (id integer NOT NULL, marker char(2) NOT NULL);
+            INSERT INTO {table_name}_bpchar (id, marker)
+            VALUES (1, 'a'), (2, 'b')
+            "
+        ),
+    );
+    let column_bpchar_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("SELECT id FROM {table_name}_bpchar WHERE marker = 'a'"),
+    );
+    assert_eq!(
+        column_bpchar_rows,
+        vec!["1"],
+        "frontend bpchar column predicate should match PostgreSQL trailing-space semantics"
+    );
+
     let only_explain = simple_query_first_column_rows_tx(
         &mut tx,
         &format!("EXPLAIN (VERBOSE) SELECT id FROM ONLY {table_name} WHERE id = 2"),

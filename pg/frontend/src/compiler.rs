@@ -2,17 +2,15 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use arrow_schema::{DataType, Field};
-use datafusion_common::{Column, DFSchema, ScalarValue};
+use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::expr::BinaryExpr;
-use datafusion_expr::logical_plan::LogicalPlan;
-use datafusion_expr::logical_plan::Projection;
-use datafusion_expr::{Expr, Operator};
-use df_catalog::{CatalogResolver, ResolvedTable};
+use datafusion_expr::logical_plan::{LogicalPlan, Projection, TableScan};
+use datafusion_expr::{Expr, Operator, TableSource};
+use df_catalog::{CatalogResolver, PgPlanningTableSource, ResolvedTable};
 #[cfg(test)]
 use pg_type::arrow_type_for_pg_type;
 use pg_type::{is_text_like_type, scalar_for_pg_const};
-use scan_node::{PgScanId, PgScanNode, PgScanSpec};
-use scan_sql::{compile_scan, pg_type_metadata, CompileScanInput, LimitLowering};
+use scan_sql::pg_type_metadata;
 
 use crate::error::PgFrontendError;
 #[cfg(test)]
@@ -24,13 +22,11 @@ use crate::ir::{
 #[derive(Debug)]
 pub struct CompiledQuery {
     pub logical_plan: LogicalPlan,
-    pub scans: Vec<Arc<PgScanSpec>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompileConfig {
     pub identifier_max_bytes: usize,
-    pub first_scan_id: u64,
 }
 
 pub fn compile_query<R: CatalogResolver + Send + Sync>(
@@ -40,13 +36,13 @@ pub fn compile_query<R: CatalogResolver + Send + Sync>(
 ) -> Result<CompiledQuery, PgFrontendError> {
     validate_supported_query_shape(&query)?;
     let relation = single_relation(&query)?;
+    validate_identifier_len(&relation.schema, config.identifier_max_bytes, "schema")?;
+    validate_identifier_len(&relation.name, config.identifier_max_bytes, "table")?;
     let table_ref = datafusion_common::TableReference::partial(
         relation.schema.as_str(),
         relation.name.as_str(),
     );
     let resolved = resolver.resolve_table(&table_ref)?;
-    let source_schema =
-        DFSchema::try_from_qualified_schema(table_ref.clone(), resolved.schema.as_ref())?;
 
     let filter = query
         .selection
@@ -55,34 +51,29 @@ pub fn compile_query<R: CatalogResolver + Send + Sync>(
         .transpose()?;
     let filters = filter.into_iter().collect::<Vec<_>>();
     let scan_projection = visible_target_projection(&query, &resolved)?;
-    let compiled = compile_scan(CompileScanInput {
-        relation: &resolved.relation,
-        schema: resolved.schema.as_ref(),
-        identifier_max_bytes: config.identifier_max_bytes,
-        projection: Some(&scan_projection),
-        filters: &filters,
-        requested_limit: None,
-        limit_lowering: LimitLowering::ExternalHint,
-    })?;
-    ensure_no_residual_filters(&compiled.residual_filters)?;
-    let spec = Arc::new(PgScanSpec::try_new(
-        PgScanId::new(config.first_scan_id),
-        resolved.table_oid,
-        resolved.relation.clone(),
-        &source_schema,
-        compiled,
-    )?);
-    let mut plan = PgScanNode::new(Arc::clone(&spec)).into_logical_plan();
+    let source = Arc::new(PgPlanningTableSource::new(resolved.clone())) as Arc<dyn TableSource>;
+    let table_scan = TableScan::try_new(table_ref, source, Some(scan_projection), filters, None)?;
+    let mut plan = LogicalPlan::TableScan(table_scan);
 
     let projection = visible_targets(&query)
         .map(|target| compile_target_expr(target, &query, &resolved))
         .collect::<Result<Vec<_>, _>>()?;
     plan = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(plan))?);
 
-    Ok(CompiledQuery {
-        logical_plan: plan,
-        scans: vec![spec],
-    })
+    Ok(CompiledQuery { logical_plan: plan })
+}
+
+fn validate_identifier_len(
+    identifier: &str,
+    max_bytes: usize,
+    kind: &'static str,
+) -> Result<(), PgFrontendError> {
+    if identifier.len() > max_bytes {
+        return Err(PgFrontendError::unsupported(format!(
+            "{kind} identifier `{identifier}` exceeds PostgreSQL limit of {max_bytes} bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_supported_query_shape(query: &PgQuery) -> Result<(), PgFrontendError> {
@@ -155,17 +146,6 @@ fn single_relation(query: &PgQuery) -> Result<&PgRelationRef, PgFrontendError> {
 
 fn visible_targets(query: &PgQuery) -> impl Iterator<Item = &PgTarget> {
     query.targets.iter().filter(|target| !target.resjunk)
-}
-
-fn ensure_no_residual_filters(filters: &[Expr]) -> Result<(), PgFrontendError> {
-    if filters.is_empty() {
-        Ok(())
-    } else {
-        Err(PgFrontendError::unsupported(format!(
-            "pg_frontend v1 requires all WHERE filters to execute inside PostgreSQL scan SQL; {} residual filter(s) would execute in DataFusion",
-            filters.len()
-        )))
-    }
 }
 
 fn visible_target_projection(
@@ -458,18 +438,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_residual_filters_before_datafusion_filtering() {
-        assert!(ensure_no_residual_filters(&[]).is_ok());
-
-        let residual = Expr::Literal(ScalarValue::Boolean(Some(true)), None);
-        let err = ensure_no_residual_filters(&[residual]).expect_err("residual must be rejected");
-        assert!(
-            err.to_string().contains("residual filter"),
-            "error {err} must mention residual filters"
-        );
-    }
-
-    #[test]
     fn scan_projection_uses_only_visible_target_vars() {
         let resolved = resolved_table();
         let mut query = query_for_resolved_table();
@@ -510,6 +478,36 @@ mod tests {
 
         let projection = visible_target_projection(&query, &resolved).unwrap();
         assert!(projection.is_empty());
+    }
+
+    #[test]
+    fn compile_query_builds_typed_table_scan_plan() {
+        let mut query = query_for_resolved_table();
+        query.targets = vec![target("second", target_var_attnum(2))];
+        query.selection = Some(PgExpr::BinaryOp {
+            op: PgOperator::Eq,
+            left: Box::new(target_var_attnum(1)),
+            right: Box::new(PgExpr::Const(PgConst {
+                pg_type: int4_type(),
+                value: Some(PgConstValue::Int32(1)),
+            })),
+            pg_type: type_ref(pgrx::pg_sys::BOOLOID),
+        });
+
+        let output = compile_query(
+            query,
+            &FakeResolver,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("frontend query should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(rendered.contains("Projection"), "{rendered}");
+        assert!(rendered.contains("TableScan"), "{rendered}");
+        assert!(rendered.contains("first"), "{rendered}");
+        assert!(rendered.contains("second"), "{rendered}");
     }
 
     #[test]
@@ -633,6 +631,25 @@ mod tests {
                 Field::new("second", DataType::Int32, true),
                 Field::new("unused", DataType::Int32, true),
             ])),
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeResolver;
+
+    impl CatalogResolver for FakeResolver {
+        fn resolve_table(
+            &self,
+            table: &datafusion_common::TableReference,
+        ) -> Result<ResolvedTable, df_catalog::ResolveError> {
+            if table.schema() == Some("public") && table.table() == "t" {
+                Ok(resolved_table())
+            } else {
+                Err(df_catalog::ResolveError::TableNotFound {
+                    schema: table.schema().map(ToOwned::to_owned),
+                    table: table.table().to_owned(),
+                })
+            }
         }
     }
 

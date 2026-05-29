@@ -2,7 +2,7 @@
 //!
 //! `plan_builder` accepts SQL plus DataFusion scalar parameters, resolves table
 //! metadata through `df_catalog`, runs DataFusion logical optimization, and
-//! lowers PostgreSQL table scans into [`scan_node::PgScanNode`].
+//! builds PostgreSQL table scans as [`scan_node::PgScanNode`] leaves.
 //!
 //! The result contains no snapshot identity. Snapshot ownership stays in the
 //! later backend execution state that serves scan requests.
@@ -12,8 +12,8 @@
 //! still be produced later by `slot_scan`.
 //!
 //! Subquery expressions are accepted when DataFusion can decorrelate/rewrite
-//! them into ordinary relational operators before scan lowering. Any subquery
-//! nodes that survive optimization are rejected before `PgScanNode` lowering.
+//! them into ordinary relational operators before scan building. Any subquery
+//! nodes that survive optimization are rejected before `PgScanNode` building.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -43,7 +43,7 @@ use datafusion_sql::sqlparser::ast::{
 };
 use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion_sql::sqlparser::parser::ParserError;
-use df_catalog::{CatalogResolver, PgrxCatalogResolver, ResolveError, ResolvedTable};
+use df_catalog::{CatalogResolver, PgrxCatalogResolver, ResolveError};
 use once_cell::sync::Lazy;
 use pgrx::pg_sys;
 use scan_node::{PgCteId, PgCteRefNode, PgScanId, PgScanNode, PgScanSpec};
@@ -52,6 +52,7 @@ use thiserror::Error;
 
 mod join_reorder;
 
+pub use df_catalog::PgPlanningTableSource;
 pub use join_reorder::{JoinStatsProvider, LiveJoinStatsProvider};
 
 const SPECIAL_NUMERIC_ERROR: &str =
@@ -71,10 +72,112 @@ pub struct PlanBuildInput<'a> {
 /// Output of a successful plan build.
 #[derive(Debug)]
 pub struct BuiltPlan {
-    /// Optimized logical plan with PostgreSQL table scans lowered to custom nodes.
+    /// Optimized logical plan with PostgreSQL table scans built as custom nodes.
     pub logical_plan: LogicalPlan,
     /// Query-local scan specs in allocation order.
     pub scans: Vec<Arc<PgScanSpec>>,
+}
+
+/// Build a pg_fusion execution plan from an already-typed DataFusion logical plan.
+///
+/// This is the shared post-frontend pipeline used by both SQL-text planning
+/// and PostgreSQL query-tree planning: it validates supported plan shapes,
+/// runs DataFusion optimization, applies pg_fusion join ordering, turns
+/// PostgreSQL table leaves into [`scan_node::PgScanNode`], and normalizes root
+/// output transport types.
+pub fn build_preplanned_logical_plan(
+    plan: LogicalPlan,
+    config: PlanBuilderConfig,
+) -> Result<BuiltPlan, PlanBuildError> {
+    build_preplanned_logical_plan_with_stats(plan, config, &LiveJoinStatsProvider)
+}
+
+/// [`build_preplanned_logical_plan`] with an explicit statistics provider.
+pub fn build_preplanned_logical_plan_with_stats<S>(
+    plan: LogicalPlan,
+    config: PlanBuilderConfig,
+    stats_provider: &S,
+) -> Result<BuiltPlan, PlanBuildError>
+where
+    S: JoinStatsProvider,
+{
+    let mut scan_builder = PgScanBuilder::new(config);
+    let logical_plan = build_preplanned_logical_plan_with_scan_builder(
+        plan,
+        config,
+        stats_provider,
+        &mut scan_builder,
+    )?;
+    Ok(BuiltPlan {
+        logical_plan,
+        scans: scan_builder.scans,
+    })
+}
+
+/// Build a pg_fusion execution plan for PostgreSQL query-tree frontend output.
+///
+/// The frontend path intentionally builds PostgreSQL scan leaves without first
+/// running generic DataFusion optimization. Frontend scan predicates carry
+/// PostgreSQL type metadata and must reach `scan_sql` before DataFusion can
+/// fold or rewrite them with DataFusion semantics.
+pub fn build_frontend_logical_plan(
+    plan: LogicalPlan,
+    config: PlanBuilderConfig,
+) -> Result<BuiltPlan, PlanBuildError> {
+    let mut scan_builder = PgScanBuilder::new(config);
+    let logical_plan = build_frontend_logical_plan_with_scan_builder(plan, &mut scan_builder)?;
+    reject_residual_frontend_filters(&scan_builder.scans)?;
+    Ok(BuiltPlan {
+        logical_plan,
+        scans: scan_builder.scans,
+    })
+}
+
+fn build_preplanned_logical_plan_with_scan_builder<S>(
+    plan: LogicalPlan,
+    config: PlanBuilderConfig,
+    stats_provider: &S,
+    scan_builder: &mut PgScanBuilder,
+) -> Result<LogicalPlan, PlanBuildError>
+where
+    S: JoinStatsProvider,
+{
+    validate_no_special_numeric_literals(&plan)?;
+    let optimized = optimize_logical_plan(plan, config.target_partitions)?;
+    validate_no_special_numeric_literals(&optimized)?;
+    validate_supported_plan_shape(&optimized)?;
+    let optimized = if config.join_reordering_enabled {
+        join_reorder::rewrite_join_order(optimized, config, stats_provider)?
+    } else {
+        optimized
+    };
+
+    let logical_plan = scan_builder.build_scans(optimized)?;
+    normalize_root_output_types(logical_plan).map_err(PlanBuildError::from)
+}
+
+fn build_frontend_logical_plan_with_scan_builder(
+    plan: LogicalPlan,
+    scan_builder: &mut PgScanBuilder,
+) -> Result<LogicalPlan, PlanBuildError> {
+    validate_no_special_numeric_literals(&plan)?;
+    validate_supported_plan_shape(&plan)?;
+    let logical_plan = scan_builder.build_scans(plan)?;
+    normalize_root_output_types(logical_plan).map_err(PlanBuildError::from)
+}
+
+fn reject_residual_frontend_filters(scans: &[Arc<PgScanSpec>]) -> Result<(), PlanBuildError> {
+    let count = scans
+        .iter()
+        .map(|scan| scan.compiled_scan.residual_filters.len())
+        .sum::<usize>();
+    if count == 0 {
+        Ok(())
+    } else {
+        Err(PlanBuildError::Plan(format!(
+            "pg_frontend v1 requires all WHERE filters to execute inside PostgreSQL scan SQL; {count} residual filter(s) would execute in DataFusion"
+        )))
+    }
 }
 
 /// Configuration for [`PlanBuilder`].
@@ -109,7 +212,7 @@ impl Default for PlanBuilderConfig {
     }
 }
 
-/// Build errors for SQL planning and PostgreSQL scan lowering.
+/// Build errors for SQL planning and PostgreSQL scan building.
 #[derive(Debug, Error)]
 pub enum PlanBuildError {
     #[error("failed to parse SQL: {0}")]
@@ -199,32 +302,26 @@ where
     pub fn build(&self, input: PlanBuildInput<'_>) -> Result<BuiltPlan, PlanBuildError> {
         let mut statement = parse_one_query(input.sql)?;
         let context = PgPlanningContext::new(&self.resolver, self.config);
-        let mut lowerer = ScanLowerer::new(self.config);
+        let mut scan_builder = PgScanBuilder::new(self.config);
         prepare_materialized_ctes(
             &mut statement,
             &context,
             &input.params,
-            &mut lowerer,
+            &mut scan_builder,
             &self.stats_provider,
         )?;
         let planner = SqlToRel::new(&context);
         let plan = planner.statement_to_plan(statement)?;
         let plan = plan.with_param_values(input.params)?;
-        validate_no_special_numeric_literals(&plan)?;
-        let optimized = optimize_logical_plan(plan, self.config.target_partitions)?;
-        validate_no_special_numeric_literals(&optimized)?;
-        validate_supported_plan_shape(&optimized)?;
-        let optimized = if self.config.join_reordering_enabled {
-            join_reorder::rewrite_join_order(optimized, self.config, &self.stats_provider)?
-        } else {
-            optimized
-        };
-
-        let logical_plan = lowerer.lower(optimized)?;
-        let logical_plan = normalize_root_output_types(logical_plan)?;
+        let logical_plan = build_preplanned_logical_plan_with_scan_builder(
+            plan,
+            self.config,
+            &self.stats_provider,
+            &mut scan_builder,
+        )?;
         Ok(BuiltPlan {
             logical_plan,
-            scans: lowerer.scans,
+            scans: scan_builder.scans,
         })
     }
 }
@@ -585,7 +682,7 @@ fn prepare_materialized_ctes<R, S>(
     statement: &mut DFStatement,
     context: &PgPlanningContext<'_, R>,
     params: &[ScalarValue],
-    lowerer: &mut ScanLowerer,
+    scan_builder: &mut PgScanBuilder,
     stats_provider: &S,
 ) -> Result<(), PlanBuildError>
 where
@@ -641,7 +738,7 @@ where
                 definition_statement,
                 context,
                 params,
-                lowerer,
+                scan_builder,
                 stats_provider,
             )?;
             let synthetic_table = synthetic_cte_table_name(cte_id);
@@ -754,7 +851,7 @@ fn build_materialized_cte_definition<R, S>(
     statement: DFStatement,
     context: &PgPlanningContext<'_, R>,
     params: &[ScalarValue],
-    lowerer: &mut ScanLowerer,
+    scan_builder: &mut PgScanBuilder,
     stats_provider: &S,
 ) -> Result<LogicalPlan, PlanBuildError>
 where
@@ -771,7 +868,7 @@ where
     } else {
         optimized
     };
-    lowerer.lower(optimized)
+    scan_builder.build_scans(optimized)
 }
 
 fn normalize_ident(ident: Ident) -> String {
@@ -916,38 +1013,6 @@ fn validate_identifier(
 }
 
 #[derive(Debug)]
-struct PgPlanningTableSource {
-    resolved: ResolvedTable,
-}
-
-impl PgPlanningTableSource {
-    fn new(resolved: ResolvedTable) -> Self {
-        Self { resolved }
-    }
-
-    fn resolved(&self) -> &ResolvedTable {
-        &self.resolved
-    }
-}
-
-impl TableSource for PgPlanningTableSource {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.resolved.schema)
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
-    }
-}
-
-#[derive(Debug)]
 struct PgPlanningCteSource {
     cte_id: PgCteId,
     name: String,
@@ -1071,13 +1136,13 @@ fn register_window_udf(registry: &mut HashMap<String, Arc<WindowUDF>>, udf: Arc<
 }
 
 #[derive(Debug)]
-struct ScanLowerer {
+struct PgScanBuilder {
     config: PlanBuilderConfig,
     next_scan_id: u64,
     scans: Vec<Arc<PgScanSpec>>,
 }
 
-impl ScanLowerer {
+impl PgScanBuilder {
     fn new(config: PlanBuilderConfig) -> Self {
         Self {
             next_scan_id: config.first_scan_id,
@@ -1086,21 +1151,21 @@ impl ScanLowerer {
         }
     }
 
-    fn lower(&mut self, plan: LogicalPlan) -> Result<LogicalPlan, PlanBuildError> {
-        let transformed = plan.transform_up(|node| self.lower_node(node))?;
+    fn build_scans(&mut self, plan: LogicalPlan) -> Result<LogicalPlan, PlanBuildError> {
+        let transformed = plan.transform_up(|node| self.build_node(node))?;
         Ok(transformed.data)
     }
 
-    fn lower_node(&mut self, plan: LogicalPlan) -> DataFusionResult<Transformed<LogicalPlan>> {
+    fn build_node(&mut self, plan: LogicalPlan) -> DataFusionResult<Transformed<LogicalPlan>> {
         match plan {
             LogicalPlan::TableScan(table_scan) => {
-                self.lower_table_scan(table_scan).map(Transformed::yes)
+                self.build_table_scan(table_scan).map(Transformed::yes)
             }
             other => Ok(Transformed::no(other)),
         }
     }
 
-    fn lower_table_scan(&mut self, table_scan: TableScan) -> DataFusionResult<LogicalPlan> {
+    fn build_table_scan(&mut self, table_scan: TableScan) -> DataFusionResult<LogicalPlan> {
         let cte_source = table_scan
             .source
             .as_any()
@@ -1113,7 +1178,7 @@ impl ScanLowerer {
                 )
             });
         if let Some((cte_id, name, definition)) = cte_source {
-            return self.lower_cte_scan(table_scan, cte_id, name, definition);
+            return self.build_cte_ref(table_scan, cte_id, name, definition);
         }
 
         let source = table_scan
@@ -1175,7 +1240,7 @@ impl ScanLowerer {
         Ok(plan)
     }
 
-    fn lower_cte_scan(
+    fn build_cte_ref(
         &mut self,
         table_scan: TableScan,
         cte_id: PgCteId,

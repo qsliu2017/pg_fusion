@@ -3,11 +3,11 @@
 //! This crate is the first step away from SQL-text planning at the
 //! PostgreSQL/DataFusion boundary. It copies PostgreSQL's analyzed type
 //! metadata into a stable Rust IR, then compiles the supported subset into a
-//! DataFusion logical plan with `PgScanNode` leaves.
+//! DataFusion logical plan with resolved PostgreSQL table-source leaves.
 //!
 //! The current version is intentionally narrow and fail-closed. The production
-//! planner can try it for supported query shapes and fall back to the legacy
-//! SQL-text planner for broader coverage.
+//! planner can try it for supported query shapes and then send the typed
+//! logical plan through the shared pg_fusion post-planning pipeline.
 
 mod adapter;
 mod codec;
@@ -27,20 +27,16 @@ pub use ir::{
 
 use df_catalog::{CatalogResolver, PgrxCatalogResolver};
 use pgrx::pg_sys;
-use scan_node::PgScanSpec;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PgFrontendConfig {
     pub identifier_max_bytes: usize,
-    pub first_scan_id: u64,
 }
 
 impl Default for PgFrontendConfig {
     fn default() -> Self {
         Self {
             identifier_max_bytes: pg_identifier_max_bytes(),
-            first_scan_id: 1,
         }
     }
 }
@@ -105,12 +101,10 @@ where
             &self.resolver,
             compiler::CompileConfig {
                 identifier_max_bytes: self.config.identifier_max_bytes,
-                first_scan_id: self.config.first_scan_id,
             },
         )?;
         Ok(PgFrontendOutput {
             logical_plan: result.logical_plan,
-            scans: result.scans,
             result_targets,
             diagnostics: Vec::new(),
         })
@@ -135,7 +129,6 @@ where
 #[derive(Debug)]
 pub struct PgFrontendOutput {
     pub logical_plan: datafusion_expr::logical_plan::LogicalPlan,
-    pub scans: Vec<Arc<PgScanSpec>>,
     pub result_targets: Vec<PgTarget>,
     pub diagnostics: Vec<String>,
 }
