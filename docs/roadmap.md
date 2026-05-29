@@ -48,6 +48,12 @@ The target direction is:
 This should reduce compatibility code around temporal values, numeric values,
 UUIDs, typmods, parameters, and pushed PostgreSQL scan SQL.
 
+The first production step is in place as a migration path: supported
+single-relation projection/filter queries can be planned through `pg_frontend`,
+while unsupported shapes fall back to the existing SQL-text planner unless the
+frontend is explicitly required. The remaining work is to expand typed-query
+coverage until the fallback is no longer needed for common analytical queries.
+
 ## PostgreSQL Version Support
 
 The current public setup and test commands are PostgreSQL 17 focused.

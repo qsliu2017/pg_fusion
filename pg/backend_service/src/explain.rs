@@ -16,29 +16,26 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_common::{DataFusionError, Result as DFResult};
 use datafusion_expr::registry::FunctionRegistry;
 use futures::executor::block_on;
-use plan_builder::{PlanBuildInput, PlanBuilder};
 use scan_node::{insert_page_materializers, PgScanExecFactory, PgScanExtensionPlanner, PgScanSpec};
 use slot_scan::{explain_scan, ScanExplainOptions, ScanOptions};
 
 use crate::{
-    BackendServiceError, CtidBlockRange, ExplainInput, ExplainScanParallelism,
-    ExplainScanParallelismStrategy, ExplainScanProducerRole,
+    build_execution_plan, BackendServiceError, CtidBlockRange, ExplainInput,
+    ExplainScanParallelism, ExplainScanParallelismStrategy, ExplainScanProducerRole,
 };
 
 pub(crate) fn render_physical_explain(
     input: ExplainInput<'_>,
 ) -> Result<String, BackendServiceError> {
     let ExplainInput {
-        sql,
-        params,
+        plan_source,
         options,
         config,
         scan_worker_launcher,
         actual_scan_parallelism,
     } = input;
-    let built = PlanBuilder::new()
-        .with_config(config.plan_builder_config())
-        .build(PlanBuildInput { sql, params })?;
+    let source_label = plan_source.label();
+    let built = build_execution_plan(plan_source, &config)?;
 
     let planned_scan_parallelism = if let Some(launcher) = scan_worker_launcher {
         launcher.explain_query(crate::ScanWorkerQueryInput {
@@ -70,10 +67,11 @@ pub(crate) fn render_physical_explain(
     })
     .map_err(BackendServiceError::PhysicalPlan)?;
 
-    Ok(render_physical_plan(
-        physical_plan.as_ref(),
-        options.verbose,
-    ))
+    let mut rendered = render_physical_plan(physical_plan.as_ref(), options.verbose);
+    if options.verbose {
+        rendered.push_str(&format!("Planning Source: {source_label}\n"));
+    }
+    Ok(rendered)
 }
 
 fn render_pg_leaf_explains(

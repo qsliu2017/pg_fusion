@@ -5,16 +5,19 @@
 //! metadata into a stable Rust IR, then compiles the supported subset into a
 //! DataFusion logical plan with `PgScanNode` leaves.
 //!
-//! The current version is intentionally narrow and fail-closed. It is not wired
-//! into the production planner hook by default.
+//! The current version is intentionally narrow and fail-closed. The production
+//! planner can try it for supported query shapes and fall back to the legacy
+//! SQL-text planner for broader coverage.
 
 mod adapter;
+mod codec;
 mod compiler;
 mod error;
 mod ir;
 mod operator;
 pub mod shippability;
 
+pub use codec::{decode_query_ir, encode_query_ir, PgFrontendCodecError};
 pub use compiler::CompiledQuery;
 pub use error::PgFrontendError;
 pub use ir::{
@@ -78,6 +81,41 @@ impl<R> PgFrontend<R>
 where
     R: CatalogResolver + Send + Sync,
 {
+    /// Copy PostgreSQL's analyzed `Query` tree into the stable frontend IR.
+    ///
+    /// # Safety
+    ///
+    /// `query` must point to a live PostgreSQL analyzed `Query` allocated in a
+    /// PostgreSQL memory context that remains valid for the duration of this
+    /// call.
+    pub unsafe fn read_query(&self, query: *mut pg_sys::Query) -> Result<PgQuery, PgFrontendError> {
+        unsafe { adapter::read_query(query) }
+    }
+
+    /// Build a DataFusion logical plan from a stable PostgreSQL query IR.
+    pub fn build_query(&self, pg_query: PgQuery) -> Result<PgFrontendOutput, PgFrontendError> {
+        let result_targets = pg_query
+            .targets
+            .iter()
+            .filter(|target| !target.resjunk)
+            .cloned()
+            .collect();
+        let result = compiler::compile_query(
+            pg_query,
+            &self.resolver,
+            compiler::CompileConfig {
+                identifier_max_bytes: self.config.identifier_max_bytes,
+                first_scan_id: self.config.first_scan_id,
+            },
+        )?;
+        Ok(PgFrontendOutput {
+            logical_plan: result.logical_plan,
+            scans: result.scans,
+            result_targets,
+            diagnostics: Vec::new(),
+        })
+    }
+
     /// Build a DataFusion logical plan from a PostgreSQL analyzed `Query`.
     ///
     /// # Safety
@@ -89,26 +127,8 @@ where
         &self,
         query: *mut pg_sys::Query,
     ) -> Result<PgFrontendOutput, PgFrontendError> {
-        let pg_query = unsafe { adapter::read_query(query) }?;
-        let result = compiler::compile_query(
-            pg_query.clone(),
-            &self.resolver,
-            compiler::CompileConfig {
-                identifier_max_bytes: self.config.identifier_max_bytes,
-                first_scan_id: self.config.first_scan_id,
-            },
-        )?;
-        let result_targets = pg_query
-            .targets
-            .into_iter()
-            .filter(|target| !target.resjunk)
-            .collect();
-        Ok(PgFrontendOutput {
-            logical_plan: result.logical_plan,
-            scans: result.scans,
-            result_targets,
-            diagnostics: Vec::new(),
-        })
+        let pg_query = unsafe { self.read_query(query) }?;
+        self.build_query(pg_query)
     }
 }
 

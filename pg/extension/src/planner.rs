@@ -5,6 +5,7 @@ use std::ptr::null_mut;
 
 use arrow_schema::DataType;
 use datafusion::logical_expr::LogicalPlan;
+use pg_frontend::{PgFrontend, PgFrontendConfig, PgTarget};
 use pg_type::pg_oid_for_arrow_type;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
@@ -15,7 +16,8 @@ use pgrx::pg_sys::{
 use pgrx::prelude::*;
 
 use crate::custom_scan::scan_methods;
-use crate::guc::ENABLE;
+use crate::guc::{FrontendMode, HostConfig, ENABLE};
+use crate::plan_payload::{encode_frontend_query, encode_sql_text};
 use crate::utility_hook::skip_planner;
 
 static mut PREV_PLANNER_HOOK: planner_hook_type = None;
@@ -81,6 +83,7 @@ unsafe fn query_requires_vanilla_planner(parse: *mut Query) -> bool {
 
     rtable_requires_vanilla_planner((*parse).rtable)
         || cte_list_requires_vanilla_planner((*parse).cteList)
+        || query_contains_param(parse)
 }
 
 unsafe fn rtable_requires_vanilla_planner(rtable: *mut List) -> bool {
@@ -91,7 +94,7 @@ unsafe fn rtable_requires_vanilla_planner(rtable: *mut List) -> bool {
         }
         match (*rte).rtekind {
             pgrx::pg_sys::RTEKind::RTE_RELATION => {
-                if relation_is_catalog_or_toast((*rte).relid) {
+                if !(*rte).inh || relation_is_catalog_or_toast((*rte).relid) {
                     return true;
                 }
             }
@@ -107,6 +110,41 @@ unsafe fn rtable_requires_vanilla_planner(rtable: *mut List) -> bool {
         }
     }
     false
+}
+
+unsafe fn query_contains_param(parse: *mut Query) -> bool {
+    if parse.is_null() {
+        return false;
+    }
+
+    let mut found = false;
+    pgrx::pg_sys::query_tree_walker(
+        parse,
+        Some(param_node_walker),
+        (&mut found as *mut bool).cast::<c_void>(),
+        0,
+    );
+    found
+}
+
+unsafe extern "C-unwind" fn param_node_walker(node: *mut Node, context: *mut c_void) -> bool {
+    if node.is_null() {
+        return false;
+    }
+
+    match (*node).type_ {
+        NodeTag::T_Query => pgrx::pg_sys::query_tree_walker(
+            node.cast::<Query>(),
+            Some(param_node_walker),
+            context,
+            0,
+        ),
+        NodeTag::T_Param => {
+            *context.cast::<bool>() = true;
+            true
+        }
+        _ => pgrx::pg_sys::expression_tree_walker(node, Some(param_node_walker), context),
+    }
 }
 
 unsafe fn cte_list_requires_vanilla_planner(cte_list: *mut List) -> bool {
@@ -160,8 +198,89 @@ unsafe extern "C-unwind" fn build_planned_custom_scan(
         error!("{SPECIAL_NUMERIC_ERROR}");
     }
 
-    let sql = select_sql_from_query(parse, query_string);
     let config = crate::host_config().unwrap_or_else(|err| error!("pg_fusion config error: {err}"));
+    let planned = match build_frontend_plan(parse, &config) {
+        Ok(Some(planned)) => planned,
+        Ok(None) => build_sql_text_plan(parse, query_string, &config),
+        Err(err) if config.frontend_mode == FrontendMode::Require => {
+            error!("pg_fusion query-tree frontend planning failed: {err}");
+        }
+        Err(_) => build_sql_text_plan(parse, query_string, &config),
+    };
+
+    planned.into_planned_stmt()
+}
+
+struct PlannedCustomScan {
+    custom_scan: *mut CustomScan,
+    query_id_seed: String,
+}
+
+impl PlannedCustomScan {
+    unsafe fn into_planned_stmt(self) -> *mut PlannedStmt {
+        let stmt_ptr = palloc0(size_of::<PlannedStmt>()) as *mut PlannedStmt;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.query_id_seed.hash(&mut hasher);
+        let statement = PlannedStmt {
+            type_: NodeTag::T_PlannedStmt,
+            commandType: pgrx::pg_sys::CmdType::CMD_SELECT,
+            queryId: hasher.finish(),
+            hasReturning: false,
+            hasModifyingCTE: false,
+            canSetTag: false,
+            transientPlan: false,
+            dependsOnRole: false,
+            parallelModeNeeded: false,
+            planTree: self.custom_scan as *mut Plan,
+            rtable: null_mut(),
+            permInfos: null_mut(),
+            resultRelations: null_mut(),
+            subplans: null_mut(),
+            rewindPlanIDs: null_mut(),
+            rowMarks: null_mut(),
+            relationOids: null_mut(),
+            invalItems: null_mut(),
+            paramExecTypes: null_mut(),
+            utilityStmt: null_mut(),
+            stmt_location: -1,
+            stmt_len: 0,
+            ..Default::default()
+        };
+        std::ptr::write(stmt_ptr, statement);
+        stmt_ptr
+    }
+}
+
+unsafe fn build_frontend_plan(
+    parse: *mut Query,
+    config: &HostConfig,
+) -> Result<Option<PlannedCustomScan>, String> {
+    if config.frontend_mode == FrontendMode::Off {
+        return Ok(None);
+    }
+    let frontend = PgFrontend::new().with_config(PgFrontendConfig {
+        identifier_max_bytes: config.plan_builder_config().identifier_max_bytes,
+        first_scan_id: config.plan_builder_config().first_scan_id,
+    });
+    let pg_query = frontend.read_query(parse).map_err(|err| err.to_string())?;
+    let output = frontend
+        .build_query(pg_query.clone())
+        .map_err(|err| err.to_string())?;
+    let target_lists = build_custom_scan_target_lists_from_pg_targets(&output.result_targets)
+        .map_err(|err| format!("pg_fusion frontend targetlist build failed: {err}"))?;
+    let payload = encode_frontend_query(&pg_query).map_err(|err| err.to_string())?;
+    Ok(Some(PlannedCustomScan {
+        custom_scan: pack_custom_scan_payload(&payload, target_lists),
+        query_id_seed: payload,
+    }))
+}
+
+unsafe fn build_sql_text_plan(
+    parse: *mut Query,
+    query_string: *const c_char,
+    config: &HostConfig,
+) -> PlannedCustomScan {
+    let sql = select_sql_from_query(parse, query_string);
     let built = plan_builder::PlanBuilder::new()
         .with_config(config.plan_builder_config())
         .build(plan_builder::PlanBuildInput {
@@ -172,38 +291,10 @@ unsafe extern "C-unwind" fn build_planned_custom_scan(
 
     let target_lists = build_custom_scan_target_lists(&built.logical_plan)
         .unwrap_or_else(|err| error!("pg_fusion targetlist build failed: {err}"));
-    let custom_scan = pack_custom_scan(&sql, target_lists);
-
-    let stmt_ptr = palloc0(size_of::<PlannedStmt>()) as *mut PlannedStmt;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    sql.hash(&mut hasher);
-    let statement = PlannedStmt {
-        type_: NodeTag::T_PlannedStmt,
-        commandType: pgrx::pg_sys::CmdType::CMD_SELECT,
-        queryId: hasher.finish(),
-        hasReturning: false,
-        hasModifyingCTE: false,
-        canSetTag: false,
-        transientPlan: false,
-        dependsOnRole: false,
-        parallelModeNeeded: false,
-        planTree: custom_scan as *mut Plan,
-        rtable: null_mut(),
-        permInfos: null_mut(),
-        resultRelations: null_mut(),
-        subplans: null_mut(),
-        rewindPlanIDs: null_mut(),
-        rowMarks: null_mut(),
-        relationOids: null_mut(),
-        invalItems: null_mut(),
-        paramExecTypes: null_mut(),
-        utilityStmt: null_mut(),
-        stmt_location: -1,
-        stmt_len: 0,
-        ..Default::default()
-    };
-    std::ptr::write(stmt_ptr, statement);
-    stmt_ptr
+    PlannedCustomScan {
+        custom_scan: pack_custom_scan_payload(&encode_sql_text(&sql), target_lists),
+        query_id_seed: sql,
+    }
 }
 
 unsafe fn query_contains_special_numeric_const(parse: *mut Query) -> bool {
@@ -296,11 +387,14 @@ struct CustomScanTargetLists {
     scan_target_list: *mut List,
 }
 
-unsafe fn pack_custom_scan(sql: &str, target_lists: CustomScanTargetLists) -> *mut CustomScan {
-    let sql_copy = palloc0(sql.len() + 1) as *mut u8;
-    std::ptr::copy_nonoverlapping(sql.as_ptr(), sql_copy, sql.len());
+unsafe fn pack_custom_scan_payload(
+    payload: &str,
+    target_lists: CustomScanTargetLists,
+) -> *mut CustomScan {
+    let payload_copy = palloc0(payload.len() + 1) as *mut u8;
+    std::ptr::copy_nonoverlapping(payload.as_ptr(), payload_copy, payload.len());
     let query = ListCell {
-        ptr_value: pgrx::pg_sys::makeString(sql_copy.cast()) as *mut c_void,
+        ptr_value: pgrx::pg_sys::makeString(payload_copy.cast()) as *mut c_void,
     };
 
     let mut custom_scan = CustomScan::default();
@@ -313,6 +407,50 @@ unsafe fn pack_custom_scan(sql: &str, target_lists: CustomScanTargetLists) -> *m
     let ptr = palloc0(size_of::<CustomScan>()) as *mut CustomScan;
     std::ptr::write(ptr, custom_scan);
     ptr
+}
+
+fn build_custom_scan_target_lists_from_pg_targets(
+    targets: &[PgTarget],
+) -> Result<CustomScanTargetLists, String> {
+    let mut plan_target_list: *mut List = std::ptr::null_mut();
+    let mut scan_target_list: *mut List = std::ptr::null_mut();
+    for (index, target) in targets.iter().enumerate() {
+        unsafe {
+            let attr_number = i16::try_from(index + 1)
+                .map_err(|_| "custom scan output has too many columns".to_string())?;
+            let oid = Oid::from_u32(target.pg_type.oid);
+            let typmod = target.pg_type.typmod;
+            let collation = Oid::from_u32(target.pg_type.collation);
+            let plan_expr = pgrx::pg_sys::makeVar(
+                pgrx::pg_sys::INDEX_VAR,
+                attr_number,
+                oid,
+                typmod,
+                collation,
+                0,
+            );
+            let scan_expr = pgrx::pg_sys::makeNullConst(oid, typmod, collation);
+            let name = target.name.as_deref().unwrap_or("?column?");
+            let plan_entry = pgrx::pg_sys::makeTargetEntry(
+                plan_expr as *mut pgrx::pg_sys::Expr,
+                attr_number as _,
+                pstrdup(name),
+                false,
+            );
+            let scan_entry = pgrx::pg_sys::makeTargetEntry(
+                scan_expr as *mut pgrx::pg_sys::Expr,
+                attr_number as _,
+                pstrdup(name),
+                false,
+            );
+            plan_target_list = list_append_unique_ptr(plan_target_list, plan_entry as *mut c_void);
+            scan_target_list = list_append_unique_ptr(scan_target_list, scan_entry as *mut c_void);
+        }
+    }
+    Ok(CustomScanTargetLists {
+        plan_target_list,
+        scan_target_list,
+    })
 }
 
 fn build_custom_scan_target_lists(

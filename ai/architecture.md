@@ -46,12 +46,12 @@ page-backed Arrow batches.
   policy for supported OIDs, typmods, collations, Arrow transport types,
   page-layout type tags, typed literal metadata, and typed NULL/constant scalar
   conversion. PostgreSQL-bound crates still own raw `Datum`, TOAST, varlena,
-  memory-context, and tuple-slot mechanics. `pg/frontend` is the experimental typed
+  memory-context, and tuple-slot mechanics. `pg/frontend` is the typed
   PostgreSQL `Query` tree frontend; it copies analyzed PostgreSQL type metadata
   into a stable IR and lowers the supported fail-closed subset directly to
-  DataFusion logical plans. The production planner hook still uses the SQL-text
-  `plan_builder` path until this frontend covers prepared statements and
-  PostgreSQL-specific type semantics end to end.
+  DataFusion logical plans. The production planner hook can try this frontend
+  first behind `pg_fusion.frontend_mode`; unsupported frontend shapes fall back
+  to the SQL-text `plan_builder` path unless the mode is `require`.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
   by both backend planning and worker/codec decoding. Its `format(text, ...)`
   scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width
@@ -117,10 +117,11 @@ page-backed Arrow batches.
    `pg/extension/pg_compat/limitations.sql`. Root `UInt64` and `LargeUtf8`
    outputs are cast to PostgreSQL-facing `bigint`/`text` Arrow types before
    result transport. Scan leaves are then lowered to
-   `PgScanNode`/`scan_sql` descriptors. The new `pg_frontend` crate is not yet
-   on this production path; it exists to make PostgreSQL's analyzed target and
-   expression types the future source of truth rather than rediscovering them
-   from SQL text in DataFusion. Non-recursive CTEs
+   `PgScanNode`/`scan_sql` descriptors. For the subset supported by
+   `pg_frontend`, the planner instead stores a serialized typed `PgQuery` IR in
+   `CustomScan.custom_private`; `BeginCustomScan` recompiles that IR without
+   SQL re-parsing. The SQL-text `plan_builder` path remains the fallback for
+   broader query coverage. Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single
    lowered CTE producer so worker execution materializes the CTE once and
    reuses the owned batches. PostgreSQL text-like columns are represented as

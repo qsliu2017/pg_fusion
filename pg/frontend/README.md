@@ -7,7 +7,11 @@ The crate reads PostgreSQL's analyzed `Query` tree, copies the PostgreSQL type
 metadata that matters at the engine boundary, and compiles the supported subset
 into a DataFusion logical plan with `PgScanNode` leaves.
 
-The first version is intentionally fail-closed and is not wired into the
-production planner hook by default. The existing SQL-text `plan_builder` path
-continues to serve production queries while this crate grows enough coverage for
-prepared statements and PostgreSQL-specific type semantics.
+The first version is intentionally fail-closed. The production planner can try
+this frontend for its supported subset and fall back to the existing SQL-text
+`plan_builder` path for broader query coverage.
+
+The frontend payload stored in `CustomScan` is a versioned serialized `PgQuery`
+IR, not a borrowed PostgreSQL `Query*` pointer and not a raw Rust
+`LogicalPlan`. Execution recompiles that typed IR so supported frontend queries
+avoid SQL re-parsing while keeping PostgreSQL plan nodes copy-safe.

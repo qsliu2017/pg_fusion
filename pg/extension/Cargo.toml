@@ -34,6 +34,7 @@ row_estimator = { path = "../../page/row_estimator", version = "25.0" }
 pgrx = { workspace = true }
 pgrx-tests = { workspace = true, optional = true }
 postgres = { version = "0.19.10", optional = true }
+pg_frontend = { path = "../frontend", version = "25.0" }
 pg_type = { path = "../type", version = "25.0" }
 protocol = { path = "../../runtime/protocol", version = "25.0" }
 metrics = { path = "../../runtime/metrics", version = "25.0" }

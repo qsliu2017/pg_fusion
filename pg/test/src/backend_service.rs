@@ -2,8 +2,8 @@ use arrow_array::{Int32Array, StringViewArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use backend_service::{
     ActiveScanDriver, BackendService, BackendServiceConfig, BackendServiceError,
-    BeginExecutionOutput, ExecutionKey, ExplainInput, ExplainRenderOptions, OpenScanInput,
-    ScanStreamStep, ScanYieldReason, StartExecutionInput,
+    BeginExecutionOutput, ExecutionKey, ExecutionPlanSource, ExplainInput, ExplainRenderOptions,
+    OpenScanInput, ScanStreamStep, ScanYieldReason, StartExecutionInput,
 };
 use control_transport::{BackendLeaseId, BackendLeaseSlot, TransportRegion, TransportRegionLayout};
 use datafusion_common::ScalarValue;
@@ -191,8 +191,10 @@ pub fn backend_service_render_explain_uses_physical_plan_and_pg_leaf() {
     let sql = format!("SELECT id FROM {BACKEND_SERVICE_TABLE} WHERE id > 0 LIMIT 1");
 
     let rendered = BackendService::render_explain(ExplainInput {
-        sql: &sql,
-        params: Vec::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql: &sql,
+            params: Vec::new(),
+        },
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -249,8 +251,10 @@ pub fn backend_service_render_explain_uses_physical_plan_and_pg_leaf() {
     );
 
     let verbose_rendered = BackendService::render_explain(ExplainInput {
-        sql: &sql,
-        params: Vec::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql: &sql,
+            params: Vec::new(),
+        },
         options: ExplainRenderOptions {
             verbose: true,
             ..Default::default()
@@ -283,8 +287,10 @@ pub fn backend_service_render_explain_materializes_retaining_sort_input() {
     let sql = format!("SELECT id, payload FROM {BACKEND_SERVICE_TABLE} ORDER BY payload");
 
     let rendered = BackendService::render_explain(ExplainInput {
-        sql: &sql,
-        params: Vec::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql: &sql,
+            params: Vec::new(),
+        },
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -318,8 +324,10 @@ pub fn backend_service_render_explain_keeps_aggregate_scan_zero_copy() {
     let sql = format!("SELECT avg(id) FROM {BACKEND_SERVICE_TABLE}");
 
     let rendered = BackendService::render_explain(ExplainInput {
-        sql: &sql,
-        params: Vec::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql: &sql,
+            params: Vec::new(),
+        },
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -375,8 +383,10 @@ fn begin_and_finalize_execution(
     let plan_rx = plan_transport.rx();
     let begin = BackendService::begin_execution(StartExecutionInput {
         slot_id,
-        sql,
-        params: Vec::<ScalarValue>::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql,
+            params: Vec::new(),
+        },
         plan_tx: plan_transport.tx(),
         scan_slot_region: scan_slots,
         config: config.clone(),

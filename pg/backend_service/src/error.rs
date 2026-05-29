@@ -66,6 +66,8 @@ pub enum BackendServiceError {
     StateMachine(String),
     #[error("logical plan build failed: {0}")]
     PlanBuild(#[from] plan_builder::PlanBuildError),
+    #[error("PostgreSQL query-tree frontend failed: {0}")]
+    PgFrontend(#[from] pg_frontend::PgFrontendError),
     #[error("physical plan build failed: {0}")]
     PhysicalPlan(DataFusionError),
     #[error("scan preparation failed: {0}")]

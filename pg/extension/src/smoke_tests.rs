@@ -355,6 +355,92 @@ pub(crate) fn planner_bound_params_bypass_smoke() {
         .expect("parameterized query should bypass pg_fusion and execute with vanilla planner");
     let value: i64 = row.get(0);
     assert_eq!(value, 42);
+
+    let table_name = "pgf_bound_params_bypass_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TABLE {table_name} (id integer NOT NULL);
+            INSERT INTO {table_name} (id) VALUES (1)
+            "
+        ),
+    );
+    tx.batch_execute(
+        "\
+        SET LOCAL pg_fusion.frontend_mode = 2;
+        SET LOCAL plan_cache_mode = force_generic_plan;
+        PREPARE pgf_param_frontend_bypass(integer) AS
+            SELECT $1::integer AS v FROM pgf_bound_params_bypass_smoke WHERE id = 1
+        ",
+    )
+    .expect("generic prepared statement with Param nodes should prepare through vanilla planner");
+
+    let prepared_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        "EXPLAIN (VERBOSE) EXECUTE pgf_param_frontend_bypass(42)",
+    )
+    .join("\n");
+    assert!(
+        !prepared_explain.contains("Custom Scan (PgFusionScan)"),
+        "generic prepared Param query should bypass pg_fusion custom scans: {prepared_explain}"
+    );
+
+    let row = tx
+        .query_one("EXECUTE pgf_param_frontend_bypass(42)", &[])
+        .expect("generic prepared Param query should execute through vanilla planner");
+    let value: i32 = row.get(0);
+    assert_eq!(value, 42);
+}
+
+pub(crate) fn frontend_mode_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pgf_frontend_mode_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TABLE {table_name} (id integer NOT NULL, payload text NOT NULL);
+            INSERT INTO {table_name} (id, payload)
+            VALUES (1, 'one'), (2, 'two'), (3, 'three')
+            "
+        ),
+    );
+    tx.batch_execute("SET LOCAL pg_fusion.frontend_mode = 2")
+        .expect("require pg_frontend planning");
+
+    let frontend_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("EXPLAIN (VERBOSE) SELECT id FROM {table_name} WHERE id = 2"),
+    )
+    .join("\n");
+    assert!(
+        frontend_explain.contains("Planning Source: pg_frontend"),
+        "supported frontend query should use pg_frontend path: {frontend_explain}"
+    );
+
+    let only_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("EXPLAIN (VERBOSE) SELECT id FROM ONLY {table_name} WHERE id = 2"),
+    )
+    .join("\n");
+    assert!(
+        !only_explain.contains("Custom Scan (PgFusionScan)"),
+        "ONLY scans should bypass pg_fusion custom scans: {only_explain}"
+    );
+
+    tx.batch_execute("SET LOCAL pg_fusion.frontend_mode = 0")
+        .expect("disable pg_frontend planning");
+    let sql_text_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!("EXPLAIN (VERBOSE) SELECT id FROM {table_name} WHERE id = 2"),
+    )
+    .join("\n");
+    assert!(
+        sql_text_explain.contains("Planning Source: sql_text"),
+        "frontend_mode=0 should force legacy SQL-text path: {sql_text_explain}"
+    );
 }
 
 pub(crate) fn copy_select_smoke() {

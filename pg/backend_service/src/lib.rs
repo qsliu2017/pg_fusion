@@ -17,6 +17,7 @@ use fsm::backend_execution_flow::StateMachine as BackendExecutionMachine;
 pub use fsm::{BackendExecutionAction, BackendExecutionEvent, BackendExecutionState};
 use issuance::{encode_issued_frame, IssuedTx};
 use metrics::{MetricId, PageDirection, RuntimeMetrics};
+use pg_frontend::{PgFrontend, PgFrontendConfig, PgQuery};
 use pg_type::{arrow_data_type_for_type_tag, normalize_arrow_transport_field, PgTypeError};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -120,6 +121,14 @@ impl BackendServiceConfig {
             ..plan_builder::PlanBuilderConfig::default()
         }
     }
+
+    pub fn pg_frontend_config(&self) -> PgFrontendConfig {
+        let plan_config = self.plan_builder_config();
+        PgFrontendConfig {
+            identifier_max_bytes: plan_config.identifier_max_bytes,
+            first_scan_id: plan_config.first_scan_id,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -182,12 +191,30 @@ impl Drop for ExecutionSnapshot {
 
 pub struct StartExecutionInput<'a> {
     pub slot_id: u32,
-    pub sql: &'a str,
-    pub params: Vec<ScalarValue>,
+    pub plan_source: ExecutionPlanSource<'a>,
     pub plan_tx: IssuedTx,
     pub scan_slot_region: &'a TransportRegion,
     pub config: BackendServiceConfig,
     pub scan_worker_launcher: Option<&'a mut dyn ScanWorkerLauncher>,
+}
+
+pub enum ExecutionPlanSource<'a> {
+    SqlText {
+        sql: &'a str,
+        params: Vec<ScalarValue>,
+    },
+    FrontendQuery {
+        query: &'a PgQuery,
+    },
+}
+
+impl ExecutionPlanSource<'_> {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::SqlText { .. } => "sql_text",
+            Self::FrontendQuery { .. } => "pg_frontend",
+        }
+    }
 }
 
 pub trait ScanWorkerLauncher {
@@ -345,12 +372,16 @@ pub enum ScanYieldReason {
 }
 
 pub struct ExplainInput<'a> {
-    pub sql: &'a str,
-    pub params: Vec<ScalarValue>,
+    pub plan_source: ExecutionPlanSource<'a>,
     pub options: ExplainRenderOptions,
     pub config: BackendServiceConfig,
     pub scan_worker_launcher: Option<&'a mut dyn ScanWorkerLauncher>,
     pub actual_scan_parallelism: BTreeMap<u64, ExplainScanParallelism>,
+}
+
+pub struct PlanSchemaInput<'a> {
+    pub plan_source: ExecutionPlanSource<'a>,
+    pub config: BackendServiceConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +488,48 @@ enum ScanDriveOutcome {
     Blocked,
     Terminal(ScanStreamStep),
     FatalExecution(ScanStreamStep),
+}
+
+pub(crate) struct BuiltExecutionPlan {
+    pub logical_plan: LogicalPlan,
+    pub scans: Vec<Arc<PgScanSpec>>,
+}
+
+pub(crate) fn build_execution_plan(
+    source: ExecutionPlanSource<'_>,
+    config: &BackendServiceConfig,
+) -> Result<BuiltExecutionPlan, BackendServiceError> {
+    match source {
+        ExecutionPlanSource::SqlText { sql, params } => {
+            let built = PlanBuilder::new()
+                .with_config(config.plan_builder_config())
+                .build(PlanBuildInput { sql, params })?;
+            Ok(BuiltExecutionPlan {
+                logical_plan: built.logical_plan,
+                scans: built.scans,
+            })
+        }
+        ExecutionPlanSource::FrontendQuery { query } => {
+            let output = PgFrontend::new()
+                .with_config(config.pg_frontend_config())
+                .build_query(query.clone())?;
+            Ok(BuiltExecutionPlan {
+                logical_plan: output.logical_plan,
+                scans: output.scans,
+            })
+        }
+    }
+}
+
+fn output_schema_from_logical_plan(logical_plan: &LogicalPlan) -> SchemaRef {
+    Arc::new(Schema::new(
+        logical_plan
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 struct ActiveExecution {
@@ -669,6 +742,13 @@ impl Drop for ActiveScanDriver {
 }
 
 impl BackendService {
+    pub fn output_schema_for_plan_source(
+        input: PlanSchemaInput<'_>,
+    ) -> Result<SchemaRef, BackendServiceError> {
+        let built = build_execution_plan(input.plan_source, &input.config)?;
+        Ok(output_schema_from_logical_plan(&built.logical_plan))
+    }
+
     pub fn begin_execution(
         input: StartExecutionInput<'_>,
     ) -> Result<BeginExecutionOutput, BackendServiceError> {
@@ -685,12 +765,7 @@ impl BackendService {
                 session_epoch,
             };
 
-            let built = PlanBuilder::new()
-                .with_config(config.plan_builder_config())
-                .build(PlanBuildInput {
-                    sql: input.sql,
-                    params: input.params,
-                })?;
+            let built = build_execution_plan(input.plan_source, &config)?;
 
             let mut scan_worker_launcher = input.scan_worker_launcher;
             if let Some(launcher) = scan_worker_launcher.as_deref_mut() {

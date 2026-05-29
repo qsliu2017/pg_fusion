@@ -1,20 +1,24 @@
 use std::sync::Arc;
 
+#[cfg(test)]
 use arrow_schema::{DataType, Field};
 use datafusion_common::{Column, DFSchema, ScalarValue};
-use datafusion_expr::expr::{BinaryExpr, Placeholder};
+use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::logical_plan::LogicalPlan;
 use datafusion_expr::logical_plan::Projection;
 use datafusion_expr::{Expr, Operator};
 use df_catalog::{CatalogResolver, ResolvedTable};
-use pg_type::{arrow_type_for_pg_type, is_text_like_type, scalar_for_pg_const};
+#[cfg(test)]
+use pg_type::arrow_type_for_pg_type;
+use pg_type::{is_text_like_type, scalar_for_pg_const};
 use scan_node::{PgScanId, PgScanNode, PgScanSpec};
 use scan_sql::{compile_scan, pg_type_metadata, CompileScanInput, LimitLowering};
 
 use crate::error::PgFrontendError;
+#[cfg(test)]
+use crate::ir::PgTypeRef;
 use crate::ir::{
-    PgBoolOp, PgConst, PgExpr, PgFromItem, PgOperator, PgParamKind, PgQuery, PgRelationRef,
-    PgTarget, PgTypeRef, PgVar,
+    PgBoolOp, PgConst, PgExpr, PgFromItem, PgOperator, PgQuery, PgRelationRef, PgTarget, PgVar,
 };
 
 #[derive(Debug)]
@@ -202,7 +206,10 @@ fn collect_target_var_indices(
         PgExpr::BinaryOp { .. } => Err(PgFrontendError::unsupported(
             "PostgreSQL operators in SELECT targets are not supported by pg_frontend v1",
         )),
-        PgExpr::Const(_) | PgExpr::Param(_) => Ok(()),
+        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+            "parameters are not supported by pg_frontend v1",
+        )),
+        PgExpr::Const(_) => Ok(()),
     }
 }
 
@@ -227,7 +234,10 @@ fn validate_target_expr(expr: &PgExpr) -> Result<(), PgFrontendError> {
         PgExpr::RelabelType(inner) => validate_target_expr(inner),
         PgExpr::Bool { args, .. } => args.iter().try_for_each(validate_target_expr),
         PgExpr::NullTest { arg, .. } => validate_target_expr(arg),
-        PgExpr::Var(_) | PgExpr::Const(_) | PgExpr::Param(_) => Ok(()),
+        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+            "parameters are not supported by pg_frontend v1",
+        )),
+        PgExpr::Var(_) | PgExpr::Const(_) => Ok(()),
     }
 }
 
@@ -239,22 +249,9 @@ fn compile_expr(
     match expr {
         PgExpr::Var(var) => compile_var(*var, query, resolved),
         PgExpr::Const(constant) => compile_const_expr(constant),
-        PgExpr::Param(param) if param.kind == PgParamKind::External => {
-            let data_type = arrow_type(param.pg_type).ok_or_else(|| {
-                PgFrontendError::unsupported(format!(
-                    "parameter type oid {} cannot be represented in Arrow",
-                    param.pg_type.oid
-                ))
-            })?;
-            Ok(Expr::Placeholder(Placeholder::new_with_field(
-                format!("${}", param.id),
-                Some(Arc::new(Field::new("", data_type, true))),
-            )))
-        }
-        PgExpr::Param(param) => Err(PgFrontendError::unsupported(format!(
-            "parameter kind {:?} is not supported by pg_frontend v1",
-            param.kind
-        ))),
+        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+            "parameters are not supported by pg_frontend v1",
+        )),
         PgExpr::RelabelType(inner) => compile_expr(inner, query, resolved),
         PgExpr::Bool { op, args } => compile_bool(*op, args, query, resolved),
         PgExpr::BinaryOp {
@@ -397,6 +394,7 @@ fn typed_null(pg_type: PgTypeRef) -> Result<ScalarValue, PgFrontendError> {
         .map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
+#[cfg(test)]
 fn arrow_type(pg_type: PgTypeRef) -> Option<DataType> {
     arrow_type_for_pg_type(pg_type)
 }
@@ -409,7 +407,9 @@ fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{PgCommand, PgConst, PgConstValue, PgFromItem, PgOperator, PgVar};
+    use crate::ir::{
+        PgCommand, PgConst, PgConstValue, PgFromItem, PgOperator, PgParam, PgParamKind, PgVar,
+    };
     use arrow_schema::IntervalUnit;
 
     #[test]
@@ -436,6 +436,25 @@ mod tests {
 
         let relabeled_binary = PgExpr::RelabelType(Box::new(binary));
         assert_target_expr_unsupported_contains(&relabeled_binary, "SELECT targets");
+    }
+
+    #[test]
+    fn rejects_parameters_in_targets_and_filters() {
+        let param = PgExpr::Param(PgParam {
+            kind: PgParamKind::External,
+            id: 1,
+            pg_type: int4_type(),
+        });
+
+        assert_target_expr_unsupported_contains(&param, "parameters");
+
+        let resolved = resolved_table();
+        let query = query_for_resolved_table();
+        let err = compile_expr(&param, &query, &resolved).expect_err("Param must be rejected");
+        assert!(
+            err.to_string().contains("parameters"),
+            "error {err} must mention parameters"
+        );
     }
 
     #[test]
@@ -494,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_null_and_param_types_cover_uuid_and_interval() {
+    fn typed_null_and_arrow_types_cover_uuid_and_interval() {
         assert_eq!(
             typed_null(type_ref(pgrx::pg_sys::UUIDOID)).unwrap(),
             ScalarValue::FixedSizeBinary(16, None)

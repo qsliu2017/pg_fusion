@@ -12,6 +12,7 @@ mod logging;
 mod metrics;
 #[cfg(feature = "pg_test")]
 mod pg_compat;
+mod plan_payload;
 mod planner;
 mod result_ingress;
 #[cfg(feature = "pg_test")]
@@ -76,6 +77,11 @@ mod tests {
     #[pg_test]
     fn pg_fusion_planner_bound_params_bypass_smoke() {
         super::smoke_tests::planner_bound_params_bypass_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_frontend_mode_smoke() {
+        super::smoke_tests::frontend_mode_smoke();
     }
 
     #[pg_test]

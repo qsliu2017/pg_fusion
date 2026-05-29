@@ -1,6 +1,6 @@
 use backend_service::{
     scan_descriptor_matches_for_tests, BackendExecutionState, BackendService, BackendServiceConfig,
-    BackendServiceError, ExplainInput,
+    BackendServiceError, ExecutionPlanSource, ExplainInput,
 };
 use datafusion_expr::logical_plan::{EmptyRelation, LogicalPlan};
 use issuance::{IssuanceConfig, IssuancePool, IssuedTx};
@@ -174,8 +174,10 @@ pub fn render_explain_is_rejected_while_execution_is_active() {
     BackendService::install_fake_execution_for_tests(3, 5, BackendExecutionState::Running);
 
     let err = BackendService::render_explain(ExplainInput {
-        sql: "SELECT 1",
-        params: Vec::new(),
+        plan_source: ExecutionPlanSource::SqlText {
+            sql: "SELECT 1",
+            params: Vec::new(),
+        },
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,

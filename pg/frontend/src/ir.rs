@@ -1,6 +1,7 @@
 pub use pg_type::{PgConstValue, PgTypeRef};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PgQuery {
     pub command: PgCommand,
     pub relations: Vec<PgRelationRef>,
@@ -20,12 +21,12 @@ pub struct PgQuery {
     pub has_row_marks: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PgCommand {
     Select,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PgRelationRef {
     pub rtindex: usize,
     pub relid: u32,
@@ -35,7 +36,7 @@ pub struct PgRelationRef {
     pub columns: Vec<PgColumnRef>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PgColumnRef {
     pub attnum: i16,
     pub name: String,
@@ -43,12 +44,12 @@ pub struct PgColumnRef {
     pub nullable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PgFromItem {
     Relation { rtindex: usize },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PgTarget {
     pub expr: PgExpr,
     pub name: Option<String>,
@@ -57,7 +58,7 @@ pub struct PgTarget {
     pub resjunk: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PgExpr {
     Var(PgVar),
     Const(PgConst),
@@ -79,27 +80,27 @@ pub enum PgExpr {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgVar {
     pub rtindex: usize,
     pub attnum: i16,
     pub pg_type: PgTypeRef,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PgConst {
     pub pg_type: PgTypeRef,
     pub value: Option<PgConstValue>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgParam {
     pub kind: PgParamKind,
     pub id: i32,
     pub pg_type: PgTypeRef,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PgParamKind {
     External,
     Exec,
@@ -107,14 +108,14 @@ pub enum PgParamKind {
     Multiexpr,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PgBoolOp {
     And,
     Or,
     Not,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PgOperator {
     Eq,
     NotEq,

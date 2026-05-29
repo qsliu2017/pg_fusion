@@ -19,11 +19,25 @@ targets exactly one PostgreSQL major selected by Cargo feature; today only
 `pg17` is wired. The stable `PgQuery` IR and compiler code must stay free of
 PostgreSQL-version `cfg`.
 
-v1 is intentionally fail-closed and is not wired into the production planner
-hook. The supported execution shape is one base relation with simple
-projection/filter expressions; joins, aggregates, windows, set operations,
-GROUP BY, HAVING, sort, limit, CTEs, row-locking clauses, `ONLY` scans, and
-subqueries return structured unsupported errors.
+v1 is intentionally fail-closed and is now available on the production planner
+path behind `pg_fusion.frontend_mode`. In `try` mode the planner attempts
+`pg_frontend` first and falls back to SQL-text `plan_builder` when the typed
+frontend rejects a query. In `require` mode rejection becomes a controlled
+frontend planning error. The supported execution shape is one base relation
+with simple projection/filter expressions; joins, aggregates, windows, set
+operations, GROUP BY, HAVING, sort, limit, CTEs, row-locking clauses, `ONLY`
+scans, parameters, and subqueries return structured unsupported errors. The
+production planner also bypasses the frontend and SQL-text custom scan paths
+when the analyzed tree still contains `Param` nodes or an `RTE.inh = false`
+relation, so prepared/generic parameter values and `ONLY` semantics remain
+PostgreSQL-owned until the IR and scan SQL can preserve them explicitly.
+
+Frontend `CustomScan` nodes store a versioned serialized `PgQuery` IR in
+`custom_private`. They must not store raw PostgreSQL `Query*` pointers or Rust
+`Arc<LogicalPlan>` values because PostgreSQL plan nodes can be copied and
+serialized by core code. `BeginCustomScan` deserializes the IR and recompiles it
+through `pg_frontend`, so supported frontend queries avoid SQL re-parsing during
+execution while staying PostgreSQL-plan-node safe.
 
 The design rule is that PostgreSQL analyzed metadata is the boundary source of
 truth. DataFusion schema is a transport/execution representation, not authority

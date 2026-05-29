@@ -25,10 +25,13 @@ catalog or TOAST relations, function range entries, and bound parameters.
 
 Eligible queries are planned for DataFusion, but PostgreSQL table access is
 kept as PostgreSQL scan streams. PostgreSQL remains the authority for relation
-identity, snapshots, and PostgreSQL type metadata.
+identity, snapshots, and PostgreSQL type metadata. pg_fusion can first try its
+typed PostgreSQL `Query` frontend for the subset it already supports. If that
+frontend rejects the query in the default migration mode, the planner falls
+back to the broader SQL-text planning path.
 
-pg_fusion tries to push filters and projections into PostgreSQL scan SQL before
-rows cross into Arrow pages:
+In both planning paths, pg_fusion tries to push filters and projections into
+PostgreSQL scans before rows cross into Arrow pages:
 
 - pushed filters run inside PostgreSQL scan SQL;
 - projections remove unused columns before slot-to-Arrow encoding;

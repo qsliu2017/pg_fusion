@@ -115,10 +115,17 @@ than worker execution.
 
 | Setting | Default | Level | Description |
 | --- | ---: | --- | --- |
+| `pg_fusion.frontend_mode` | `1` | User/session | Tries the typed PostgreSQL `Query` frontend before the legacy SQL-text planner. |
 | `pg_fusion.join_reordering` | `on` | User/session | Enables statistics-based join reordering for eligible joins. |
 
 PostgreSQL scan planning still matters because scan leaves execute trusted
 PostgreSQL scan SQL through PostgreSQL executor portals.
+
+`pg_fusion.frontend_mode = 1` is the gradual migration mode. It uses
+PostgreSQL's analyzed query tree for the subset currently supported by
+`pg_frontend`, then falls back to SQL-text planning for broader query shapes.
+Use `0` to force the legacy path and `2` when testing the typed frontend as a
+required planner.
 
 Useful PostgreSQL planner experiment settings include:
 

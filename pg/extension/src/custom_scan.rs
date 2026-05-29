@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use ::metrics::{MetricId, PageDirection, RuntimeMetrics};
 use ::worker::normalize_result_transport_schema;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::SchemaRef;
 use backend_service::{
     build_standalone_scan_descriptor, ActiveScanDriver, BackendService, BackendServiceError,
-    BeginExecutionOutput, CtidBlockRange, DiagnosticLogLevel, ExecutionKey, ExplainInput,
-    ExplainRenderOptions, ExplainScanParallelism, ExplainScanParallelismStrategy,
-    ExplainScanProducer, ExplainScanProducerRole, OpenScanInput, ScanStreamStep,
+    BeginExecutionOutput, CtidBlockRange, DiagnosticLogLevel, ExecutionKey, ExecutionPlanSource,
+    ExplainInput, ExplainRenderOptions, ExplainScanParallelism, ExplainScanParallelismStrategy,
+    ExplainScanProducer, ExplainScanProducerRole, OpenScanInput, PlanSchemaInput, ScanStreamStep,
     ScanWorkerLaunchInput, ScanWorkerLaunchOutput, ScanWorkerLauncher, ScanWorkerProducer,
     ScanWorkerQueryInput, StartExecutionInput,
 };
@@ -44,6 +44,7 @@ use transfer::PageTx;
 use crate::diag;
 use crate::guc::host_config;
 use crate::logging;
+use crate::plan_payload::{decode_plan_source, CustomScanPlanSource};
 use crate::result_ingress::{AcceptedResultFrame, ResultIngress};
 use crate::scan_worker_job::{
     encode_scan_worker_descriptor, ScanWorkerJobError, ScanWorkerJobRegistryHandle,
@@ -86,7 +87,7 @@ struct PgFusionScanState {
 }
 
 struct HostScanState {
-    sql: String,
+    plan_source: CustomScanPlanSource,
     control_lease: Option<BackendSlotLease>,
     execution_key: Option<ExecutionKey>,
     scan_peers: BTreeMap<u64, BackendLeaseSlot>,
@@ -176,9 +177,9 @@ unsafe extern "C-unwind" fn pg_fusion_executor_end_hook(query_desc: *mut QueryDe
 
 #[pg_guard]
 unsafe extern "C-unwind" fn create_pg_fusion_scan_state(cscan: *mut CustomScan) -> *mut Node {
-    let sql = sql_from_custom_private((*cscan).custom_private);
+    let plan_source = plan_source_from_custom_private((*cscan).custom_private);
     let host_state = Box::new(HostScanState {
-        sql,
+        plan_source,
         control_lease: None,
         execution_key: None,
         scan_peers: BTreeMap::new(),
@@ -353,7 +354,7 @@ unsafe extern "C-unwind" fn begin_pg_fusion_scan(
     let scan_worker_jobs = attach_scan_worker_jobs();
     let page_pool = attach_page_pool();
     let issuance_pool = attach_issuance_pool();
-    let transport_schema = build_transport_schema(&state.sql)
+    let transport_schema = build_transport_schema(&state.plan_source, backend_config.clone())
         .unwrap_or_else(|err| error!("pg_fusion schema preparation failed: {err}"));
     let control_lease = BackendSlotLease::acquire(&control_region)
         .unwrap_or_else(|err| error!("pg_fusion failed to acquire primary control slot: {err}"));
@@ -375,8 +376,7 @@ unsafe extern "C-unwind" fn begin_pg_fusion_scan(
         let _planner_bypass = PlannerBypassGuard::enter();
         BackendService::begin_execution(StartExecutionInput {
             slot_id: control_lease.slot_id(),
-            sql: &state.sql,
-            params: Vec::new(),
+            plan_source: state.plan_source.as_execution_source(),
             plan_tx,
             scan_slot_region: &scan_region,
             config: backend_config,
@@ -675,8 +675,7 @@ unsafe extern "C-unwind" fn explain_pg_fusion_scan(
         let _planner_bypass = PlannerBypassGuard::enter();
         let mut scan_worker_planner = ExplainScanWorkerPlanner;
         BackendService::render_explain(ExplainInput {
-            sql: &state.sql,
-            params: Vec::new(),
+            plan_source: state.plan_source.as_execution_source(),
             options,
             config: config.backend_service_config(),
             scan_worker_launcher: Some(&mut scan_worker_planner),
@@ -1384,24 +1383,15 @@ fn decode_primary_inbound(bytes: &[u8]) -> Result<PrimaryInbound, Box<dyn std::e
     }
 }
 
-fn build_transport_schema(sql: &str) -> Result<SchemaRef, String> {
-    let config = crate::host_config().map_err(|err| err.to_string())?;
-    let built = plan_builder::PlanBuilder::new()
-        .with_config(config.plan_builder_config())
-        .build(plan_builder::PlanBuildInput {
-            sql,
-            params: Vec::new(),
-        })
-        .map_err(|err| err.to_string())?;
-    let output_schema = Arc::new(Schema::new(
-        built
-            .logical_plan
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
-            .collect::<Vec<_>>(),
-    ));
+fn build_transport_schema(
+    plan_source: &CustomScanPlanSource,
+    config: backend_service::BackendServiceConfig,
+) -> Result<SchemaRef, String> {
+    let output_schema = BackendService::output_schema_for_plan_source(PlanSchemaInput {
+        plan_source: plan_source.as_execution_source(),
+        config,
+    })
+    .map_err(|err| err.to_string())?;
     let (schema, _) =
         normalize_result_transport_schema(&output_schema).map_err(|err| err.to_string())?;
     Ok(schema)
@@ -2040,7 +2030,8 @@ fn active_driver_keys(state: &HostScanState) -> Vec<u64> {
 
 fn host_state_snapshot(state: &HostScanState) -> String {
     format!(
-        "execution_key={:?} pending_complete={:?} active_drivers={:?} scan_peers={:?} result_complete={:?} owns_result_slot={}",
+        "plan_source={} execution_key={:?} pending_complete={:?} active_drivers={:?} scan_peers={:?} result_complete={:?} owns_result_slot={}",
+        state.plan_source.label(),
         state.execution_key,
         state.pending_complete_session_epoch,
         active_driver_keys(state),
@@ -2110,15 +2101,32 @@ fn truncate_scan_failure_message(message: &str) -> String {
     message[..cutoff].to_string()
 }
 
-unsafe fn sql_from_custom_private(list: *mut List) -> String {
+impl CustomScanPlanSource {
+    fn as_execution_source(&self) -> ExecutionPlanSource<'_> {
+        match self {
+            Self::SqlText(sql) => ExecutionPlanSource::SqlText {
+                sql,
+                params: Vec::new(),
+            },
+            Self::FrontendQuery(query) => ExecutionPlanSource::FrontendQuery { query },
+        }
+    }
+}
+
+unsafe fn plan_source_from_custom_private(list: *mut List) -> CustomScanPlanSource {
     let cell = list_nth(list, 0);
     let node = (*cell).ptr_value as *const pg_sys::String;
-    assert!(!node.is_null(), "custom private SQL node must be present");
+    assert!(
+        !node.is_null(),
+        "custom private plan payload node must be present"
+    );
     let ptr = (*node).sval as *const i8;
-    CStr::from_ptr(ptr)
+    let payload = CStr::from_ptr(ptr)
         .to_str()
-        .expect("custom private SQL must be valid UTF-8")
-        .to_string()
+        .expect("custom private plan payload must be valid UTF-8");
+    decode_plan_source(payload).unwrap_or_else(|err| {
+        error!("pg_fusion custom scan payload decode failed: {err}");
+    })
 }
 
 unsafe fn list_nth(list: *mut List, n: i32) -> *mut pg_sys::ListCell {
