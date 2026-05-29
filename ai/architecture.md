@@ -48,9 +48,9 @@ page-backed Arrow batches.
   conversion. PostgreSQL-bound crates still own raw `Datum`, TOAST, varlena,
   memory-context, and tuple-slot mechanics. `pg/frontend` is the typed
   PostgreSQL `Query` tree frontend; it copies analyzed PostgreSQL type metadata
-  into a stable IR and plans the supported fail-closed subset as DataFusion
-  logical plans with PostgreSQL table-source leaves resolved by analyzed
-  relation OID rather than schema/name lookup. The host-side
+  into a stable `TypedQuery` model and plans the supported fail-closed subset
+  as DataFusion logical plans with PostgreSQL table-source leaves resolved by
+  analyzed relation OID rather than schema/name lookup. The host-side
   frontend pipeline builds those leaves into PostgreSQL scan nodes before
   generic DataFusion optimization can rewrite PostgreSQL-semantic scan
   predicates. The production planner hook can try this frontend first behind
@@ -126,12 +126,14 @@ page-backed Arrow batches.
    `pg/extension/pg_compat/limitations.sql`. Root `UInt64` and `LargeUtf8`
    outputs are cast to PostgreSQL-facing `bigint`/`text` Arrow types before
    result transport. Scan leaves are then built as
-   `PgScanNode`/`scan_sql` descriptors. For the subset supported by
-   `pg_frontend`, the planner stores a versioned `plan_codec` payload for the
-   already built logical plan and `PgScanSpec` table in
-   `CustomScan.custom_private`; `BeginCustomScan` decodes that payload instead
-   of recompiling the `PgQuery` IR, re-resolving catalogs, or rebuilding scan
-   SQL. The SQL-text
+   `PgScanNode`/`scan_sql` descriptors. `plan_builder` returns a `HybridPlan`:
+   the DataFusion logical plan and the PostgreSQL scan plan that its custom
+   scan leaves reference. For the subset supported by `pg_frontend`, the
+   planner stores a versioned `plan_codec` payload for the already built logical
+   plan and `PgScanSpec` table in `CustomScan.custom_private`; `BeginCustomScan`
+   decodes that payload instead of recompiling the `TypedQuery` model,
+   re-resolving catalogs, or rebuilding scan SQL. Serialized `TypedQuery`
+   payloads are not supported. The SQL-text
    `plan_builder` path remains the fallback for broader query coverage.
    Non-recursive CTEs
    referenced more than once are planned as `PgCteRefNode` reads over a single

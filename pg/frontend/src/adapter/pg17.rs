@@ -6,18 +6,18 @@ use pgrx::datum::FromDatum;
 use pgrx::pg_sys;
 
 use crate::error::PgFrontendError;
-use crate::ir::{
-    PgCommand, PgConst, PgConstValue, PgExpr, PgFromItem, PgParam, PgQuery, PgRelationRef,
-    PgTarget, PgVar,
-};
 use crate::shippability::{supported_non_null_const_type, supported_value_type};
+use crate::typed_query::{
+    Const, FromItem, Param, PgConstValue, QueryCommand, QueryExpr, RelationRef, Target, TypedQuery,
+    Var,
+};
 
 use super::common::{
     bool_op, cstr_from_pg, expr_type_ref, finite_float32_const, finite_float64_const, list_len,
     list_ptr_at, param_kind, read_operator, time_const, type_ref, unsupported_temporal_const,
 };
 
-pub(crate) unsafe fn read_query(query: *mut pg_sys::Query) -> Result<PgQuery, PgFrontendError> {
+pub(crate) unsafe fn read_query(query: *mut pg_sys::Query) -> Result<TypedQuery, PgFrontendError> {
     if query.is_null() {
         return Err(PgFrontendError::NullQuery);
     }
@@ -43,8 +43,8 @@ pub(crate) unsafe fn read_query(query: *mut pg_sys::Query) -> Result<PgQuery, Pg
         };
     let targets = unsafe { read_target_list(query_ref.targetList) }?;
 
-    Ok(PgQuery {
-        command: PgCommand::Select,
+    Ok(TypedQuery {
+        command: QueryCommand::Select,
         relations,
         from,
         selection,
@@ -63,7 +63,7 @@ pub(crate) unsafe fn read_query(query: *mut pg_sys::Query) -> Result<PgQuery, Pg
     })
 }
 
-unsafe fn read_rtable(rtable: *mut pg_sys::List) -> Result<Vec<PgRelationRef>, PgFrontendError> {
+unsafe fn read_rtable(rtable: *mut pg_sys::List) -> Result<Vec<RelationRef>, PgFrontendError> {
     let mut relations = Vec::new();
     for index in 0..unsafe { list_len(rtable) } {
         let rte = unsafe { list_ptr_at(rtable, index) as *mut pg_sys::RangeTblEntry };
@@ -101,19 +101,20 @@ unsafe fn read_rtable(rtable: *mut pg_sys::List) -> Result<Vec<PgRelationRef>, P
 unsafe fn read_relation_ref(
     rtindex: usize,
     rte: &pg_sys::RangeTblEntry,
-) -> Result<PgRelationRef, PgFrontendError> {
+) -> Result<RelationRef, PgFrontendError> {
     let schema_oid = unsafe { pg_sys::get_rel_namespace(rte.relid) };
     let schema = unsafe { cstr_from_pg(pg_sys::get_namespace_name(schema_oid)) }?;
     let name = unsafe { cstr_from_pg(pg_sys::get_rel_name(rte.relid)) }?;
     let alias = unsafe { read_alias_name(rte.alias) };
 
-    Ok(PgRelationRef {
+    Ok(RelationRef {
         rtindex,
         relid: u32::from(rte.relid),
         schema,
         name,
         alias,
         columns: Vec::new(),
+        catalog_resolved: false,
     })
 }
 
@@ -128,7 +129,7 @@ unsafe fn read_alias_name(alias: *mut pg_sys::Alias) -> Option<String> {
     )
 }
 
-unsafe fn read_from_item(jointree: *mut pg_sys::FromExpr) -> Result<PgFromItem, PgFrontendError> {
+unsafe fn read_from_item(jointree: *mut pg_sys::FromExpr) -> Result<FromItem, PgFrontendError> {
     if jointree.is_null() {
         return Err(PgFrontendError::unsupported("query has no jointree"));
     }
@@ -146,7 +147,7 @@ unsafe fn read_from_item(jointree: *mut pg_sys::FromExpr) -> Result<PgFromItem, 
     match unsafe { (*node).type_ } {
         pg_sys::NodeTag::T_RangeTblRef => {
             let range_ref = node.cast::<pg_sys::RangeTblRef>();
-            Ok(PgFromItem::Relation {
+            Ok(FromItem::Relation {
                 rtindex: unsafe { (*range_ref).rtindex as usize },
             })
         }
@@ -157,9 +158,7 @@ unsafe fn read_from_item(jointree: *mut pg_sys::FromExpr) -> Result<PgFromItem, 
     }
 }
 
-unsafe fn read_target_list(
-    target_list: *mut pg_sys::List,
-) -> Result<Vec<PgTarget>, PgFrontendError> {
+unsafe fn read_target_list(target_list: *mut pg_sys::List) -> Result<Vec<Target>, PgFrontendError> {
     let mut targets = Vec::new();
     for index in 0..unsafe { list_len(target_list) } {
         let entry = unsafe { list_ptr_at(target_list, index) as *mut pg_sys::TargetEntry };
@@ -180,7 +179,7 @@ unsafe fn read_target_list(
                     .into_owned(),
             )
         };
-        targets.push(PgTarget {
+        targets.push(Target {
             expr,
             name,
             pg_type,
@@ -191,7 +190,7 @@ unsafe fn read_target_list(
     Ok(targets)
 }
 
-unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> {
+unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<QueryExpr, PgFrontendError> {
     if node.is_null() {
         return Err(PgFrontendError::unsupported("null expression node"));
     }
@@ -209,7 +208,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
                     "whole-row and system-column Vars are not supported",
                 ));
             }
-            Ok(PgExpr::Var(PgVar {
+            Ok(QueryExpr::Var(Var {
                 rtindex: var.varno as usize,
                 attnum: var.varattno,
                 pg_type: type_ref(var.vartype, var.vartypmod, var.varcollid),
@@ -217,11 +216,11 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
         }
         pg_sys::NodeTag::T_Const => {
             let constant = unsafe { &*node.cast::<pg_sys::Const>() };
-            Ok(PgExpr::Const(unsafe { read_const(constant) }?))
+            Ok(QueryExpr::Const(unsafe { read_const(constant) }?))
         }
         pg_sys::NodeTag::T_Param => {
             let param = unsafe { &*node.cast::<pg_sys::Param>() };
-            Ok(PgExpr::Param(PgParam {
+            Ok(QueryExpr::Param(Param {
                 kind: param_kind(param.paramkind),
                 id: param.paramid,
                 pg_type: type_ref(param.paramtype, param.paramtypmod, param.paramcollid),
@@ -229,7 +228,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
         }
         pg_sys::NodeTag::T_RelabelType => {
             let relabel = unsafe { &*node.cast::<pg_sys::RelabelType>() };
-            Ok(PgExpr::RelabelType(Box::new(unsafe {
+            Ok(QueryExpr::RelabelType(Box::new(unsafe {
                 read_expr(relabel.arg.cast())
             }?)))
         }
@@ -239,7 +238,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
             for index in 0..unsafe { list_len(bool_expr.args) } {
                 args.push(unsafe { read_expr(list_ptr_at(bool_expr.args, index).cast()) }?);
             }
-            Ok(PgExpr::Bool {
+            Ok(QueryExpr::Bool {
                 op: bool_op(bool_expr.boolop)?,
                 args,
             })
@@ -253,7 +252,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
             }
             let left = unsafe { read_expr(list_ptr_at(op_expr.args, 0).cast()) }?;
             let right = unsafe { read_expr(list_ptr_at(op_expr.args, 1).cast()) }?;
-            Ok(PgExpr::BinaryOp {
+            Ok(QueryExpr::BinaryOp {
                 op: read_operator(op_expr.opno)?,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -267,7 +266,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
                     "row-valued NULL tests are not supported",
                 ));
             }
-            Ok(PgExpr::NullTest {
+            Ok(QueryExpr::NullTest {
                 arg: Box::new(unsafe { read_expr(null_test.arg.cast()) }?),
                 is_null: null_test.nulltesttype == pg_sys::NullTestType::IS_NULL,
             })
@@ -279,7 +278,7 @@ unsafe fn read_expr(node: *mut pg_sys::Node) -> Result<PgExpr, PgFrontendError> 
     }
 }
 
-unsafe fn read_const(constant: &pg_sys::Const) -> Result<PgConst, PgFrontendError> {
+unsafe fn read_const(constant: &pg_sys::Const) -> Result<Const, PgFrontendError> {
     let pg_type = type_ref(
         constant.consttype,
         constant.consttypmod,
@@ -287,7 +286,7 @@ unsafe fn read_const(constant: &pg_sys::Const) -> Result<PgConst, PgFrontendErro
     );
     supported_value_type(pg_type).map_err(|reason| PgFrontendError::unsupported(reason.message))?;
     if constant.constisnull {
-        return Ok(PgConst {
+        return Ok(Const {
             pg_type,
             value: None,
         });
@@ -351,7 +350,7 @@ unsafe fn read_const(constant: &pg_sys::Const) -> Result<PgConst, PgFrontendErro
         }
     };
 
-    Ok(PgConst {
+    Ok(Const {
         pg_type,
         value: Some(value),
     })

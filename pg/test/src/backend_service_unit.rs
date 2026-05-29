@@ -252,10 +252,10 @@ pub fn encoded_built_plan_prepares_from_plan_codec_payload() {
     let encoded = encoded_scan_plan_for_tests();
 
     let prepared = BackendService::prepare_execution_plan(PrepareExecutionPlanInput {
-        plan_source: ExecutionPlanSource::EncodedBuiltPlan { bytes: &encoded },
+        plan_source: ExecutionPlanSource::EncodedHybridPlan { bytes: &encoded },
         config: BackendServiceConfig::default(),
     })
-    .expect("encoded built plan should prepare");
+    .expect("encoded hybrid plan should prepare");
 
     let schema = prepared.output_schema();
     assert_eq!(schema.fields().len(), 1);
@@ -285,7 +285,7 @@ pub fn encoded_built_plan_deduplicates_repeated_scan_references() {
     let encoded = encode_plan_for_tests(&plan);
 
     let prepared = BackendService::prepare_execution_plan(PrepareExecutionPlanInput {
-        plan_source: ExecutionPlanSource::EncodedBuiltPlan { bytes: &encoded },
+        plan_source: ExecutionPlanSource::EncodedHybridPlan { bytes: &encoded },
         config: BackendServiceConfig::default(),
     })
     .expect("repeated scan references should prepare");

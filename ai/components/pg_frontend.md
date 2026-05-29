@@ -3,25 +3,32 @@ id: component-pg-frontend-0001
 type: fact
 scope: component
 tags: ["postgres", "datafusion", "planning", "query-tree"]
-updated_at: "2026-05-22"
+updated_at: "2026-05-29"
 importance: 0.7
 ---
 
 # pg_frontend
 
 `pg/frontend` is the experimental PostgreSQL typed-tree frontend. It reads a
-live analyzed `pg_sys::Query`, copies PostgreSQL OID/typmod/collation metadata
-into a stable Rust IR, and compiles the supported subset into an ordinary
-DataFusion `LogicalPlan` with PostgreSQL table-source leaves resolved by
-`RTE_RELATION.relid`, not by schema/table name lookup. The
-host-side planning pipeline then builds those leaves into PostgreSQL scan nodes
-and normalizes root output types. This keeps `pg_frontend` focused on
-PostgreSQL query-tree semantics instead of duplicating scan-building policy.
+live analyzed `pg_sys::Query` into a neutral `TypedQuery`, copies PostgreSQL
+OID/typmod/collation metadata, resolves catalog metadata in place by
+`RTE_RELATION.relid`, and compiles the supported subset into an ordinary
+DataFusion `LogicalPlan` with PostgreSQL table-source leaves. The host-side
+planning pipeline then builds those leaves into PostgreSQL scan nodes and
+normalizes root output types. This keeps `pg_frontend` focused on PostgreSQL
+query-tree semantics instead of duplicating scan-building policy.
 
 PostgreSQL major-version layout differences terminate at `adapter/`. Each build
 targets exactly one PostgreSQL major selected by Cargo feature; today only
-`pg17` is wired. The stable `PgQuery` IR and compiler code must stay free of
-PostgreSQL-version `cfg`.
+`pg17` is wired. The stable `TypedQuery` model, catalog resolution, and
+compiler code must stay free of PostgreSQL-version `cfg`.
+
+The frontend phases are explicit: PostgreSQL query tree -> `TypedQuery` ->
+in-place catalog resolution -> DataFusion logical plan -> `plan_builder`
+`HybridPlan`. Catalog resolution mutates relation metadata on the existing
+`TypedQuery` by filling column names, attnums, PostgreSQL type refs, nullability,
+and normalized scan relation identity. Compilation takes a `ResolvedQuery` view
+over the same tree, so catalog lookup is not mixed into expression lowering.
 
 v1 is intentionally fail-closed and is now available on the production planner
 path behind `pg_fusion.frontend_mode`. In `try` mode the planner attempts
@@ -34,17 +41,20 @@ scans, parameters, and subqueries return structured unsupported errors. The
 production planner also bypasses the frontend and SQL-text custom scan paths
 when the analyzed tree still contains `Param` nodes or an `RTE.inh = false`
 relation, so prepared/generic parameter values and `ONLY` semantics remain
-PostgreSQL-owned until the IR and scan SQL can preserve them explicitly.
+PostgreSQL-owned until the typed model and scan SQL can preserve them
+explicitly.
 
 Frontend `CustomScan` nodes store a versioned text-safe wrapper around
-`plan_codec` bytes in `custom_private`. The encoded payload contains the
-already built DataFusion logical plan plus the `PgScanSpec` table; it is not a
-raw PostgreSQL `Query*` pointer or Rust `Arc<LogicalPlan>` because PostgreSQL
-plan nodes can be copied and serialized by core code. `BeginCustomScan`
-decodes this built plan once, uses its output schema for result transport, and
-starts execution with the same decoded plan. Supported frontend queries avoid
-SQL re-parsing, frontend recompilation, catalog re-resolution, and scan SQL
-rebuilding during execution while staying PostgreSQL-plan-node safe.
+`plan_codec` bytes in `custom_private`. The active encoded payload contains the
+already built DataFusion logical plan plus PostgreSQL scan specs from the
+`HybridPlan`; it is not a raw PostgreSQL `Query*` pointer or Rust
+`Arc<LogicalPlan>` because PostgreSQL plan nodes can be copied and serialized by
+core code. Serialized `TypedQuery` payloads are rejected; the typed model is a
+planning-time structure only. `BeginCustomScan` decodes the built plan once,
+uses its output schema for result transport, and starts execution with the same
+decoded plan. Supported current frontend queries avoid SQL re-parsing, frontend
+recompilation, catalog re-resolution, and scan SQL rebuilding during execution
+while staying PostgreSQL-plan-node safe.
 
 The design rule is that PostgreSQL analyzed metadata is the boundary source of
 truth. DataFusion schema is a transport/execution representation, not authority

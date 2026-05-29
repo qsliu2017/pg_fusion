@@ -1,9 +1,9 @@
-use ::plan_builder::{BuiltPlan, PlanBuildError, PlanBuildInput, PlanBuilder, PlanBuilderConfig};
+use ::plan_builder::{HybridPlan, PlanBuildError, PlanBuildInput, PlanBuilder, PlanBuilderConfig};
 use datafusion_common::ScalarValue;
 use datafusion_expr::logical_plan::LogicalPlan;
 use pgrx::prelude::*;
 
-fn build(sql: &str, params: Vec<ScalarValue>) -> BuiltPlan {
+fn build(sql: &str, params: Vec<ScalarValue>) -> HybridPlan {
     PlanBuilder::new()
         .build(PlanBuildInput { sql, params })
         .expect("build plan")
@@ -46,16 +46,22 @@ pub fn plan_builder_lowers_live_table_scan() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 1);
-    assert_eq!(built.scans[0].scan_id.get(), 1);
-    assert_eq!(built.scans[0].relation.schema.as_deref(), Some("public"));
-    assert_eq!(built.scans[0].relation.table, "plan_builder_live");
+    assert_eq!(built.scan_plan.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans[0].scan_id.get(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].relation.schema.as_deref(),
+        Some("public")
+    );
+    assert_eq!(built.scan_plan.scans[0].relation.table, "plan_builder_live");
+    assert_eq!(
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\", \"payload\" FROM \"public\".\"plan_builder_live\" WHERE (\"id\" > 1)"
     );
-    assert_eq!(built.scans[0].fetch_hints.planner_fetch_hint, Some(5));
-    assert_eq!(built.scans[0].fetch_hints.local_row_cap, Some(5));
+    assert_eq!(
+        built.scan_plan.scans[0].fetch_hints.planner_fetch_hint,
+        Some(5)
+    );
+    assert_eq!(built.scan_plan.scans[0].fetch_hints.local_row_cap, Some(5));
 
     let rendered = built.logical_plan.display_indent().to_string();
     assert!(rendered.contains("PgScan:"));
@@ -72,14 +78,14 @@ pub fn plan_builder_resolves_schema_qualified_table() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].relation.schema.as_deref(),
+        built.scan_plan.scans[0].relation.schema.as_deref(),
         Some("plan_builder_ns")
     );
-    assert_eq!(built.scans[0].relation.table, "items");
+    assert_eq!(built.scan_plan.scans[0].relation.table, "items");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"payload\" FROM \"plan_builder_ns\".\"items\" WHERE (\"id\" >= 10)"
     );
 }
@@ -93,9 +99,9 @@ pub fn plan_builder_binds_params_before_lowering() {
         vec![ScalarValue::Int64(Some(7))],
     );
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"plan_builder_params\" WHERE (\"id\" > 7)"
     );
 }
@@ -119,14 +125,14 @@ pub fn plan_builder_partitioned_parent_lowers_to_pg_scan() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].relation.schema.as_deref(),
+        built.scan_plan.scans[0].relation.schema.as_deref(),
         Some("plan_builder_part")
     );
-    assert_eq!(built.scans[0].relation.table, "events");
+    assert_eq!(built.scan_plan.scans[0].relation.table, "events");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"plan_builder_part\".\"events\" WHERE (\"id\" >= 1)"
     );
     assert!(built
@@ -144,9 +150,9 @@ pub fn plan_builder_supports_builtin_sql_forms() {
         "SELECT length(payload) AS len FROM public.plan_builder_functions",
         Vec::new(),
     );
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"payload\" FROM \"public\".\"plan_builder_functions\""
     );
 
@@ -154,9 +160,9 @@ pub fn plan_builder_supports_builtin_sql_forms() {
         "SELECT char_length(payload) AS len FROM public.plan_builder_functions",
         Vec::new(),
     );
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"payload\" FROM \"public\".\"plan_builder_functions\""
     );
 
@@ -166,9 +172,9 @@ pub fn plan_builder_supports_builtin_sql_forms() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"payload\" FROM \"public\".\"plan_builder_functions\""
     );
     assert!(built
@@ -178,7 +184,7 @@ pub fn plan_builder_supports_builtin_sql_forms() {
         .contains("Projection"));
 
     let built = build("SELECT extract(day from now())", Vec::new());
-    assert!(built.scans.is_empty());
+    assert!(built.scan_plan.scans.is_empty());
 }
 
 pub fn plan_builder_rejects_exists_subqueries() {
@@ -213,13 +219,13 @@ pub fn plan_builder_rewrites_in_subquery_predicates() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 2);
+    assert_eq!(built.scan_plan.scans.len(), 2);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"plan_builder_in_users\""
     );
     assert_eq!(
-        built.scans[1].compiled_scan.sql,
+        built.scan_plan.scans[1].compiled_scan.sql,
         "SELECT \"user_id\" FROM \"public\".\"plan_builder_in_orders\""
     );
     assert!(built
@@ -260,7 +266,7 @@ pub fn plan_builder_reorders_inner_joins_from_live_stats() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 3);
+    assert_eq!(built.scan_plan.scans.len(), 3);
     assert_eq!(
         bottom_join_on(&built.logical_plan).as_deref(),
         Some("o.user_id = u.id")
@@ -312,7 +318,7 @@ pub fn plan_builder_join_reordering_uses_live_attnums_after_drop() {
         Vec::new(),
     );
 
-    assert_eq!(built.scans.len(), 2);
+    assert_eq!(built.scan_plan.scans.len(), 2);
     let rendered = built.logical_plan.display_indent().to_string();
     assert!(
         rendered.contains("a.key = b.key") || rendered.contains("b.key = a.key"),

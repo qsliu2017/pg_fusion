@@ -1,28 +1,42 @@
-//! Typed PostgreSQL `Query` tree frontend for DataFusion logical planning.
+//! Typed PostgreSQL `Query` tree frontend for pg_fusion planning.
 //!
-//! This crate is the first step away from SQL-text planning at the
-//! PostgreSQL/DataFusion boundary. It copies PostgreSQL's analyzed type
-//! metadata into a stable Rust IR, then compiles the supported subset into a
-//! DataFusion logical plan with resolved PostgreSQL table-source leaves.
+//! `pg_frontend` turns a live PostgreSQL analyzed [`pg_sys::Query`] into a
+//! DataFusion logical plan while preserving the PostgreSQL type and catalog
+//! metadata that matters at the scan boundary. It is a planning-time frontend,
+//! not a payload format: [`TypedQuery`] values are built, resolved, and compiled
+//! in memory, while PostgreSQL `CustomScan` nodes store the already built hybrid
+//! plan payload.
 //!
-//! The current version is intentionally narrow and fail-closed. The production
-//! planner can try it for supported query shapes and then send the typed
-//! logical plan through the shared pg_fusion post-planning pipeline.
+//! # Pipeline
+//!
+//! - `adapter/` copies the supported PostgreSQL tree shape into [`TypedQuery`].
+//! - [`resolve_catalog`] mutates the same typed model in place and returns a
+//!   [`ResolvedQuery`] view.
+//! - The compiler lowers [`ResolvedQuery`] to a DataFusion
+//!   [`LogicalPlan`](datafusion_expr::logical_plan::LogicalPlan) with
+//!   PostgreSQL planning table-source leaves.
+//! - The extension/backend host sends that logical plan through `plan_builder`,
+//!   which creates the paired DataFusion and PostgreSQL scan plan.
+//!
+//! The v1 surface is intentionally narrow and fail-closed. Unsupported
+//! PostgreSQL query shapes return structured [`PgFrontendError`] values so the
+//! production planner can fall back to SQL-text planning when configured to do
+//! so.
 
 mod adapter;
-mod codec;
 mod compiler;
 mod error;
-mod ir;
 mod operator;
+mod resolve;
 pub mod shippability;
+mod typed_query;
 
-pub use codec::{decode_query_ir, encode_query_ir, PgFrontendCodecError};
 pub use compiler::CompiledQuery;
 pub use error::PgFrontendError;
-pub use ir::{
-    PgBoolOp, PgColumnRef, PgCommand, PgConst, PgConstValue, PgExpr, PgFromItem, PgOperator,
-    PgParam, PgParamKind, PgQuery, PgRelationRef, PgTarget, PgTypeRef, PgVar,
+pub use resolve::{resolve_catalog, ResolvedQuery};
+pub use typed_query::{
+    BoolOp, ColumnRef, Const, FromItem, Param, ParamKind, PgConstValue, PgTypeRef, QueryCommand,
+    QueryExpr, QueryOperator, RelationRef, Target, TypedQuery, Var,
 };
 
 use df_catalog::{CatalogResolver, PgrxCatalogResolver};
@@ -77,28 +91,31 @@ impl<R> PgFrontend<R>
 where
     R: CatalogResolver + Send + Sync,
 {
-    /// Copy PostgreSQL's analyzed `Query` tree into the stable frontend IR.
+    /// Copy PostgreSQL's analyzed `Query` tree into the stable typed model.
     ///
     /// # Safety
     ///
     /// `query` must point to a live PostgreSQL analyzed `Query` allocated in a
     /// PostgreSQL memory context that remains valid for the duration of this
     /// call.
-    pub unsafe fn read_query(&self, query: *mut pg_sys::Query) -> Result<PgQuery, PgFrontendError> {
+    pub unsafe fn read_query(
+        &self,
+        query: *mut pg_sys::Query,
+    ) -> Result<TypedQuery, PgFrontendError> {
         unsafe { adapter::read_query(query) }
     }
 
-    /// Build a DataFusion logical plan from a stable PostgreSQL query IR.
-    pub fn build_query(&self, pg_query: PgQuery) -> Result<PgFrontendOutput, PgFrontendError> {
-        let result_targets = pg_query
+    /// Build a DataFusion logical plan from a stable typed query model.
+    pub fn build_query(&self, mut query: TypedQuery) -> Result<PgFrontendOutput, PgFrontendError> {
+        let result_targets = query
             .targets
             .iter()
             .filter(|target| !target.resjunk)
             .cloned()
             .collect();
+        let resolved = query.resolve_catalog(&self.resolver)?;
         let result = compiler::compile_query(
-            pg_query,
-            &self.resolver,
+            resolved,
             compiler::CompileConfig {
                 identifier_max_bytes: self.config.identifier_max_bytes,
             },
@@ -121,15 +138,15 @@ where
         &self,
         query: *mut pg_sys::Query,
     ) -> Result<PgFrontendOutput, PgFrontendError> {
-        let pg_query = unsafe { self.read_query(query) }?;
-        self.build_query(pg_query)
+        let typed_query = unsafe { self.read_query(query) }?;
+        self.build_query(typed_query)
     }
 }
 
 #[derive(Debug)]
 pub struct PgFrontendOutput {
     pub logical_plan: datafusion_expr::logical_plan::LogicalPlan,
-    pub result_targets: Vec<PgTarget>,
+    pub result_targets: Vec<Target>,
     pub diagnostics: Vec<String>,
 }
 

@@ -5,8 +5,9 @@ use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::Column;
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::{lit, Operator};
-use df_catalog::ResolvedTable;
+use df_catalog::{ResolvedColumn, ResolvedTable};
 use pg_statistics::{PgColumnStats, PgScanEstimate, PgUniqueKey};
+use pg_type::PgTypeRef;
 use scan_sql::{pg_type_metadata, PgRelation};
 
 const TEST_IDENTIFIER_MAX_BYTES: usize = 63;
@@ -54,6 +55,11 @@ fn user_table() -> ResolvedTable {
             Field::new("name", DataType::Utf8View, true),
             Field::new("score", DataType::Float64, true),
         ])),
+        columns: vec![
+            resolved_column(1, "id", pg_type(pgrx::pg_sys::INT8OID), false),
+            resolved_column(2, "name", pg_type(pgrx::pg_sys::TEXTOID), true),
+            resolved_column(3, "score", pg_type(pgrx::pg_sys::FLOAT8OID), true),
+        ],
     }
 }
 
@@ -66,6 +72,10 @@ fn order_table() -> ResolvedTable {
             Field::new("id", DataType::Int64, false),
             Field::new("user_id", DataType::Int64, false),
         ])),
+        columns: vec![
+            resolved_column(1, "id", pg_type(pgrx::pg_sys::INT8OID), false),
+            resolved_column(2, "user_id", pg_type(pgrx::pg_sys::INT8OID), false),
+        ],
     }
 }
 
@@ -78,7 +88,24 @@ fn item_table() -> ResolvedTable {
             Field::new("id", DataType::Int64, false),
             Field::new("user_id", DataType::Int64, false),
         ])),
+        columns: vec![
+            resolved_column(1, "id", pg_type(pgrx::pg_sys::INT8OID), false),
+            resolved_column(2, "user_id", pg_type(pgrx::pg_sys::INT8OID), false),
+        ],
     }
+}
+
+fn resolved_column(attnum: i16, name: &str, pg_type: PgTypeRef, nullable: bool) -> ResolvedColumn {
+    ResolvedColumn {
+        attnum,
+        name: name.to_owned(),
+        pg_type,
+        nullable,
+    }
+}
+
+fn pg_type(oid: pgrx::pg_sys::Oid) -> PgTypeRef {
+    PgTypeRef::new(u32::from(oid), -1, 0)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,7 +186,7 @@ fn builder() -> PlanBuilder<FakeResolver, FakeStatsProvider> {
     })
 }
 
-fn build_sql(sql: &str) -> BuiltPlan {
+fn build_sql(sql: &str) -> HybridPlan {
     builder()
         .build(PlanBuildInput {
             sql,
@@ -295,11 +322,11 @@ fn pg_scan_relation_name(plan: &LogicalPlan) -> Option<String> {
 fn builds_simple_query_with_one_pg_scan_node() {
     let built = build_sql("SELECT id, name FROM users WHERE id > 10");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert!(!contains_table_scan(&built.logical_plan));
     assert_eq!(count_pg_scan_nodes(&built.logical_plan), 1);
 
-    let spec = &built.scans[0];
+    let spec = &built.scan_plan.scans[0];
     assert_eq!(spec.scan_id.get(), 1);
     assert_eq!(spec.table_oid, 42);
     assert_eq!(
@@ -316,8 +343,8 @@ fn builds_simple_query_with_one_pg_scan_node() {
 fn keeps_pg_text_columns_as_utf8view_for_string_predicates() {
     let built = build_sql("SELECT name FROM users WHERE name = 'alice'");
 
-    assert_eq!(built.scans.len(), 1);
-    let spec = &built.scans[0];
+    assert_eq!(built.scan_plan.scans.len(), 1);
+    let spec = &built.scan_plan.scans[0];
     assert_eq!(
         spec.arrow_schema().field(0).data_type(),
         &DataType::Utf8View
@@ -338,7 +365,7 @@ fn binds_params_before_scan_sql_compilation() {
         .unwrap();
 
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"id\" > 10)"
     );
 }
@@ -351,6 +378,7 @@ fn multiple_table_scans_get_sequential_ids() {
     );
 
     let scan_ids = built
+        .scan_plan
         .scans
         .iter()
         .map(|scan| scan.scan_id.get())
@@ -387,10 +415,10 @@ fn preplanned_logical_plan_uses_shared_scan_building() {
     )
     .expect("preplanned logical plan should build scan leaves");
 
-    assert_eq!(built.scans.len(), 1);
-    assert_eq!(built.scans[0].scan_id.get(), 7);
+    assert_eq!(built.scan_plan.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans[0].scan_id.get(), 7);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"id\" > 10)"
     );
     assert!(!contains_table_scan(&built.logical_plan));
@@ -433,9 +461,9 @@ fn frontend_logical_plan_builds_scans_before_optimizer_can_fold_pg_typed_literal
     )
     .expect("frontend logical plan should build scans before DataFusion optimization");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\" WHERE (CAST('a ' AS CHARACTER(2)) = CAST('a' AS CHARACTER(1)))"
     );
     assert!(!contains_table_scan(&built.logical_plan));
@@ -522,18 +550,18 @@ fn residual_filters_disable_local_row_cap_but_keep_planner_hint() {
 fn resolves_default_scalar_function_aliases() {
     let built = build_sql("SELECT length(name) AS len FROM users");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(built.logical_plan.schema().field(0).name(), "len");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"name\" FROM \"public\".\"users\""
     );
 
     let built = build_sql("SELECT char_length(name) AS len FROM users");
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(built.logical_plan.schema().field(0).name(), "len");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"name\" FROM \"public\".\"users\""
     );
 }
@@ -542,9 +570,9 @@ fn resolves_default_scalar_function_aliases() {
 fn installs_non_core_expression_planners() {
     let built = build_sql("SELECT substring(name FROM 1 FOR 1), position('a' in name) FROM users");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"name\" FROM \"public\".\"users\""
     );
     let rendered = built.logical_plan.display_indent().to_string();
@@ -557,7 +585,7 @@ fn installs_non_core_expression_planners() {
             params: Vec::new(),
         })
         .expect("build extract plan");
-    assert!(built.scans.is_empty());
+    assert!(built.scan_plan.scans.is_empty());
     assert!(built
         .logical_plan
         .display_indent()
@@ -569,7 +597,7 @@ fn installs_non_core_expression_planners() {
 fn normalizes_deparsed_unknown_casts() {
     let built = build_sql("SELECT format(NULL::unknown)");
 
-    assert!(built.scans.is_empty());
+    assert!(built.scan_plan.scans.is_empty());
     assert!(built
         .logical_plan
         .display_indent()
@@ -581,10 +609,10 @@ fn normalizes_deparsed_unknown_casts() {
 fn resolves_postgresql_compatibility_function_names() {
     let built = build_sql("SELECT ceiling(score) AS c FROM users");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(built.logical_plan.schema().field(0).name(), "c");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"score\" FROM \"public\".\"users\""
     );
     assert!(built
@@ -594,18 +622,18 @@ fn resolves_postgresql_compatibility_function_names() {
         .contains("ceil"));
 
     let built = build_sql("SELECT variance(id) AS v FROM users");
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(built.logical_plan.schema().field(0).name(), "v");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\""
     );
 
     let built = build_sql("SELECT quote_literal(name) AS q FROM users");
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(built.logical_plan.schema().field(0).name(), "q");
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"name\" FROM \"public\".\"users\""
     );
 }
@@ -666,15 +694,15 @@ fn rejects_exists_projection_that_survives_optimization() {
 fn rewrites_in_subquery_predicate_after_optimization() {
     let built = build_sql("SELECT id FROM users WHERE id IN (SELECT user_id FROM orders)");
 
-    assert_eq!(built.scans.len(), 2);
+    assert_eq!(built.scan_plan.scans.len(), 2);
     assert!(!contains_table_scan(&built.logical_plan));
     assert_eq!(count_pg_scan_nodes(&built.logical_plan), 2);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\""
     );
     assert_eq!(
-        built.scans[1].compiled_scan.sql,
+        built.scan_plan.scans[1].compiled_scan.sql,
         "SELECT \"user_id\" FROM \"public\".\"orders\""
     );
     assert!(built
@@ -688,15 +716,15 @@ fn rewrites_in_subquery_predicate_after_optimization() {
 fn rewrites_scalar_subquery_after_optimization() {
     let built = build_sql("SELECT id FROM users WHERE id = (SELECT max(user_id) FROM orders)");
 
-    assert_eq!(built.scans.len(), 2);
+    assert_eq!(built.scan_plan.scans.len(), 2);
     assert!(!contains_table_scan(&built.logical_plan));
     assert_eq!(count_pg_scan_nodes(&built.logical_plan), 2);
     assert_eq!(
-        built.scans[0].compiled_scan.sql,
+        built.scan_plan.scans[0].compiled_scan.sql,
         "SELECT \"id\" FROM \"public\".\"users\""
     );
     assert_eq!(
-        built.scans[1].compiled_scan.sql,
+        built.scan_plan.scans[1].compiled_scan.sql,
         "SELECT \"user_id\" FROM \"public\".\"orders\""
     );
     let rendered = built.logical_plan.display_indent().to_string();
@@ -713,7 +741,7 @@ fn join_reordering_uses_filtered_statistics_for_inner_join_components() {
          JOIN orders o ON u.id = o.user_id",
     );
 
-    assert_eq!(built.scans.len(), 3);
+    assert_eq!(built.scan_plan.scans.len(), 3);
     assert_eq!(
         bottom_join_on(&built.logical_plan).as_deref(),
         Some("o.user_id = u.id")
@@ -787,7 +815,7 @@ fn join_reordering_handles_disconnected_cross_join_components() {
          FROM users u CROSS JOIN items i CROSS JOIN orders o",
     );
 
-    assert_eq!(built.scans.len(), 3);
+    assert_eq!(built.scan_plan.scans.len(), 3);
     assert!(!contains_table_scan(&built.logical_plan));
     let rendered = built.logical_plan.display_indent().to_string();
     assert!(rendered.contains("Cross Join"), "{rendered}");
@@ -843,8 +871,8 @@ fn materializes_multi_use_cte_once() {
          SELECT a.id FROM u a JOIN u b ON a.id = b.id",
     );
 
-    assert_eq!(built.scans.len(), 1);
-    assert_eq!(built.scans[0].scan_id.get(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans[0].scan_id.get(), 1);
     assert_eq!(count_cte_ref_nodes(&built.logical_plan), 2);
     assert!(!contains_table_scan(&built.logical_plan));
     let rendered = built.logical_plan.display_indent().to_string();
@@ -855,7 +883,7 @@ fn materializes_multi_use_cte_once() {
 fn leaves_single_use_cte_inline() {
     let built = build_sql("WITH u AS (SELECT id FROM users) SELECT id FROM u");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(count_cte_ref_nodes(&built.logical_plan), 0);
     assert!(!contains_table_scan(&built.logical_plan));
 }
@@ -864,7 +892,7 @@ fn leaves_single_use_cte_inline() {
 fn parses_postgresql_cte_materialization_hint() {
     let built = build_sql("WITH u AS NOT MATERIALIZED (SELECT id FROM users) SELECT id FROM u");
 
-    assert_eq!(built.scans.len(), 1);
+    assert_eq!(built.scan_plan.scans.len(), 1);
     assert_eq!(count_cte_ref_nodes(&built.logical_plan), 0);
     assert!(!contains_table_scan(&built.logical_plan));
 }

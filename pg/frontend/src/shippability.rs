@@ -1,4 +1,4 @@
-use crate::ir::PgTypeRef;
+use crate::typed_query::PgTypeRef;
 use pg_type::{
     is_supported_non_null_const_type as pg_is_supported_non_null_const_type,
     is_supported_scalar_type as pg_is_supported_scalar_type,

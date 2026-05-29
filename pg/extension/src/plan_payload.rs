@@ -1,18 +1,16 @@
 use datafusion::logical_expr::LogicalPlan;
-use pg_frontend::{decode_query_ir, PgQuery};
 use plan_codec::{EncodeProgress, PlanEncodeSession};
 use thiserror::Error;
 
 const PAYLOAD_PREFIX: &str = "PGFUSION_CUSTOM_SCAN_V1\n";
 const SQL_TAG: &str = "sql\n";
-const FRONTEND_TAG: &str = "frontend\n";
+const LEGACY_FRONTEND_TAG: &str = "frontend\n";
 const FRONTEND_PLAN_TAG: &str = "frontend_plan\n";
 const PLAN_ENCODE_CHUNK_LEN: usize = 8192;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CustomScanPlanSource {
     SqlText(String),
-    FrontendQuery(PgQuery),
     FrontendPlan(Vec<u8>),
 }
 
@@ -20,16 +18,14 @@ impl CustomScanPlanSource {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::SqlText(_) => "sql_text",
-            Self::FrontendQuery(_) | Self::FrontendPlan(_) => "pg_frontend",
+            Self::FrontendPlan(_) => "pg_frontend",
         }
     }
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum PlanPayloadError {
-    #[error("PostgreSQL query IR codec failed: {0}")]
-    QueryCodec(#[from] pg_frontend::PgFrontendCodecError),
-    #[error("PostgreSQL built plan codec failed: {0}")]
+    #[error("PostgreSQL hybrid plan codec failed: {0}")]
     PlanCodec(String),
     #[error("invalid custom scan plan payload: {0}")]
     Invalid(String),
@@ -60,15 +56,14 @@ pub(crate) fn decode_plan_source(value: &str) -> Result<CustomScanPlanSource, Pl
     if let Some(hex) = rest.strip_prefix(FRONTEND_PLAN_TAG) {
         return Ok(CustomScanPlanSource::FrontendPlan(hex_decode(hex)?));
     }
-    let Some(hex) = rest.strip_prefix(FRONTEND_TAG) else {
+    if rest.strip_prefix(LEGACY_FRONTEND_TAG).is_some() {
         return Err(PlanPayloadError::Invalid(
-            "unknown custom scan payload tag".into(),
+            "legacy typed query payload is no longer supported".into(),
         ));
-    };
-    let bytes = hex_decode(hex)?;
-    Ok(CustomScanPlanSource::FrontendQuery(decode_query_ir(
-        &bytes,
-    )?))
+    }
+    Err(PlanPayloadError::Invalid(
+        "unknown custom scan payload tag".into(),
+    ))
 }
 
 fn encode_plan(plan: &LogicalPlan) -> Result<Vec<u8>, PlanPayloadError> {
@@ -169,5 +164,15 @@ mod tests {
             CustomScanPlanSource::FrontendPlan(bytes) => assert_eq!(bytes, vec![0x00, 0x01, 0xff]),
             other => panic!("unexpected payload {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_frontend_query_payload_is_rejected() {
+        let err = decode_plan_source(&format!("{PAYLOAD_PREFIX}{LEGACY_FRONTEND_TAG}0001ff"))
+            .expect_err("legacy typed query payload must be rejected");
+        assert!(
+            err.to_string().contains("legacy typed query payload"),
+            "unexpected error: {err}"
+        );
     }
 }

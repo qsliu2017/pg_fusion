@@ -108,6 +108,21 @@ pub struct ResolvedTable {
     /// live PostgreSQL row layout must obtain it from the execution runtime,
     /// for example from `slot_scan`'s run-time `TupleDesc`.
     pub schema: SchemaRef,
+    /// PostgreSQL column metadata matching [`schema`] fields in order.
+    pub columns: Vec<ResolvedColumn>,
+}
+
+/// PostgreSQL column metadata preserved during catalog resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedColumn {
+    /// PostgreSQL attribute number for this visible, non-dropped column.
+    pub attnum: i16,
+    /// PostgreSQL attribute name.
+    pub name: String,
+    /// PostgreSQL type identity, including typmod and collation when known.
+    pub pg_type: PgTypeRef,
+    /// Whether the column can contain NULL values.
+    pub nullable: bool,
 }
 
 /// Narrow lazy resolver surface for backend planning code.
@@ -273,18 +288,27 @@ fn resolve_relation_by_oid(
         let field_count = tuple_desc.iter().filter(|attr| !attr.is_dropped()).count();
         let mut fields = Vec::with_capacity(field_count);
         let mut column_attnums = Vec::with_capacity(field_count);
+        let mut columns = Vec::with_capacity(field_count);
         for attr in tuple_desc.iter() {
             if attr.is_dropped() {
                 continue;
             }
+            let pg_type = PgTypeRef::new(attr.atttypid.to_u32(), attr.atttypmod, 0);
             let data_type =
-                arrow_type_for_pg_type(PgTypeRef::new(attr.atttypid.to_u32(), attr.atttypmod, 0))
-                    .ok_or_else(|| ResolveError::UnsupportedType {
+                arrow_type_for_pg_type(pg_type).ok_or_else(|| ResolveError::UnsupportedType {
                     column: attr.name().to_owned(),
                     type_oid: attr.atttypid.to_u32(),
                 })?;
-            fields.push(Field::new(attr.name(), data_type, !attr.attnotnull));
+            let name = attr.name().to_owned();
+            let nullable = !attr.attnotnull;
+            fields.push(Field::new(&name, data_type, nullable));
             column_attnums.push(attr.attnum);
+            columns.push(ResolvedColumn {
+                attnum: attr.attnum,
+                name,
+                pg_type,
+                nullable,
+            });
         }
 
         Ok(ResolvedTable {
@@ -292,6 +316,7 @@ fn resolve_relation_by_oid(
             relation,
             column_attnums,
             schema: Arc::new(Schema::new(fields)),
+            columns,
         })
     }))
     .catch_others(|error| Err(resolve_error_from_caught_error(error)))

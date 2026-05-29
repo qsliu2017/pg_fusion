@@ -28,3 +28,6 @@ pgrx = { workspace = true }
 scan_node = { path = "../scan_node", version = "25.0" }
 scan_sql = { path = "../scan_sql", version = "25.0" }
 thiserror = "2.0"
+
+[dev-dependencies]
+pg_type = { path = "../type", version = "25.0" }

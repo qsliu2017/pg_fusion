@@ -4,8 +4,8 @@ use std::ptr::null_mut;
 use pgrx::pg_sys;
 
 use crate::error::PgFrontendError;
-use crate::ir::{PgBoolOp, PgOperator, PgParamKind, PgTypeRef};
 use crate::operator::supported_operator;
+use crate::typed_query::{BoolOp, ParamKind, PgTypeRef, QueryOperator};
 
 const USECS_PER_DAY: i64 = 86_400_000_000;
 
@@ -49,28 +49,28 @@ pub(super) fn unsupported_temporal_const(type_name: &str) -> PgFrontendError {
     ))
 }
 
-pub(super) fn read_operator(opno: pg_sys::Oid) -> Result<PgOperator, PgFrontendError> {
+pub(super) fn read_operator(opno: pg_sys::Oid) -> Result<QueryOperator, PgFrontendError> {
     unsafe { supported_operator(opno) }
 }
 
-pub(super) fn bool_op(op: pg_sys::BoolExprType::Type) -> Result<PgBoolOp, PgFrontendError> {
+pub(super) fn bool_op(op: pg_sys::BoolExprType::Type) -> Result<BoolOp, PgFrontendError> {
     match op {
-        pg_sys::BoolExprType::AND_EXPR => Ok(PgBoolOp::And),
-        pg_sys::BoolExprType::OR_EXPR => Ok(PgBoolOp::Or),
-        pg_sys::BoolExprType::NOT_EXPR => Ok(PgBoolOp::Not),
+        pg_sys::BoolExprType::AND_EXPR => Ok(BoolOp::And),
+        pg_sys::BoolExprType::OR_EXPR => Ok(BoolOp::Or),
+        pg_sys::BoolExprType::NOT_EXPR => Ok(BoolOp::Not),
         other => Err(PgFrontendError::unsupported(format!(
             "boolean expression kind {other} is not supported"
         ))),
     }
 }
 
-pub(super) fn param_kind(kind: pg_sys::ParamKind::Type) -> PgParamKind {
+pub(super) fn param_kind(kind: pg_sys::ParamKind::Type) -> ParamKind {
     match kind {
-        pg_sys::ParamKind::PARAM_EXTERN => PgParamKind::External,
-        pg_sys::ParamKind::PARAM_EXEC => PgParamKind::Exec,
-        pg_sys::ParamKind::PARAM_SUBLINK => PgParamKind::Sublink,
-        pg_sys::ParamKind::PARAM_MULTIEXPR => PgParamKind::Multiexpr,
-        _ => PgParamKind::Exec,
+        pg_sys::ParamKind::PARAM_EXTERN => ParamKind::External,
+        pg_sys::ParamKind::PARAM_EXEC => ParamKind::Exec,
+        pg_sys::ParamKind::PARAM_SUBLINK => ParamKind::Sublink,
+        pg_sys::ParamKind::PARAM_MULTIEXPR => ParamKind::Multiexpr,
+        _ => ParamKind::Exec,
     }
 }
 

@@ -590,8 +590,12 @@ pub fn backend_service_streams_scan_under_saved_snapshot() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let schema = transport_schema(spec.arrow_schema());
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
@@ -676,8 +680,12 @@ pub fn backend_service_yields_for_control_on_permit_backpressure() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -774,8 +782,12 @@ pub fn backend_service_deferred_outbound_page_is_replayed_before_scan_progress()
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -880,8 +892,12 @@ pub fn backend_service_deferred_terminal_step_is_replayed() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -951,8 +967,12 @@ pub fn backend_service_driver_fail_execution_from_control_yield() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -1018,8 +1038,12 @@ pub fn backend_service_wait_interrupt_cleans_up_active_execution() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -1123,8 +1147,12 @@ pub fn backend_service_cancel_during_stream_marks_scan_used() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let scan_rx = scan_transport.rx();
@@ -1191,8 +1219,12 @@ pub fn backend_service_rejects_descriptor_mismatch_without_poisoning_execution()
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build scan metadata");
-    assert_eq!(built.scans.len(), 1, "expected exactly one leaf scan");
-    let spec = &built.scans[0];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
     let scan_peer = peer_from_scan_channels(&begin, spec.scan_id.get());
 
     let mut mismatched = config.clone();
@@ -1251,9 +1283,13 @@ pub fn backend_service_interleaves_two_scan_portals_under_shared_spi() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build multi-scan metadata");
-    assert_eq!(built.scans.len(), 2, "expected exactly two leaf scans");
-    let left_spec = &built.scans[0];
-    let right_spec = &built.scans[1];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        2,
+        "expected exactly two leaf scans"
+    );
+    let left_spec = &built.scan_plan.scans[0];
+    let right_spec = &built.scan_plan.scans[1];
     let left_peer = peer_from_scan_channels(&begin, left_spec.scan_id.get());
     let right_peer = peer_from_scan_channels(&begin, right_spec.scan_id.get());
 
@@ -1317,9 +1353,13 @@ pub fn backend_service_drop_finished_driver_does_not_cancel_sibling_scan() {
             params: Vec::<ScalarValue>::new(),
         })
         .expect("build multi-scan metadata");
-    assert_eq!(built.scans.len(), 2, "expected exactly two leaf scans");
-    let left_spec = &built.scans[0];
-    let right_spec = &built.scans[1];
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        2,
+        "expected exactly two leaf scans"
+    );
+    let left_spec = &built.scan_plan.scans[0];
+    let right_spec = &built.scan_plan.scans[1];
     let left_peer = peer_from_scan_channels(&begin, left_spec.scan_id.get());
     let right_peer = peer_from_scan_channels(&begin, right_spec.scan_id.get());
 

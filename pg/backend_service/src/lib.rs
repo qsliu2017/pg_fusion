@@ -18,7 +18,7 @@ use fsm::backend_execution_flow::StateMachine as BackendExecutionMachine;
 pub use fsm::{BackendExecutionAction, BackendExecutionEvent, BackendExecutionState};
 use issuance::{encode_issued_frame, IssuedTx};
 use metrics::{MetricId, PageDirection, RuntimeMetrics};
-use pg_frontend::{PgFrontend, PgFrontendConfig, PgQuery};
+use pg_frontend::PgFrontendConfig;
 use pg_type::{arrow_data_type_for_type_tag, normalize_arrow_transport_field, PgTypeError};
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -213,10 +213,7 @@ pub enum ExecutionPlanSource<'a> {
         sql: &'a str,
         params: Vec<ScalarValue>,
     },
-    FrontendQuery {
-        query: &'a PgQuery,
-    },
-    EncodedBuiltPlan {
+    EncodedHybridPlan {
         bytes: &'a [u8],
     },
 }
@@ -225,7 +222,7 @@ impl ExecutionPlanSource<'_> {
     pub fn label(&self) -> &'static str {
         match self {
             Self::SqlText { .. } => "sql_text",
-            Self::FrontendQuery { .. } | Self::EncodedBuiltPlan { .. } => "pg_frontend",
+            Self::EncodedHybridPlan { .. } => "pg_frontend",
         }
     }
 }
@@ -530,7 +527,7 @@ pub(crate) fn build_execution_plan(
     config: &BackendServiceConfig,
 ) -> Result<PreparedExecutionPlan, BackendServiceError> {
     let (logical_plan, scans) = match source {
-        ExecutionPlanSource::EncodedBuiltPlan { bytes } => decode_built_plan(bytes)?,
+        ExecutionPlanSource::EncodedHybridPlan { bytes } => decode_hybrid_plan(bytes)?,
         other => build_execution_plan_from_source(other, config)?,
     };
     let output_schema = output_schema_from_logical_plan(&logical_plan);
@@ -550,23 +547,13 @@ fn build_execution_plan_from_source(
             let built = PlanBuilder::new()
                 .with_config(config.plan_builder_config())
                 .build(PlanBuildInput { sql, params })?;
-            Ok((built.logical_plan, built.scans))
+            Ok((built.logical_plan, built.scan_plan.into_scans()))
         }
-        ExecutionPlanSource::FrontendQuery { query } => {
-            let output = PgFrontend::new()
-                .with_config(config.pg_frontend_config())
-                .build_query(query.clone())?;
-            let built = plan_builder::build_frontend_logical_plan(
-                output.logical_plan,
-                config.plan_builder_config(),
-            )?;
-            Ok((built.logical_plan, built.scans))
-        }
-        ExecutionPlanSource::EncodedBuiltPlan { bytes } => decode_built_plan(bytes),
+        ExecutionPlanSource::EncodedHybridPlan { bytes } => decode_hybrid_plan(bytes),
     }
 }
 
-fn decode_built_plan(
+fn decode_hybrid_plan(
     bytes: &[u8],
 ) -> Result<(LogicalPlan, Vec<Arc<PgScanSpec>>), BackendServiceError> {
     let mut session = PlanDecodeSession::new();

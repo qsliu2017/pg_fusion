@@ -5,7 +5,7 @@ use std::ptr::null_mut;
 
 use arrow_schema::DataType;
 use datafusion::logical_expr::LogicalPlan;
-use pg_frontend::{PgFrontend, PgFrontendConfig, PgTarget};
+use pg_frontend::{PgFrontend, PgFrontendConfig, Target};
 use pg_type::pg_oid_for_arrow_type;
 use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
@@ -262,9 +262,9 @@ unsafe fn build_frontend_plan(
     let frontend = PgFrontend::new().with_config(PgFrontendConfig {
         identifier_max_bytes: config.plan_builder_config().identifier_max_bytes,
     });
-    let pg_query = frontend.read_query(parse).map_err(|err| err.to_string())?;
+    let typed_query = frontend.read_query(parse).map_err(|err| err.to_string())?;
     let output = frontend
-        .build_query(pg_query.clone())
+        .build_query(typed_query)
         .map_err(|err| err.to_string())?;
     let built = plan_builder::build_frontend_logical_plan(
         output.logical_plan,
@@ -274,7 +274,7 @@ unsafe fn build_frontend_plan(
     let target_lists = build_custom_scan_target_lists_from_pg_targets(&output.result_targets)
         .map_err(|err| format!("pg_fusion frontend targetlist build failed: {err}"))?;
     let payload = encode_frontend_plan(&built.logical_plan).map_err(|err| err.to_string())?;
-    let relation_oids = relation_oids_from_scans(&built.scans);
+    let relation_oids = relation_oids_from_scans(built.scan_plan.scans());
     Ok(Some(PlannedCustomScan {
         custom_scan: pack_custom_scan_payload(&payload, target_lists),
         query_id_seed: payload,
@@ -301,7 +301,7 @@ unsafe fn build_sql_text_plan(
     PlannedCustomScan {
         custom_scan: pack_custom_scan_payload(&encode_sql_text(&sql), target_lists),
         query_id_seed: sql,
-        relation_oids: relation_oids_from_scans(&built.scans),
+        relation_oids: relation_oids_from_scans(built.scan_plan.scans()),
     }
 }
 
@@ -430,7 +430,7 @@ unsafe fn pack_custom_scan_payload(
 }
 
 fn build_custom_scan_target_lists_from_pg_targets(
-    targets: &[PgTarget],
+    targets: &[Target],
 ) -> Result<CustomScanTargetLists, String> {
     let mut plan_target_list: *mut List = std::ptr::null_mut();
     let mut scan_target_list: *mut List = std::ptr::null_mut();

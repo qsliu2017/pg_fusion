@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
 #[cfg(test)]
-use arrow_schema::{DataType, Field};
+use arrow_schema::DataType;
+use arrow_schema::{Field, Schema};
 use datafusion_common::{Column, ScalarValue, TableReference};
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::logical_plan::{LogicalPlan, Projection, TableScan};
 use datafusion_expr::{Expr, Operator, TableSource};
-use df_catalog::{CatalogResolver, PgPlanningTableSource, ResolvedTable};
-#[cfg(test)]
-use pg_type::arrow_type_for_pg_type;
-use pg_type::{is_text_like_type, scalar_for_pg_const};
+use df_catalog::{PgPlanningTableSource, ResolvedColumn, ResolvedTable};
+use pg_type::{arrow_type_for_pg_type, is_text_like_type, scalar_for_pg_const};
 use scan_sql::pg_type_metadata;
 
 use crate::error::PgFrontendError;
+use crate::resolve::ResolvedQuery;
 #[cfg(test)]
-use crate::ir::PgTypeRef;
-use crate::ir::{
-    PgBoolOp, PgConst, PgExpr, PgFromItem, PgOperator, PgQuery, PgRelationRef, PgTarget, PgVar,
+use crate::typed_query::PgTypeRef;
+use crate::typed_query::{
+    BoolOp, Const, FromItem, QueryExpr, QueryOperator, RelationRef, Target, TypedQuery, Var,
 };
 
 #[derive(Debug)]
@@ -29,20 +29,14 @@ pub struct CompileConfig {
     pub identifier_max_bytes: usize,
 }
 
-pub fn compile_query<R: CatalogResolver + Send + Sync>(
-    query: PgQuery,
-    resolver: &R,
+pub fn compile_query(
+    query: ResolvedQuery<'_>,
     config: CompileConfig,
 ) -> Result<CompiledQuery, PgFrontendError> {
-    validate_supported_query_shape(&query)?;
-    let relation = single_relation(&query)?;
-    let resolved = resolver.resolve_relation_oid(relation.relid)?;
-    if resolved.table_oid != relation.relid {
-        return Err(PgFrontendError::unsupported(format!(
-            "catalog resolver returned relation oid {} for Query relid {}",
-            resolved.table_oid, relation.relid
-        )));
-    }
+    let query = query.query();
+    validate_supported_query_shape(query)?;
+    let relation = single_relation(query)?;
+    let resolved = resolved_table_for_relation(relation)?;
     if let Some(schema) = resolved.relation.schema.as_deref() {
         validate_identifier_len(schema, config.identifier_max_bytes, "schema")?;
     }
@@ -56,16 +50,16 @@ pub fn compile_query<R: CatalogResolver + Send + Sync>(
     let filter = query
         .selection
         .as_ref()
-        .map(|expr| compile_expr(expr, &query, &resolved))
+        .map(|expr| compile_expr(expr, query, &resolved))
         .transpose()?;
     let filters = filter.into_iter().collect::<Vec<_>>();
-    let scan_projection = visible_target_projection(&query, &resolved)?;
+    let scan_projection = visible_target_projection(query, &resolved)?;
     let source = Arc::new(PgPlanningTableSource::new(resolved.clone())) as Arc<dyn TableSource>;
     let table_scan = TableScan::try_new(table_ref, source, Some(scan_projection), filters, None)?;
     let mut plan = LogicalPlan::TableScan(table_scan);
 
-    let projection = visible_targets(&query)
-        .map(|target| compile_target_expr(target, &query, &resolved))
+    let projection = visible_targets(query)
+        .map(|target| compile_target_expr(target, query, &resolved))
         .collect::<Result<Vec<_>, _>>()?;
     plan = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(plan))?);
 
@@ -92,7 +86,45 @@ fn validate_identifier_len(
     Ok(())
 }
 
-fn validate_supported_query_shape(query: &PgQuery) -> Result<(), PgFrontendError> {
+fn resolved_table_for_relation(relation: &RelationRef) -> Result<ResolvedTable, PgFrontendError> {
+    if !relation.catalog_resolved {
+        return Err(PgFrontendError::unsupported(format!(
+            "relation rtindex {} was not resolved before compilation",
+            relation.rtindex
+        )));
+    }
+
+    let mut fields = Vec::with_capacity(relation.columns.len());
+    let mut column_attnums = Vec::with_capacity(relation.columns.len());
+    let mut columns = Vec::with_capacity(relation.columns.len());
+    for column in &relation.columns {
+        let data_type = arrow_type_for_pg_type(column.pg_type).ok_or_else(|| {
+            PgFrontendError::unsupported(format!(
+                "resolved column {} has unsupported PostgreSQL type oid {}",
+                column.name, column.pg_type.oid
+            ))
+        })?;
+        fields.push(Field::new(&column.name, data_type, column.nullable));
+        column_attnums.push(column.attnum);
+        columns.push(ResolvedColumn {
+            attnum: column.attnum,
+            name: column.name.clone(),
+            pg_type: column.pg_type,
+            nullable: column.nullable,
+        });
+    }
+
+    let schema = (!relation.schema.is_empty()).then_some(relation.schema.as_str());
+    Ok(ResolvedTable {
+        table_oid: relation.relid,
+        relation: scan_sql::PgRelation::new(schema, relation.name.as_str()),
+        column_attnums,
+        schema: Arc::new(Schema::new(fields)),
+        columns,
+    })
+}
+
+fn validate_supported_query_shape(query: &TypedQuery) -> Result<(), PgFrontendError> {
     if query.has_aggregates {
         return Err(PgFrontendError::unsupported(
             "aggregates are not supported by pg_frontend v1",
@@ -151,8 +183,8 @@ fn validate_supported_query_shape(query: &PgQuery) -> Result<(), PgFrontendError
     Ok(())
 }
 
-fn single_relation(query: &PgQuery) -> Result<&PgRelationRef, PgFrontendError> {
-    let PgFromItem::Relation { rtindex } = query.from;
+fn single_relation(query: &TypedQuery) -> Result<&RelationRef, PgFrontendError> {
+    let FromItem::Relation { rtindex } = query.from;
     query
         .relations
         .iter()
@@ -160,12 +192,12 @@ fn single_relation(query: &PgQuery) -> Result<&PgRelationRef, PgFrontendError> {
         .ok_or_else(|| PgFrontendError::unsupported(format!("missing rtable index {rtindex}")))
 }
 
-fn visible_targets(query: &PgQuery) -> impl Iterator<Item = &PgTarget> {
+fn visible_targets(query: &TypedQuery) -> impl Iterator<Item = &Target> {
     query.targets.iter().filter(|target| !target.resjunk)
 }
 
 fn visible_target_projection(
-    query: &PgQuery,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<Vec<usize>, PgFrontendError> {
     let mut projection = Vec::new();
@@ -177,41 +209,41 @@ fn visible_target_projection(
 }
 
 fn collect_target_var_indices(
-    expr: &PgExpr,
-    query: &PgQuery,
+    expr: &QueryExpr,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
     projection: &mut Vec<usize>,
 ) -> Result<(), PgFrontendError> {
     match expr {
-        PgExpr::Var(var) => {
+        QueryExpr::Var(var) => {
             let index = var_column_index(*var, query, resolved)?;
             if !projection.contains(&index) {
                 projection.push(index);
             }
             Ok(())
         }
-        PgExpr::RelabelType(inner) => {
+        QueryExpr::RelabelType(inner) => {
             collect_target_var_indices(inner, query, resolved, projection)
         }
-        PgExpr::Bool { args, .. } => args
+        QueryExpr::Bool { args, .. } => args
             .iter()
             .try_for_each(|arg| collect_target_var_indices(arg, query, resolved, projection)),
-        PgExpr::NullTest { arg, .. } => {
+        QueryExpr::NullTest { arg, .. } => {
             collect_target_var_indices(arg, query, resolved, projection)
         }
-        PgExpr::BinaryOp { .. } => Err(PgFrontendError::unsupported(
+        QueryExpr::BinaryOp { .. } => Err(PgFrontendError::unsupported(
             "PostgreSQL operators in SELECT targets are not supported by pg_frontend v1",
         )),
-        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+        QueryExpr::Param(_) => Err(PgFrontendError::unsupported(
             "parameters are not supported by pg_frontend v1",
         )),
-        PgExpr::Const(_) => Ok(()),
+        QueryExpr::Const(_) => Ok(()),
     }
 }
 
 fn compile_target_expr(
-    target: &PgTarget,
-    query: &PgQuery,
+    target: &Target,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     validate_target_expr(&target.expr)?;
@@ -222,42 +254,42 @@ fn compile_target_expr(
     })
 }
 
-fn validate_target_expr(expr: &PgExpr) -> Result<(), PgFrontendError> {
+fn validate_target_expr(expr: &QueryExpr) -> Result<(), PgFrontendError> {
     match expr {
-        PgExpr::BinaryOp { .. } => Err(PgFrontendError::unsupported(
+        QueryExpr::BinaryOp { .. } => Err(PgFrontendError::unsupported(
             "PostgreSQL operators in SELECT targets are not supported by pg_frontend v1",
         )),
-        PgExpr::RelabelType(inner) => validate_target_expr(inner),
-        PgExpr::Bool { args, .. } => args.iter().try_for_each(validate_target_expr),
-        PgExpr::NullTest { arg, .. } => validate_target_expr(arg),
-        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+        QueryExpr::RelabelType(inner) => validate_target_expr(inner),
+        QueryExpr::Bool { args, .. } => args.iter().try_for_each(validate_target_expr),
+        QueryExpr::NullTest { arg, .. } => validate_target_expr(arg),
+        QueryExpr::Param(_) => Err(PgFrontendError::unsupported(
             "parameters are not supported by pg_frontend v1",
         )),
-        PgExpr::Var(_) | PgExpr::Const(_) => Ok(()),
+        QueryExpr::Var(_) | QueryExpr::Const(_) => Ok(()),
     }
 }
 
 fn compile_expr(
-    expr: &PgExpr,
-    query: &PgQuery,
+    expr: &QueryExpr,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     match expr {
-        PgExpr::Var(var) => compile_var(*var, query, resolved),
-        PgExpr::Const(constant) => compile_const_expr(constant),
-        PgExpr::Param(_) => Err(PgFrontendError::unsupported(
+        QueryExpr::Var(var) => compile_var(*var, query, resolved),
+        QueryExpr::Const(constant) => compile_const_expr(constant),
+        QueryExpr::Param(_) => Err(PgFrontendError::unsupported(
             "parameters are not supported by pg_frontend v1",
         )),
-        PgExpr::RelabelType(inner) => compile_expr(inner, query, resolved),
-        PgExpr::Bool { op, args } => compile_bool(*op, args, query, resolved),
-        PgExpr::BinaryOp {
+        QueryExpr::RelabelType(inner) => compile_expr(inner, query, resolved),
+        QueryExpr::Bool { op, args } => compile_bool(*op, args, query, resolved),
+        QueryExpr::BinaryOp {
             op, left, right, ..
         } => Ok(binary_expr(
             compile_expr(left, query, resolved)?,
             operator(*op),
             compile_expr(right, query, resolved)?,
         )),
-        PgExpr::NullTest { arg, is_null } => {
+        QueryExpr::NullTest { arg, is_null } => {
             let arg = Box::new(compile_expr(arg, query, resolved)?);
             Ok(if *is_null {
                 Expr::IsNull(arg)
@@ -269,8 +301,8 @@ fn compile_expr(
 }
 
 fn compile_var(
-    var: PgVar,
-    query: &PgQuery,
+    var: Var,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     let index = var_column_index(var, query, resolved)?;
@@ -280,8 +312,8 @@ fn compile_var(
 }
 
 fn var_column_index(
-    var: PgVar,
-    query: &PgQuery,
+    var: Var,
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<usize, PgFrontendError> {
     let relation = query
@@ -310,19 +342,19 @@ fn var_column_index(
 }
 
 fn compile_bool(
-    op: PgBoolOp,
-    args: &[PgExpr],
-    query: &PgQuery,
+    op: BoolOp,
+    args: &[QueryExpr],
+    query: &TypedQuery,
     resolved: &ResolvedTable,
 ) -> Result<Expr, PgFrontendError> {
     match op {
-        PgBoolOp::And | PgBoolOp::Or => {
+        BoolOp::And | BoolOp::Or => {
             if args.is_empty() {
                 return Err(PgFrontendError::unsupported(
                     "empty boolean expression is not supported",
                 ));
             }
-            let operator = if op == PgBoolOp::And {
+            let operator = if op == BoolOp::And {
                 Operator::And
             } else {
                 Operator::Or
@@ -335,7 +367,7 @@ fn compile_bool(
             let first = compiled.next().expect("checked non-empty args");
             Ok(compiled.fold(first, |left, right| binary_expr(left, operator, right)))
         }
-        PgBoolOp::Not => {
+        BoolOp::Not => {
             if args.len() != 1 {
                 return Err(PgFrontendError::unsupported(
                     "NOT expressions must have exactly one argument",
@@ -352,27 +384,27 @@ fn binary_expr(left: Expr, op: Operator, right: Expr) -> Expr {
     Expr::BinaryExpr(BinaryExpr::new(Box::new(left), op, Box::new(right)))
 }
 
-fn operator(op: PgOperator) -> Operator {
+fn operator(op: QueryOperator) -> Operator {
     match op {
-        PgOperator::Eq => Operator::Eq,
-        PgOperator::NotEq => Operator::NotEq,
-        PgOperator::Lt => Operator::Lt,
-        PgOperator::LtEq => Operator::LtEq,
-        PgOperator::Gt => Operator::Gt,
-        PgOperator::GtEq => Operator::GtEq,
-        PgOperator::Plus => Operator::Plus,
-        PgOperator::Minus => Operator::Minus,
-        PgOperator::Multiply => Operator::Multiply,
-        PgOperator::Divide => Operator::Divide,
+        QueryOperator::Eq => Operator::Eq,
+        QueryOperator::NotEq => Operator::NotEq,
+        QueryOperator::Lt => Operator::Lt,
+        QueryOperator::LtEq => Operator::LtEq,
+        QueryOperator::Gt => Operator::Gt,
+        QueryOperator::GtEq => Operator::GtEq,
+        QueryOperator::Plus => Operator::Plus,
+        QueryOperator::Minus => Operator::Minus,
+        QueryOperator::Multiply => Operator::Multiply,
+        QueryOperator::Divide => Operator::Divide,
     }
 }
 
-fn compile_const_scalar(constant: &PgConst) -> Result<ScalarValue, PgFrontendError> {
+fn compile_const_scalar(constant: &Const) -> Result<ScalarValue, PgFrontendError> {
     scalar_for_pg_const(constant.value.as_ref(), constant.pg_type)
         .map_err(|err| PgFrontendError::unsupported(err.to_string()))
 }
 
-fn compile_const_expr(constant: &PgConst) -> Result<Expr, PgFrontendError> {
+fn compile_const_expr(constant: &Const) -> Result<Expr, PgFrontendError> {
     let literal = compile_const_scalar(constant)?;
     let metadata = is_text_like_type(constant.pg_type.oid).then(|| {
         pg_type_metadata(
@@ -402,10 +434,11 @@ fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{
-        PgCommand, PgConst, PgConstValue, PgFromItem, PgOperator, PgParam, PgParamKind, PgVar,
+    use crate::typed_query::{
+        Const, FromItem, Param, ParamKind, PgConstValue, QueryCommand, QueryOperator, Var,
     };
     use arrow_schema::IntervalUnit;
+    use df_catalog::CatalogResolver;
 
     #[test]
     fn rejects_group_by_having_and_row_locks() {
@@ -429,14 +462,14 @@ mod tests {
         let binary = target_binary_op();
         assert_target_expr_unsupported_contains(&binary, "SELECT targets");
 
-        let relabeled_binary = PgExpr::RelabelType(Box::new(binary));
+        let relabeled_binary = QueryExpr::RelabelType(Box::new(binary));
         assert_target_expr_unsupported_contains(&relabeled_binary, "SELECT targets");
     }
 
     #[test]
     fn rejects_parameters_in_targets_and_filters() {
-        let param = PgExpr::Param(PgParam {
-            kind: PgParamKind::External,
+        let param = QueryExpr::Param(Param {
+            kind: ParamKind::External,
             id: 1,
             pg_type: int4_type(),
         });
@@ -460,13 +493,13 @@ mod tests {
             target("second", target_var_attnum(2)),
             target(
                 "is_first_null",
-                PgExpr::NullTest {
+                QueryExpr::NullTest {
                     arg: Box::new(target_var_attnum(1)),
                     is_null: true,
                 },
             ),
             target("second_again", target_var_attnum(2)),
-            PgTarget {
+            Target {
                 expr: target_var_attnum(3),
                 name: Some("hidden".into()),
                 pg_type: int4_type(),
@@ -485,7 +518,7 @@ mod tests {
         let mut query = query_for_resolved_table();
         query.targets = vec![target(
             "one",
-            PgExpr::Const(PgConst {
+            QueryExpr::Const(Const {
                 pg_type: int4_type(),
                 value: Some(PgConstValue::Int32(1)),
             }),
@@ -499,19 +532,21 @@ mod tests {
     fn compile_query_builds_typed_table_scan_plan() {
         let mut query = query_for_resolved_table();
         query.targets = vec![target("second", target_var_attnum(2))];
-        query.selection = Some(PgExpr::BinaryOp {
-            op: PgOperator::Eq,
+        query.selection = Some(QueryExpr::BinaryOp {
+            op: QueryOperator::Eq,
             left: Box::new(target_var_attnum(1)),
-            right: Box::new(PgExpr::Const(PgConst {
+            right: Box::new(QueryExpr::Const(Const {
                 pg_type: int4_type(),
                 value: Some(PgConstValue::Int32(1)),
             })),
             pg_type: type_ref(pgrx::pg_sys::BOOLOID),
         });
 
+        let resolved = query
+            .resolve_catalog(&FakeResolver)
+            .expect("frontend query should resolve against catalog");
         let output = compile_query(
-            query,
-            &FakeResolver,
+            resolved,
             CompileConfig {
                 identifier_max_bytes: 63,
             },
@@ -526,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_query_rejects_resolver_oid_mismatch() {
+    fn resolve_catalog_rejects_resolver_oid_mismatch() {
         #[derive(Debug)]
         struct MismatchResolver;
 
@@ -550,14 +585,10 @@ mod tests {
             }
         }
 
-        let err = compile_query(
-            query_for_resolved_table(),
-            &MismatchResolver,
-            CompileConfig {
-                identifier_max_bytes: 63,
-            },
-        )
-        .expect_err("oid mismatch must fail closed");
+        let mut query = query_for_resolved_table();
+        let err = query
+            .resolve_catalog(&MismatchResolver)
+            .expect_err("oid mismatch must fail closed");
         assert!(
             err.to_string().contains("relation oid"),
             "error {err} should mention relation oid mismatch"
@@ -587,7 +618,7 @@ mod tests {
 
     #[test]
     fn text_like_constants_keep_pg_type_metadata() {
-        let constant = PgConst {
+        let constant = Const {
             pg_type: PgTypeRef {
                 oid: oid_u32(pgrx::pg_sys::BPCHAROID),
                 typmod: pgrx::pg_sys::VARHDRSZ as i32 + 2,
@@ -612,7 +643,7 @@ mod tests {
         );
     }
 
-    fn assert_unsupported_contains(query: &PgQuery, expected: &str) {
+    fn assert_unsupported_contains(query: &TypedQuery, expected: &str) {
         let err = validate_supported_query_shape(query).expect_err("query must be rejected");
         assert!(
             err.to_string().contains(expected),
@@ -620,7 +651,7 @@ mod tests {
         );
     }
 
-    fn assert_target_expr_unsupported_contains(expr: &PgExpr, expected: &str) {
+    fn assert_target_expr_unsupported_contains(expr: &QueryExpr, expected: &str) {
         let err = validate_target_expr(expr).expect_err("target expression must be rejected");
         assert!(
             err.to_string().contains(expected),
@@ -628,11 +659,11 @@ mod tests {
         );
     }
 
-    fn target_binary_op() -> PgExpr {
-        PgExpr::BinaryOp {
-            op: PgOperator::Plus,
+    fn target_binary_op() -> QueryExpr {
+        QueryExpr::BinaryOp {
+            op: QueryOperator::Plus,
             left: Box::new(target_var()),
-            right: Box::new(PgExpr::Const(PgConst {
+            right: Box::new(QueryExpr::Const(Const {
                 pg_type: int4_type(),
                 value: Some(PgConstValue::Int32(1)),
             })),
@@ -640,20 +671,20 @@ mod tests {
         }
     }
 
-    fn target_var() -> PgExpr {
+    fn target_var() -> QueryExpr {
         target_var_attnum(1)
     }
 
-    fn target_var_attnum(attnum: i16) -> PgExpr {
-        PgExpr::Var(PgVar {
+    fn target_var_attnum(attnum: i16) -> QueryExpr {
+        QueryExpr::Var(Var {
             rtindex: 1,
             attnum,
             pg_type: int4_type(),
         })
     }
 
-    fn target(name: &str, expr: PgExpr) -> PgTarget {
-        PgTarget {
+    fn target(name: &str, expr: QueryExpr) -> Target {
+        Target {
             expr,
             name: Some(name.into()),
             pg_type: int4_type(),
@@ -662,15 +693,16 @@ mod tests {
         }
     }
 
-    fn query_for_resolved_table() -> PgQuery {
+    fn query_for_resolved_table() -> TypedQuery {
         let mut query = base_query();
-        query.relations = vec![PgRelationRef {
+        query.relations = vec![RelationRef {
             rtindex: 1,
             relid: 42,
             schema: "public".into(),
             name: "t".into(),
             alias: None,
             columns: Vec::new(),
+            catalog_resolved: false,
         }];
         query
     }
@@ -685,6 +717,26 @@ mod tests {
                 Field::new("second", DataType::Int32, true),
                 Field::new("unused", DataType::Int32, true),
             ])),
+            columns: vec![
+                ResolvedColumn {
+                    attnum: 1,
+                    name: "first".into(),
+                    pg_type: int4_type(),
+                    nullable: true,
+                },
+                ResolvedColumn {
+                    attnum: 2,
+                    name: "second".into(),
+                    pg_type: int4_type(),
+                    nullable: true,
+                },
+                ResolvedColumn {
+                    attnum: 3,
+                    name: "unused".into(),
+                    pg_type: int4_type(),
+                    nullable: true,
+                },
+            ],
         }
     }
 
@@ -727,11 +779,11 @@ mod tests {
         }
     }
 
-    fn base_query() -> PgQuery {
-        PgQuery {
-            command: PgCommand::Select,
+    fn base_query() -> TypedQuery {
+        TypedQuery {
+            command: QueryCommand::Select,
             relations: Vec::new(),
-            from: PgFromItem::Relation { rtindex: 1 },
+            from: FromItem::Relation { rtindex: 1 },
             selection: None,
             targets: Vec::new(),
             has_aggregates: false,

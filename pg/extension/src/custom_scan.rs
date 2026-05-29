@@ -2100,8 +2100,7 @@ impl CustomScanPlanSource {
                 sql,
                 params: Vec::new(),
             },
-            Self::FrontendQuery(query) => ExecutionPlanSource::FrontendQuery { query },
-            Self::FrontendPlan(bytes) => ExecutionPlanSource::EncodedBuiltPlan { bytes },
+            Self::FrontendPlan(bytes) => ExecutionPlanSource::EncodedHybridPlan { bytes },
         }
     }
 }

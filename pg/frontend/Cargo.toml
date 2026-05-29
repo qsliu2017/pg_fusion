@@ -20,7 +20,5 @@ datafusion-expr = { workspace = true }
 df_catalog = { path = "../df_catalog", version = "25.0" }
 pgrx = { workspace = true }
 pg_type = { path = "../type", version = "25.0", features = ["datafusion"] }
-rmp-serde = "1.3"
 scan_sql = { path = "../scan_sql", version = "25.0" }
-serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"

@@ -99,12 +99,12 @@ use datafusion_common::ScalarValue;
 use plan_builder::{PlanBuildInput, PlanBuilder};
 
 let builder = PlanBuilder::new();
-let built = builder.build(PlanBuildInput {
+let hybrid = builder.build(PlanBuildInput {
     sql: "SELECT id, payload FROM public.orders WHERE id > $1 LIMIT 32",
     params: vec![ScalarValue::Int64(Some(10))],
 })?;
 
-for scan in &built.scans {
+for scan in hybrid.scan_plan.scans() {
     println!(
         "scan {} table_oid={} sql={}",
         scan.scan_id.get(),

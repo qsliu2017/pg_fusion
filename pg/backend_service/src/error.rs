@@ -68,7 +68,7 @@ pub enum BackendServiceError {
     PlanBuild(#[from] plan_builder::PlanBuildError),
     #[error("PostgreSQL query-tree frontend failed: {0}")]
     PgFrontend(#[from] pg_frontend::PgFrontendError),
-    #[error("built logical plan decode failed: {0}")]
+    #[error("hybrid plan decode failed: {0}")]
     PlanDecode(String),
     #[error("physical plan build failed: {0}")]
     PhysicalPlan(DataFusionError),

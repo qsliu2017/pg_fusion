@@ -69,13 +69,34 @@ pub struct PlanBuildInput<'a> {
     pub params: Vec<ScalarValue>,
 }
 
-/// Output of a successful plan build.
+/// Output of a successful hybrid plan build.
 #[derive(Debug)]
-pub struct BuiltPlan {
+pub struct HybridPlan {
     /// Optimized logical plan with PostgreSQL table scans built as custom nodes.
     pub logical_plan: LogicalPlan,
+    /// PostgreSQL scan plan referenced by custom scan leaves in `logical_plan`.
+    pub scan_plan: PgScanPlan,
+}
+
+/// Query-local PostgreSQL scan plan built alongside a DataFusion logical plan.
+#[derive(Debug)]
+pub struct PgScanPlan {
     /// Query-local scan specs in allocation order.
     pub scans: Vec<Arc<PgScanSpec>>,
+}
+
+impl PgScanPlan {
+    fn new(scans: Vec<Arc<PgScanSpec>>) -> Self {
+        Self { scans }
+    }
+
+    pub fn scans(&self) -> &[Arc<PgScanSpec>] {
+        &self.scans
+    }
+
+    pub fn into_scans(self) -> Vec<Arc<PgScanSpec>> {
+        self.scans
+    }
 }
 
 /// Build a pg_fusion execution plan from an already-typed DataFusion logical plan.
@@ -88,7 +109,7 @@ pub struct BuiltPlan {
 pub fn build_preplanned_logical_plan(
     plan: LogicalPlan,
     config: PlanBuilderConfig,
-) -> Result<BuiltPlan, PlanBuildError> {
+) -> Result<HybridPlan, PlanBuildError> {
     build_preplanned_logical_plan_with_stats(plan, config, &LiveJoinStatsProvider)
 }
 
@@ -97,7 +118,7 @@ pub fn build_preplanned_logical_plan_with_stats<S>(
     plan: LogicalPlan,
     config: PlanBuilderConfig,
     stats_provider: &S,
-) -> Result<BuiltPlan, PlanBuildError>
+) -> Result<HybridPlan, PlanBuildError>
 where
     S: JoinStatsProvider,
 {
@@ -108,9 +129,9 @@ where
         stats_provider,
         &mut scan_builder,
     )?;
-    Ok(BuiltPlan {
+    Ok(HybridPlan {
         logical_plan,
-        scans: scan_builder.scans,
+        scan_plan: PgScanPlan::new(scan_builder.scans),
     })
 }
 
@@ -123,13 +144,13 @@ where
 pub fn build_frontend_logical_plan(
     plan: LogicalPlan,
     config: PlanBuilderConfig,
-) -> Result<BuiltPlan, PlanBuildError> {
+) -> Result<HybridPlan, PlanBuildError> {
     let mut scan_builder = PgScanBuilder::new(config);
     let logical_plan = build_frontend_logical_plan_with_scan_builder(plan, &mut scan_builder)?;
     reject_residual_frontend_filters(&scan_builder.scans)?;
-    Ok(BuiltPlan {
+    Ok(HybridPlan {
         logical_plan,
-        scans: scan_builder.scans,
+        scan_plan: PgScanPlan::new(scan_builder.scans),
     })
 }
 
@@ -299,7 +320,7 @@ where
     S: JoinStatsProvider,
 {
     /// Build an optimized logical plan and lower PostgreSQL table scans.
-    pub fn build(&self, input: PlanBuildInput<'_>) -> Result<BuiltPlan, PlanBuildError> {
+    pub fn build(&self, input: PlanBuildInput<'_>) -> Result<HybridPlan, PlanBuildError> {
         let mut statement = parse_one_query(input.sql)?;
         let context = PgPlanningContext::new(&self.resolver, self.config);
         let mut scan_builder = PgScanBuilder::new(self.config);
@@ -319,9 +340,9 @@ where
             &self.stats_provider,
             &mut scan_builder,
         )?;
-        Ok(BuiltPlan {
+        Ok(HybridPlan {
             logical_plan,
-            scans: scan_builder.scans,
+            scan_plan: PgScanPlan::new(scan_builder.scans),
         })
     }
 }

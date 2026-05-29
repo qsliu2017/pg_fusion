@@ -6,7 +6,7 @@ use pg_type::is_supported_scalar_type;
 use pgrx::pg_sys;
 
 use crate::error::PgFrontendError;
-use crate::ir::PgOperator;
+use crate::typed_query::QueryOperator;
 
 /// Return the DataFusion operator for PostgreSQL comparison operators that v1
 /// can compile.
@@ -16,7 +16,9 @@ use crate::ir::PgOperator;
 /// PostgreSQL already resolved `OpExpr.opno`; this function validates that the
 /// resolved operator is a safe `pg_catalog` binary comparison over supported
 /// scalar types before compiling it.
-pub(crate) unsafe fn supported_operator(opno: pg_sys::Oid) -> Result<PgOperator, PgFrontendError> {
+pub(crate) unsafe fn supported_operator(
+    opno: pg_sys::Oid,
+) -> Result<QueryOperator, PgFrontendError> {
     let tuple = unsafe {
         pg_sys::SearchSysCache1(
             pg_sys::SysCacheIdentifier::OPEROID as i32,
@@ -73,7 +75,7 @@ impl OperatorMetadata {
     }
 }
 
-fn classify_operator(metadata: &OperatorMetadata) -> Option<PgOperator> {
+fn classify_operator(metadata: &OperatorMetadata) -> Option<QueryOperator> {
     if metadata.namespace != pg_sys::PG_CATALOG_NAMESPACE {
         return None;
     }
@@ -91,12 +93,12 @@ fn classify_operator(metadata: &OperatorMetadata) -> Option<PgOperator> {
     }
 
     match metadata.name.as_str() {
-        "=" => Some(PgOperator::Eq),
-        "<>" => Some(PgOperator::NotEq),
-        "<" => Some(PgOperator::Lt),
-        "<=" => Some(PgOperator::LtEq),
-        ">" => Some(PgOperator::Gt),
-        ">=" => Some(PgOperator::GtEq),
+        "=" => Some(QueryOperator::Eq),
+        "<>" => Some(QueryOperator::NotEq),
+        "<" => Some(QueryOperator::Lt),
+        "<=" => Some(QueryOperator::LtEq),
+        ">" => Some(QueryOperator::Gt),
+        ">=" => Some(QueryOperator::GtEq),
         _ => None,
     }
 }
@@ -124,7 +126,7 @@ mod tests {
                 pg_sys::INT4OID,
                 pg_sys::BOOLOID
             )),
-            Some(PgOperator::Eq)
+            Some(QueryOperator::Eq)
         );
         assert_eq!(
             classify_operator(&operator(
@@ -133,7 +135,7 @@ mod tests {
                 pg_sys::TEXTOID,
                 pg_sys::BOOLOID,
             )),
-            Some(PgOperator::NotEq)
+            Some(QueryOperator::NotEq)
         );
         assert_eq!(
             classify_operator(&operator(
@@ -142,7 +144,7 @@ mod tests {
                 pg_sys::FLOAT8OID,
                 pg_sys::BOOLOID,
             )),
-            Some(PgOperator::Lt)
+            Some(QueryOperator::Lt)
         );
         assert_eq!(
             classify_operator(&operator(
@@ -151,7 +153,7 @@ mod tests {
                 pg_sys::DATEOID,
                 pg_sys::BOOLOID,
             )),
-            Some(PgOperator::GtEq)
+            Some(QueryOperator::GtEq)
         );
     }
 
