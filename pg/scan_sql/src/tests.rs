@@ -1,6 +1,8 @@
 use super::*;
+use std::collections::BTreeMap;
+
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use datafusion_common::{Column, TableReference};
+use datafusion_common::{metadata::FieldMetadata, Column, ScalarValue, TableReference};
 use datafusion_expr::expr::{BinaryExpr, Cast, InList, Like};
 use datafusion_expr::{lit, Expr, Operator};
 
@@ -310,6 +312,74 @@ fn renders_utf8view_string_literal_filter() {
         compiled.sql,
         "SELECT \"name\" FROM \"public\".\"users\" WHERE (\"name\" = 'alice')"
     );
+}
+
+#[test]
+fn renders_pg_typed_text_literals_from_metadata() {
+    let schema = test_schema();
+    let filters = vec![
+        Expr::Column(Column::from_name("name")).eq(Expr::Literal(
+            ScalarValue::Utf8View(Some("a ".into())),
+            Some(pg_type_metadata(1042, 6, 0)),
+        )),
+        Expr::Column(Column::from_name("name")).eq(Expr::Literal(
+            ScalarValue::Utf8View(Some("abcd".into())),
+            Some(pg_type_metadata(1043, 8, 0)),
+        )),
+        Expr::Column(Column::from_name("name")).eq(Expr::Literal(
+            ScalarValue::Utf8View(Some("foo".into())),
+            Some(pg_type_metadata(19, -1, 0)),
+        )),
+        Expr::Column(Column::from_name("name")).eq(Expr::Literal(
+            ScalarValue::Utf8View(Some("ab".into())),
+            Some(pg_type_metadata(1042, -1, 0)),
+        )),
+    ];
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &test_relation(),
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[1]),
+        filters: &filters,
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(compiled.all_filters_compiled);
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"name\" FROM \"public\".\"users\" WHERE (\"name\" = CAST('a ' AS CHARACTER(2))) AND (\"name\" = CAST('abcd' AS CHARACTER VARYING(4))) AND (\"name\" = CAST('foo' AS NAME)) AND (\"name\" = CAST('ab' AS pg_catalog.bpchar))"
+    );
+}
+
+#[test]
+fn leaves_malformed_pg_typed_literal_metadata_residual() {
+    let schema = test_schema();
+    let malformed = FieldMetadata::from(BTreeMap::from([(
+        "pg_fusion.pg_type_oid".to_string(),
+        "not-an-oid".to_string(),
+    )]));
+    let filter = Expr::Column(Column::from_name("name")).eq(Expr::Literal(
+        ScalarValue::Utf8View(Some("foo".into())),
+        Some(malformed),
+    ));
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &test_relation(),
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[1]),
+        filters: std::slice::from_ref(&filter),
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(!compiled.all_filters_compiled);
+    assert_eq!(compiled.residual_filters, vec![filter]);
+    assert_eq!(compiled.sql, "SELECT \"name\" FROM \"public\".\"users\"");
 }
 
 #[test]

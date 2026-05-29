@@ -21,7 +21,9 @@ pub(crate) fn render_expr(
         Expr::Column(column) => {
             render_column(column, schema, relation, identifier_max_bytes).map(Some)
         }
-        Expr::Literal(literal, _) => Ok(render_literal(literal).map(RenderedExpr::new)),
+        Expr::Literal(literal, metadata) => {
+            Ok(render_literal(literal, metadata.as_ref()).map(RenderedExpr::new))
+        }
         Expr::BinaryExpr(binary) => {
             render_binary_expr(binary, schema, relation, identifier_max_bytes)
         }

@@ -13,9 +13,9 @@
 - Check types fast: `cargo check --workspace`.
 - Standalone unit/integration tests exclude PostgreSQL-bound crates:
   `cargo test --workspace --exclude backend_service --exclude df_catalog
-  --exclude pg_fusion --exclude pg_test --exclude plan_builder --exclude
-  row_estimator_seed --exclude slot_encoder --exclude slot_import --exclude
-  slot_scan`.
+  --exclude pg_frontend --exclude pg_fusion --exclude pg_test --exclude
+  plan_builder --exclude row_estimator_seed --exclude slot_encoder --exclude
+  slot_import --exclude slot_scan`.
 - PostgreSQL-bound crate tests run through pgrx because they reference
   PostgreSQL backend symbols.
 - Extension crate: `cargo build -p pg_fusion`.

@@ -21,6 +21,7 @@ members = [
   "pg/df_functions",
   "pg/backend_service",
   "pg/type",
+  "pg/frontend",
   "pg/plan_builder",
   "pg/statistics",
   "pg/row_estimator_seed",

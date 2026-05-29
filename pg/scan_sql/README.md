@@ -82,6 +82,13 @@ Runtimes that can apply projection after receiving PostgreSQL slots may call
 `render_unprojected_scan_sql(...)` to reuse the same pushed filters and
 SQL-level limit while rendering `SELECT *`.
 
+Callers that lower from PostgreSQL's analyzed tree can attach PostgreSQL type
+provenance to DataFusion literals with `pg_type_metadata(...)`. `scan_sql`
+uses that metadata for text-like literals whose Arrow value alone cannot
+distinguish PostgreSQL `text`, `varchar`, `bpchar`, and `name` semantics.
+Unbounded `bpchar` metadata renders as `pg_catalog.bpchar`, not SQL-standard
+`CHARACTER`, because `CHARACTER` means `character(1)` in PostgreSQL.
+
 ## Pushdown rules
 
 The compiler is whitelist-based. It currently supports:
@@ -115,6 +122,8 @@ follows PostgreSQL semantics for the pushed portion, not DataFusion exactness.
   relation, and column names can be rejected before SQL rendering
 - `LimitLowering::SqlClause` is an explicit opt-in for consumers that really
   want exact PostgreSQL `LIMIT` semantics in the generated SQL.
+- Literal PostgreSQL type metadata is consumed only for known text-like types;
+  malformed metadata or unsupported OIDs leave the expression residual.
 - Zero-column projections are rendered with a synthetic dummy select item to
   preserve row cardinality for later integration.
 - Timestamp literals with time zones, all temporal cast targets, regex

@@ -1,0 +1,25 @@
+[package]
+name = "pg_frontend"
+version = "25.0.0"
+edition = "2021"
+description = "Typed PostgreSQL Query tree frontend for DataFusion logical planning"
+readme = "README.md"
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[features]
+default = ["pg17"]
+pg17 = ["df_catalog/pg17", "pgrx/pg17"]
+
+[dependencies]
+arrow-schema = { workspace = true }
+datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+df_catalog = { path = "../df_catalog", version = "25.0" }
+pgrx = { workspace = true }
+scan_node = { path = "../scan_node", version = "25.0" }
+scan_sql = { path = "../scan_sql", version = "25.0" }
+thiserror = "2.0"
