@@ -1284,6 +1284,22 @@ select ten, grouping(ten) from onek
 group by (ten) having grouping(ten) >= 0
 order by 2,1;
 
+-- id: local_pg_grouping_null_distinguishes_data_null_from_rollup
+-- origin: local pg_fusion GROUPING compatibility
+-- compare: ordered
+select a, grouping(a), count(*)
+from (values (null::int)) v(a)
+group by grouping sets ((a), ())
+order by grouping(a), a nulls first;
+
+-- id: local_pg_grouping_multi_arg_null_distinguishes_data_null_from_rollup
+-- origin: local pg_fusion GROUPING compatibility
+-- compare: ordered
+select a, b, grouping(a,b), count(*)
+from (values (null::int, 1), (1, null::int)) v(a,b)
+group by cube(a,b)
+order by grouping(a,b), a nulls first, b nulls first;
+
 -- id: groupingsets_168_select_distinct_a_b_c_from_values_1_2_3_4_null_6_7_8_9_as_t_a_b_c_group__56ffa31d
 -- origin: postgres REL_17_STABLE src/test/regress/sql/groupingsets.sql:575
 -- compare: ordered
@@ -2502,6 +2518,27 @@ SELECT DISTINCT four FROM tenk1 WHERE four = 0;
 -- compare: multiset
 SELECT DISTINCT four FROM tenk1 WHERE four = 0 AND two <> 0;
 
+-- id: local_pg_distinct_on_values_visible_sort
+-- origin: local pg_fusion DISTINCT ON compatibility
+-- compare: ordered
+SELECT DISTINCT ON (a) a, b
+FROM (VALUES (1,2), (1,1), (2,4), (2,3)) v(a,b)
+ORDER BY a, b;
+
+-- id: local_pg_distinct_on_values_hidden_sort
+-- origin: local pg_fusion DISTINCT ON compatibility
+-- compare: ordered
+SELECT DISTINCT ON (a) a
+FROM (VALUES (1,2), (1,1), (2,4), (2,3)) v(a,b)
+ORDER BY a, b;
+
+-- id: local_pg_distinct_on_tenk1_hidden_sort
+-- origin: local pg_fusion DISTINCT ON compatibility
+-- compare: ordered
+SELECT DISTINCT ON (four) four
+FROM tenk1
+ORDER BY four, two;
+
 -- id: select_distinct_69_select_1_is_distinct_from_2_as_yes_4ab72148
 -- origin: postgres REL_17_STABLE src/test/regress/sql/select_distinct.sql:211
 -- compare: multiset
@@ -2648,6 +2685,29 @@ select count(*) from
 select count(distinct ss.ten) from
   (select ten from tenk1 a
    where unique1 IN (select distinct hundred from tenk1 b)) ss;
+
+-- id: local_pg_scalar_subquery_one_row_predicate
+-- origin: local pg_fusion scalar subquery compatibility
+-- compare: ordered
+SELECT unique1
+FROM tenk1
+WHERE unique1 < 3
+  AND unique1 = (SELECT unique1 FROM tenk1 WHERE unique1 = 1)
+ORDER BY unique1;
+
+-- id: local_pg_scalar_subquery_zero_rows_is_null
+-- origin: local pg_fusion scalar subquery compatibility
+-- compare: ordered
+SELECT unique1
+FROM tenk1
+WHERE unique1 < 3
+  AND (SELECT unique1 FROM tenk1 WHERE false) IS NULL
+ORDER BY unique1;
+
+-- id: local_pg_scalar_subquery_null_row_is_null
+-- origin: local pg_fusion scalar subquery compatibility
+-- compare: multiset
+SELECT (SELECT min(unique1) FILTER (WHERE false) FROM tenk1) IS NULL;
 
 -- id: subselect_97_select_from_select_max_unique1_from_tenk1_as_a_where_exists_select_1_fro_fb689d70
 -- origin: postgres REL_17_STABLE src/test/regress/sql/subselect.sql:326
@@ -3548,3 +3608,45 @@ group by ten order by ten;
 -- origin: postgres REL_17_STABLE src/test/regress/sql/window.sql:1092
 -- compare: ordered
 SELECT rank() OVER (ORDER BY length('abc'));
+
+-- id: pg_fusion_checked_integer_arithmetic_constants
+-- origin: pg_fusion checked integer arithmetic coverage
+-- compare: multiset
+SELECT
+  32000::int2 + 767::int2,
+  -32760::int2 - 7::int2,
+  181::int2 * 181::int2,
+  2147483000::int4 + 647::int4,
+  10::int4 - 12::int4,
+  46340::int4 * 46340::int4,
+  9223372036854775000::int8 + 807::int8,
+  -9223372036854775800::int8 - 7::int8,
+  3037000499::int8 * 3037000499::int8;
+
+-- id: pg_fusion_checked_integer_arithmetic_values
+-- origin: pg_fusion checked integer arithmetic coverage
+-- compare: multiset
+SELECT
+  i2a + i2b AS i2_add,
+  i2a - i2b AS i2_sub,
+  i2a * i2b AS i2_mul,
+  i4a + i4b AS i4_add,
+  i4a - i4b AS i4_sub,
+  i4a * i4b AS i4_mul,
+  i8a + i8b AS i8_add,
+  i8a - i8b AS i8_sub,
+  i8a * i8b AS i8_mul
+FROM (VALUES
+  (1::int2, 2::int2, 100::int4, 3::int4, 1000::int8, 4::int8),
+  (32000::int2, 1::int2, 2147483000::int4, 1::int4, 9223372036854775000::int8, 1::int8),
+  (-16000::int2, 2::int2, -1073741824::int4, 2::int4, -4611686018427387904::int8, 2::int8)
+) AS v(i2a, i2b, i4a, i4b, i8a, i8b);
+
+-- id: pg_fusion_checked_integer_arithmetic_mixed_width
+-- origin: pg_fusion checked integer arithmetic coverage
+-- compare: multiset
+SELECT
+  32760::int2 + 7::int4,
+  2147483640::int4 + 7::int8,
+  42::int4 - 100::int2,
+  246::int2 * 123456::int8;

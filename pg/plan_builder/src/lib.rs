@@ -1,8 +1,8 @@
 //! Backend-side builder for DataFusion logical plans with PostgreSQL scan leaves.
 //!
-//! `plan_builder` accepts SQL plus DataFusion scalar parameters, resolves table
-//! metadata through `df_catalog`, runs DataFusion logical optimization, and
-//! builds PostgreSQL table scans as [`scan_node::PgScanNode`] leaves.
+//! `plan_builder` accepts an already typed DataFusion logical plan, runs the
+//! pg_fusion post-frontend planning passes, and builds PostgreSQL table scans
+//! as [`scan_node::PgScanNode`] leaves.
 //!
 //! The result contains no snapshot identity. Snapshot ownership stays in the
 //! later backend execution state that serves scan requests.
@@ -11,40 +11,26 @@
 //! This is a DataFusion-level contract only: PostgreSQL-side parallel plans can
 //! still be produced later by `slot_scan`.
 //!
-//! Subquery expressions are accepted when DataFusion can decorrelate/rewrite
-//! them into ordinary relational operators before scan building. Any subquery
-//! nodes that survive optimization are rejected before `PgScanNode` building.
+//! Scalar subquery expressions can survive into scan building; scan leaves inside
+//! their nested plans are still converted into `PgScanNode`s. Semi/anti subquery
+//! forms remain unsupported unless DataFusion rewrites them before this phase.
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::ops::ControlFlow;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use arrow_schema::{DataType, SchemaRef};
+use arrow_schema::DataType;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::execution::SessionStateDefaults;
 use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion_common::{Column, TableReference};
-use datafusion_common::{DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion_common::Column;
+use datafusion_common::{
+    DFSchema, DFSchemaRef, DataFusionError, Result as DataFusionResult, ScalarValue, TableReference,
+};
 use datafusion_expr::expr_fn::cast;
-use datafusion_expr::logical_plan::{Filter, LogicalPlan, Projection, TableScan};
-use datafusion_expr::planner::{ContextProvider, ExprPlanner};
+use datafusion_expr::logical_plan::{EmptyRelation, Filter, LogicalPlan, Projection, TableScan};
 use datafusion_expr::registry::FunctionRegistry;
 use datafusion_expr::utils::conjunction;
-use datafusion_expr::{
-    AggregateUDF, Expr, ScalarUDF, TableProviderFilterPushDown, TableSource, WindowUDF,
-};
-use datafusion_sql::parser::{DFParser, Statement as DFStatement};
-use datafusion_sql::planner::SqlToRel;
-use datafusion_sql::sqlparser::ast::{
-    visit_expressions_mut, Cte, CteAsMaterialized, DataType as SqlDataType, Expr as SqlExpr, Ident,
-    ObjectName, ObjectNamePart, Query, Statement as SqlStatement, Visit, Visitor, With,
-};
-use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
-use datafusion_sql::sqlparser::parser::ParserError;
-use df_catalog::{CatalogResolver, PgrxCatalogResolver, ResolveError};
-use once_cell::sync::Lazy;
+use datafusion_expr::{Expr, JoinType};
 use pgrx::pg_sys;
 use scan_node::{PgCteId, PgCteRefNode, PgScanId, PgScanNode, PgScanSpec};
 use scan_sql::{compile_scan, CompileError, CompileScanInput, LimitLowering};
@@ -57,17 +43,6 @@ pub use join_reorder::{JoinStatsProvider, LiveJoinStatsProvider};
 
 const SPECIAL_NUMERIC_ERROR: &str =
     "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values";
-
-static BUILTINS: Lazy<Arc<Builtins>> = Lazy::new(|| Arc::new(Builtins::new()));
-
-/// Input for one backend logical-plan build.
-#[derive(Debug, Clone)]
-pub struct PlanBuildInput<'a> {
-    /// SQL text. v1 accepts exactly one query-shaped statement.
-    pub sql: &'a str,
-    /// Positional DataFusion parameter values for `$1`, `$2`, ...
-    pub params: Vec<ScalarValue>,
-}
 
 /// Output of a successful hybrid plan build.
 #[derive(Debug)]
@@ -101,9 +76,8 @@ impl PgScanPlan {
 
 /// Build a pg_fusion execution plan from an already-typed DataFusion logical plan.
 ///
-/// This is the shared post-frontend pipeline used by both SQL-text planning
-/// and PostgreSQL query-tree planning: it validates supported plan shapes,
-/// runs DataFusion optimization, applies pg_fusion join ordering, turns
+/// This is the shared post-frontend pipeline: it validates supported plan
+/// shapes, runs DataFusion optimization, applies pg_fusion join ordering, turns
 /// PostgreSQL table leaves into [`scan_node::PgScanNode`], and normalizes root
 /// output transport types.
 pub fn build_preplanned_logical_plan(
@@ -138,15 +112,17 @@ where
 /// Build a pg_fusion execution plan for PostgreSQL query-tree frontend output.
 ///
 /// The frontend path intentionally builds PostgreSQL scan leaves without first
-/// running generic DataFusion optimization. Frontend scan predicates carry
-/// PostgreSQL type metadata and must reach `scan_sql` before DataFusion can
-/// fold or rewrite them with DataFusion semantics.
+/// running generic DataFusion optimization except for analyzer rewrites that
+/// are required to make the logical plan executable. Frontend scan predicates
+/// carry PostgreSQL type metadata and must reach `scan_sql` before DataFusion
+/// can fold or rewrite them with DataFusion semantics.
 pub fn build_frontend_logical_plan(
     plan: LogicalPlan,
     config: PlanBuilderConfig,
 ) -> Result<HybridPlan, PlanBuildError> {
     let mut scan_builder = PgScanBuilder::new(config);
-    let logical_plan = build_frontend_logical_plan_with_scan_builder(plan, &mut scan_builder)?;
+    let logical_plan =
+        build_frontend_logical_plan_with_scan_builder(plan, config, &mut scan_builder)?;
     reject_residual_frontend_filters(&scan_builder.scans)?;
     Ok(HybridPlan {
         logical_plan,
@@ -179,12 +155,74 @@ where
 
 fn build_frontend_logical_plan_with_scan_builder(
     plan: LogicalPlan,
+    config: PlanBuilderConfig,
     scan_builder: &mut PgScanBuilder,
 ) -> Result<LogicalPlan, PlanBuildError> {
     validate_no_special_numeric_literals(&plan)?;
+    let frontend_schema = Arc::clone(plan.schema());
+    let plan = if plan_requires_frontend_analysis(&plan)? {
+        let optimized = optimize_logical_plan(plan, config.target_partitions)?;
+        validate_no_special_numeric_literals(&optimized)?;
+        optimized
+    } else {
+        plan
+    };
     validate_supported_plan_shape(&plan)?;
     let logical_plan = scan_builder.build_scans(plan)?;
-    normalize_root_output_types(logical_plan).map_err(PlanBuildError::from)
+    let logical_plan = normalize_root_output_types(logical_plan)?;
+    Ok(restore_empty_root_schema(logical_plan, &frontend_schema))
+}
+
+fn plan_requires_frontend_analysis(plan: &LogicalPlan) -> Result<bool, DataFusionError> {
+    let mut found = false;
+    plan.apply_with_subqueries(|node| {
+        if found {
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        if frontend_plan_node_requires_analysis(node) {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                if frontend_expr_requires_analysis(expr) {
+                    found = true;
+                    Ok(TreeNodeRecursion::Stop)
+                } else {
+                    Ok(TreeNodeRecursion::Continue)
+                }
+            })
+        })?;
+        if found {
+            Ok(TreeNodeRecursion::Stop)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    })?;
+    Ok(found)
+}
+
+fn frontend_plan_node_requires_analysis(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Distinct(_) | LogicalPlan::Union(_) => true,
+        LogicalPlan::Join(join) => {
+            join.join_type == JoinType::Inner && join.on.is_empty() && join.filter.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn frontend_expr_requires_analysis(expr: &Expr) -> bool {
+    match expr {
+        Expr::ScalarSubquery(_)
+        | Expr::Exists(_)
+        | Expr::InSubquery(_)
+        | Expr::SetComparison(_)
+        | Expr::OuterReferenceColumn(_, _)
+        | Expr::GroupingSet(_) => true,
+        Expr::AggregateFunction(function) => function.func.name() == "grouping",
+        _ => false,
+    }
 }
 
 fn reject_residual_frontend_filters(scans: &[Arc<PgScanSpec>]) -> Result<(), PlanBuildError> {
@@ -201,7 +239,7 @@ fn reject_residual_frontend_filters(scans: &[Arc<PgScanSpec>]) -> Result<(), Pla
     }
 }
 
-/// Configuration for [`PlanBuilder`].
+/// Configuration for pg_fusion logical-plan building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanBuilderConfig {
     /// DataFusion optimizer target partitions. v1 keeps this at one unless
@@ -233,17 +271,9 @@ impl Default for PlanBuilderConfig {
     }
 }
 
-/// Build errors for SQL planning and PostgreSQL scan building.
+/// Build errors for logical planning and PostgreSQL scan building.
 #[derive(Debug, Error)]
 pub enum PlanBuildError {
-    #[error("failed to parse SQL: {0}")]
-    Parse(#[from] ParserError),
-    #[error("expected exactly one SQL statement, got {count}")]
-    MultipleStatements { count: usize },
-    #[error("unsupported statement for PostgreSQL scan planning: {0}")]
-    UnsupportedStatement(String),
-    #[error("catalog resolution failed: {0}")]
-    Catalog(#[from] ResolveError),
     #[error("DataFusion planning failed: {0}")]
     DataFusion(#[from] DataFusionError),
     #[error("PostgreSQL scan SQL compilation failed: {0}")]
@@ -254,149 +284,10 @@ pub enum PlanBuildError {
     JoinOrder(#[from] join_order::OptimizeError),
     #[error("join order rewrite failed: {0}")]
     JoinReorder(String),
-    #[error("unsupported SQL shape for PostgreSQL scan planning: {0}")]
+    #[error("unsupported logical plan shape for PostgreSQL scan planning: {0}")]
     UnsupportedSubquery(String),
     #[error("{0}")]
     Plan(String),
-}
-
-/// Backend-side SQL-to-logical-plan builder.
-#[derive(Debug, Clone)]
-pub struct PlanBuilder<R = PgrxCatalogResolver, S = LiveJoinStatsProvider> {
-    resolver: R,
-    stats_provider: S,
-    config: PlanBuilderConfig,
-}
-
-impl PlanBuilder<PgrxCatalogResolver, LiveJoinStatsProvider> {
-    /// Create a builder backed by live PostgreSQL catalogs.
-    pub fn new() -> Self {
-        Self::with_resolver(PgrxCatalogResolver::new())
-    }
-}
-
-impl Default for PlanBuilder<PgrxCatalogResolver, LiveJoinStatsProvider> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<R> PlanBuilder<R, LiveJoinStatsProvider> {
-    /// Create a builder with a custom catalog resolver.
-    pub fn with_resolver(resolver: R) -> Self {
-        Self {
-            resolver,
-            stats_provider: LiveJoinStatsProvider,
-            config: PlanBuilderConfig::default(),
-        }
-    }
-}
-
-impl<R, S> PlanBuilder<R, S> {
-    /// Override the default statistics provider.
-    pub fn with_stats_provider<T>(self, stats_provider: T) -> PlanBuilder<R, T> {
-        PlanBuilder {
-            resolver: self.resolver,
-            stats_provider,
-            config: self.config,
-        }
-    }
-
-    /// Override the default builder configuration.
-    pub fn with_config(mut self, config: PlanBuilderConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Return the effective configuration.
-    pub fn config(&self) -> PlanBuilderConfig {
-        self.config
-    }
-}
-
-impl<R, S> PlanBuilder<R, S>
-where
-    R: CatalogResolver + Send + Sync,
-    S: JoinStatsProvider,
-{
-    /// Build an optimized logical plan and lower PostgreSQL table scans.
-    pub fn build(&self, input: PlanBuildInput<'_>) -> Result<HybridPlan, PlanBuildError> {
-        let mut statement = parse_one_query(input.sql)?;
-        let context = PgPlanningContext::new(&self.resolver, self.config);
-        let mut scan_builder = PgScanBuilder::new(self.config);
-        prepare_materialized_ctes(
-            &mut statement,
-            &context,
-            &input.params,
-            &mut scan_builder,
-            &self.stats_provider,
-        )?;
-        let planner = SqlToRel::new(&context);
-        let plan = planner.statement_to_plan(statement)?;
-        let plan = plan.with_param_values(input.params)?;
-        let logical_plan = build_preplanned_logical_plan_with_scan_builder(
-            plan,
-            self.config,
-            &self.stats_provider,
-            &mut scan_builder,
-        )?;
-        Ok(HybridPlan {
-            logical_plan,
-            scan_plan: PgScanPlan::new(scan_builder.scans),
-        })
-    }
-}
-
-fn parse_one_query(sql: &str) -> Result<DFStatement, PlanBuildError> {
-    let dialect = PostgreSqlDialect {};
-    let mut statements = DFParser::parse_sql_with_dialect(sql, &dialect)?;
-    let count = statements.len();
-    if count != 1 {
-        return Err(PlanBuildError::MultipleStatements { count });
-    }
-    let mut statement = statements.pop_front().expect("checked count above");
-    normalize_postgres_unknown_casts(&mut statement);
-    ensure_query_statement(&statement)?;
-    Ok(statement)
-}
-
-fn normalize_postgres_unknown_casts(statement: &mut DFStatement) {
-    let DFStatement::Statement(statement) = statement else {
-        return;
-    };
-    let _ = visit_expressions_mut(statement.as_mut(), |expr| {
-        if let SqlExpr::Cast {
-            expr: inner,
-            data_type,
-            ..
-        } = expr
-        {
-            if is_postgres_unknown_type(data_type) {
-                *expr = (**inner).clone();
-            }
-        }
-        ControlFlow::<()>::Continue(())
-    });
-}
-
-fn is_postgres_unknown_type(data_type: &SqlDataType) -> bool {
-    let SqlDataType::Custom(name, modifiers) = data_type else {
-        return false;
-    };
-    modifiers.is_empty()
-        && name.0.len() == 1
-        && matches!(
-            &name.0[0],
-            ObjectNamePart::Identifier(ident)
-                if ident.value.eq_ignore_ascii_case("unknown") && ident.quote_style.is_none()
-        )
-}
-
-fn ensure_query_statement(statement: &DFStatement) -> Result<(), PlanBuildError> {
-    match statement {
-        DFStatement::Statement(inner) if matches!(inner.as_ref(), SqlStatement::Query(_)) => Ok(()),
-        other => Err(PlanBuildError::UnsupportedStatement(other.to_string())),
-    }
 }
 
 fn optimize_logical_plan(
@@ -410,8 +301,15 @@ fn optimize_logical_plan(
         .with_optimizer_rules(pg_fusion_optimizer_rules())
         .build();
     let _ = state.register_udf(df_functions::pg_format_udf());
+    let _ = state.register_udf(df_functions::pg_int_add_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_sub_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_mul_checked_udf());
+    let _ = state.register_udf(df_functions::pg_interval_out_udf());
     let _ = state.register_udf(df_functions::pg_quote_literal_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
+    let _ = state.register_udaf(df_functions::pg_scalar_subquery_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::first_last::first_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::grouping::grouping_udaf());
     state.optimize(&plan)
 }
 
@@ -462,6 +360,22 @@ fn normalize_root_output_types(plan: LogicalPlan) -> DataFusionResult<LogicalPla
     }
 
     Projection::try_new(expr, Arc::new(plan)).map(LogicalPlan::Projection)
+}
+
+fn restore_empty_root_schema(plan: LogicalPlan, expected_schema: &DFSchemaRef) -> LogicalPlan {
+    match plan {
+        LogicalPlan::EmptyRelation(empty)
+            if !empty.produce_one_row
+                && empty.schema.fields().is_empty()
+                && !expected_schema.fields().is_empty() =>
+        {
+            LogicalPlan::EmptyRelation(EmptyRelation {
+                produce_one_row: false,
+                schema: Arc::clone(expected_schema),
+            })
+        }
+        other => other,
+    }
 }
 
 fn pg_identifier_max_bytes() -> usize {
@@ -632,36 +546,33 @@ fn string_literal_is_special_numeric(expr: &Expr) -> bool {
 
 #[derive(Debug, Error)]
 enum UnsupportedSubqueryShape {
+    #[error("scalar subqueries")]
+    ScalarSubquery,
     #[error("EXISTS(...) expressions")]
     Exists,
     #[error("IN (SELECT ...) expressions")]
     InSubquery,
-    #[error("scalar subquery expressions")]
-    ScalarSubquery,
+    #[error("set-comparison subqueries")]
+    SetComparison,
     #[error("correlated subqueries")]
     OuterReferenceColumn,
-    #[error("logical subquery plan nodes")]
-    SubqueryPlan,
 }
 
 fn validate_supported_plan_shape(plan: &LogicalPlan) -> Result<(), PlanBuildError> {
     plan.apply_with_subqueries(|node| {
-        if matches!(node, LogicalPlan::Subquery(_)) {
-            return Err(DataFusionError::External(Box::new(
-                UnsupportedSubqueryShape::SubqueryPlan,
-            )));
-        }
-
         node.apply_expressions(|expr| {
             expr.apply(|expr| match expr {
+                Expr::ScalarSubquery(_) => Err(DataFusionError::External(Box::new(
+                    UnsupportedSubqueryShape::ScalarSubquery,
+                ))),
                 Expr::Exists(_) => Err(DataFusionError::External(Box::new(
                     UnsupportedSubqueryShape::Exists,
                 ))),
                 Expr::InSubquery(_) => Err(DataFusionError::External(Box::new(
                     UnsupportedSubqueryShape::InSubquery,
                 ))),
-                Expr::ScalarSubquery(_) => Err(DataFusionError::External(Box::new(
-                    UnsupportedSubqueryShape::ScalarSubquery,
+                Expr::SetComparison(_) => Err(DataFusionError::External(Box::new(
+                    UnsupportedSubqueryShape::SetComparison,
                 ))),
                 Expr::OuterReferenceColumn(_, _) => Err(DataFusionError::External(Box::new(
                     UnsupportedSubqueryShape::OuterReferenceColumn,
@@ -699,463 +610,6 @@ fn recover_subquery_validation_error(
     }
 }
 
-fn prepare_materialized_ctes<R, S>(
-    statement: &mut DFStatement,
-    context: &PgPlanningContext<'_, R>,
-    params: &[ScalarValue],
-    scan_builder: &mut PgScanBuilder,
-    stats_provider: &S,
-) -> Result<(), PlanBuildError>
-where
-    R: CatalogResolver + Send + Sync,
-    S: JoinStatsProvider,
-{
-    let DFStatement::Statement(statement_inner) = statement else {
-        return Ok(());
-    };
-    let SqlStatement::Query(query) = statement_inner.as_mut() else {
-        return Ok(());
-    };
-
-    let Some(with_ref) = query.with.as_ref() else {
-        return Ok(());
-    };
-    if with_ref.recursive {
-        return Err(PlanBuildError::UnsupportedStatement(
-            "recursive CTEs are not supported by pg_fusion".into(),
-        ));
-    }
-
-    let ref_counts = count_top_level_cte_references(query);
-    let mut prefix_ctes = Vec::new();
-    let mut next_cte_id = 1_u64;
-    let with_template = With {
-        with_token: with_ref.with_token.clone(),
-        recursive: false,
-        cte_tables: Vec::new(),
-    };
-    let Some(with_mut) = query.with.as_mut() else {
-        return Ok(());
-    };
-
-    for cte in &mut with_mut.cte_tables {
-        let cte_name = normalize_ident(cte.alias.name.clone());
-        let ref_count = ref_counts.get(&cte_name).copied().unwrap_or(0);
-        let should_materialize = match cte.materialized {
-            Some(CteAsMaterialized::Materialized) => true,
-            Some(CteAsMaterialized::NotMaterialized) => false,
-            None => ref_count > 1,
-        };
-
-        let original_cte = cte.clone();
-        if should_materialize {
-            let cte_id = PgCteId::new(next_cte_id);
-            next_cte_id = next_cte_id.checked_add(1).ok_or_else(|| {
-                PlanBuildError::Plan("materialized CTE id counter overflowed".into())
-            })?;
-            let definition_statement =
-                cte_definition_statement(&with_template, &prefix_ctes, original_cte)?;
-            let definition = build_materialized_cte_definition(
-                definition_statement,
-                context,
-                params,
-                scan_builder,
-                stats_provider,
-            )?;
-            let synthetic_table = synthetic_cte_table_name(cte_id);
-            context.register_cte_source(
-                TableReference::bare(synthetic_table.clone()),
-                PgPlanningCteSource::new(cte_id, cte_name, definition),
-            )?;
-            cte.query = synthetic_cte_query(&synthetic_table)?;
-        }
-
-        prefix_ctes.push(cte.clone());
-    }
-
-    Ok(())
-}
-
-fn count_top_level_cte_references(query: &Query) -> HashMap<String, usize> {
-    let Some(with) = query.with.as_ref() else {
-        return HashMap::new();
-    };
-    let names = with
-        .cte_tables
-        .iter()
-        .map(|cte| normalize_ident(cte.alias.name.clone()))
-        .collect::<HashSet<_>>();
-    if names.is_empty() {
-        return HashMap::new();
-    }
-
-    let mut body_query = query.clone();
-    body_query.with = None;
-    let mut visitor = CteReferenceCounter {
-        names: &names,
-        counts: HashMap::new(),
-    };
-    let _ = body_query.visit(&mut visitor);
-    visitor.counts
-}
-
-struct CteReferenceCounter<'a> {
-    names: &'a HashSet<String>,
-    counts: HashMap<String, usize>,
-}
-
-impl Visitor for CteReferenceCounter<'_> {
-    type Break = ();
-
-    fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
-        if let [ObjectNamePart::Identifier(ident)] = relation.0.as_slice() {
-            let name = normalize_ident(ident.clone());
-            if self.names.contains(&name) {
-                *self.counts.entry(name).or_default() += 1;
-            }
-        }
-        ControlFlow::Continue(())
-    }
-}
-
-fn cte_definition_statement(
-    with_template: &With,
-    prefix_ctes: &[Cte],
-    cte: Cte,
-) -> Result<DFStatement, PlanBuildError> {
-    let mut statement = parse_select_star_statement(&cte.alias.name)?;
-    let DFStatement::Statement(statement_inner) = &mut statement else {
-        return Err(PlanBuildError::Plan(
-            "synthetic CTE definition statement was not a SQL statement".into(),
-        ));
-    };
-    let SqlStatement::Query(query) = statement_inner.as_mut() else {
-        return Err(PlanBuildError::Plan(
-            "synthetic CTE definition statement was not a query".into(),
-        ));
-    };
-
-    let mut cte_tables = prefix_ctes.to_vec();
-    cte_tables.push(cte);
-    query.with = Some(With {
-        with_token: with_template.with_token.clone(),
-        recursive: false,
-        cte_tables,
-    });
-    Ok(statement)
-}
-
-fn parse_select_star_statement(cte_name: &Ident) -> Result<DFStatement, PlanBuildError> {
-    parse_one_query(&format!("SELECT * FROM {cte_name}"))
-}
-
-fn synthetic_cte_query(synthetic_table: &str) -> Result<Box<Query>, PlanBuildError> {
-    let mut statement = parse_one_query(&format!("SELECT * FROM {synthetic_table}"))?;
-    let DFStatement::Statement(statement_inner) = &mut statement else {
-        return Err(PlanBuildError::Plan(
-            "synthetic CTE statement was not a SQL statement".into(),
-        ));
-    };
-    let SqlStatement::Query(query) = statement_inner.as_mut() else {
-        return Err(PlanBuildError::Plan(
-            "synthetic CTE statement was not a query".into(),
-        ));
-    };
-    Ok(query.clone())
-}
-
-fn synthetic_cte_table_name(cte_id: PgCteId) -> String {
-    format!("__pg_fusion_cte_{}", cte_id.get())
-}
-
-fn build_materialized_cte_definition<R, S>(
-    statement: DFStatement,
-    context: &PgPlanningContext<'_, R>,
-    params: &[ScalarValue],
-    scan_builder: &mut PgScanBuilder,
-    stats_provider: &S,
-) -> Result<LogicalPlan, PlanBuildError>
-where
-    R: CatalogResolver + Send + Sync,
-    S: JoinStatsProvider,
-{
-    let planner = SqlToRel::new(context);
-    let plan = planner.statement_to_plan(statement)?;
-    let plan = plan.with_param_values(params.to_vec())?;
-    let optimized = optimize_logical_plan(plan, context.config.target_partitions)?;
-    validate_supported_plan_shape(&optimized)?;
-    let optimized = if context.config.join_reordering_enabled {
-        join_reorder::rewrite_join_order(optimized, context.config, stats_provider)?
-    } else {
-        optimized
-    };
-    scan_builder.build_scans(optimized)
-}
-
-fn normalize_ident(ident: Ident) -> String {
-    if ident.quote_style.is_some() {
-        ident.value
-    } else {
-        ident.value.to_ascii_lowercase()
-    }
-}
-
-#[derive(Debug)]
-struct PgPlanningContext<'a, R> {
-    resolver: &'a R,
-    config: PlanBuilderConfig,
-    options: ConfigOptions,
-    builtins: Arc<Builtins>,
-    tables: Mutex<HashMap<TableReference, Arc<PgPlanningTableSource>>>,
-    cte_sources: Mutex<HashMap<TableReference, Arc<PgPlanningCteSource>>>,
-}
-
-impl<'a, R> PgPlanningContext<'a, R> {
-    fn new(resolver: &'a R, config: PlanBuilderConfig) -> Self {
-        let mut options = ConfigOptions::default();
-        options.execution.target_partitions = config.target_partitions;
-        Self {
-            resolver,
-            config,
-            options,
-            builtins: Arc::clone(&BUILTINS),
-            tables: Mutex::new(HashMap::new()),
-            cte_sources: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn register_cte_source(
-        &self,
-        table: TableReference,
-        source: PgPlanningCteSource,
-    ) -> DataFusionResult<()> {
-        let mut cte_sources = self.cte_sources.lock().map_err(|error| {
-            DataFusionError::Plan(format!("CTE source cache lock poisoned: {error}"))
-        })?;
-        cte_sources.insert(table, Arc::new(source));
-        Ok(())
-    }
-}
-
-impl<R> ContextProvider for PgPlanningContext<'_, R>
-where
-    R: CatalogResolver + Send + Sync,
-{
-    fn get_table_source(&self, table: TableReference) -> DataFusionResult<Arc<dyn TableSource>> {
-        validate_table_reference_identifiers(&table, self.config.identifier_max_bytes)?;
-
-        if let Some(source) = self
-            .cte_sources
-            .lock()
-            .map_err(|error| {
-                DataFusionError::Plan(format!("CTE source cache lock poisoned: {error}"))
-            })?
-            .get(&table)
-            .cloned()
-        {
-            return Ok(source);
-        }
-
-        let mut tables = self.tables.lock().map_err(|error| {
-            DataFusionError::Plan(format!("catalog cache lock poisoned: {error}"))
-        })?;
-        if let Some(source) = tables.get(&table) {
-            return Ok(Arc::clone(source) as Arc<dyn TableSource>);
-        }
-
-        let resolved = self
-            .resolver
-            .resolve_table(&table)
-            .map_err(|error| DataFusionError::External(Box::new(error)))?;
-        let source = Arc::new(PgPlanningTableSource::new(resolved));
-        tables.insert(table, Arc::clone(&source));
-        Ok(source)
-    }
-
-    fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarUDF>> {
-        self.builtins.scalar_udf.get(name).map(Arc::clone)
-    }
-
-    fn get_aggregate_meta(&self, name: &str) -> Option<Arc<AggregateUDF>> {
-        self.builtins.agg_udf.get(name).map(Arc::clone)
-    }
-
-    fn get_window_meta(&self, name: &str) -> Option<Arc<WindowUDF>> {
-        self.builtins.window_udf.get(name).map(Arc::clone)
-    }
-
-    fn get_variable_type(&self, _variable_names: &[String]) -> Option<arrow_schema::DataType> {
-        None
-    }
-
-    fn options(&self) -> &ConfigOptions {
-        &self.options
-    }
-
-    fn udf_names(&self) -> Vec<String> {
-        self.builtins.scalar_udf.keys().cloned().collect()
-    }
-
-    fn udaf_names(&self) -> Vec<String> {
-        self.builtins.agg_udf.keys().cloned().collect()
-    }
-
-    fn udwf_names(&self) -> Vec<String> {
-        self.builtins.window_udf.keys().cloned().collect()
-    }
-
-    fn get_expr_planners(&self) -> &[Arc<dyn ExprPlanner>] {
-        &self.builtins.expr_planners
-    }
-}
-
-fn validate_table_reference_identifiers(
-    table: &TableReference,
-    max_bytes: usize,
-) -> DataFusionResult<()> {
-    validate_identifier(table.table(), max_bytes, "table")?;
-    if let Some(schema) = table.schema() {
-        validate_identifier(schema, max_bytes, "schema")?;
-    }
-    Ok(())
-}
-
-fn validate_identifier(
-    identifier: &str,
-    max_bytes: usize,
-    kind: &'static str,
-) -> DataFusionResult<()> {
-    if identifier.len() > max_bytes {
-        return Err(DataFusionError::Plan(format!(
-            "{kind} identifier `{identifier}` exceeds PostgreSQL limit of {max_bytes} bytes"
-        )));
-    }
-    Ok(())
-}
-
-#[derive(Debug)]
-struct PgPlanningCteSource {
-    cte_id: PgCteId,
-    name: String,
-    definition: LogicalPlan,
-    schema: SchemaRef,
-}
-
-impl PgPlanningCteSource {
-    fn new(cte_id: PgCteId, name: String, definition: LogicalPlan) -> Self {
-        let schema = definition.schema().inner().clone();
-        Self {
-            cte_id,
-            name,
-            definition,
-            schema,
-        }
-    }
-}
-
-impl TableSource for PgPlanningCteSource {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![
-            TableProviderFilterPushDown::Unsupported;
-            filters.len()
-        ])
-    }
-}
-
-#[derive(Debug)]
-struct Builtins {
-    agg_udf: HashMap<String, Arc<AggregateUDF>>,
-    scalar_udf: HashMap<String, Arc<ScalarUDF>>,
-    window_udf: HashMap<String, Arc<WindowUDF>>,
-    expr_planners: Vec<Arc<dyn ExprPlanner>>,
-}
-
-impl Builtins {
-    fn new() -> Self {
-        let mut agg_udf = HashMap::new();
-        for function in SessionStateDefaults::default_aggregate_functions() {
-            register_aggregate_udf(&mut agg_udf, function);
-        }
-        register_aggregate_udf(&mut agg_udf, df_functions::pg_avg_udaf());
-        register_existing_aggregate_alias(&mut agg_udf, "var_samp", "variance");
-
-        let mut scalar_udf = HashMap::new();
-        for function in SessionStateDefaults::default_scalar_functions() {
-            register_scalar_udf(&mut scalar_udf, function);
-        }
-        register_scalar_udf(&mut scalar_udf, df_functions::pg_format_udf());
-        register_scalar_udf(&mut scalar_udf, df_functions::pg_quote_literal_udf());
-        register_existing_scalar_alias(&mut scalar_udf, "ceil", "ceiling");
-
-        let mut window_udf = HashMap::new();
-        for function in SessionStateDefaults::default_window_functions() {
-            register_window_udf(&mut window_udf, function);
-        }
-
-        Self {
-            agg_udf,
-            scalar_udf,
-            window_udf,
-            expr_planners: SessionStateDefaults::default_expr_planners(),
-        }
-    }
-}
-
-fn register_scalar_udf(registry: &mut HashMap<String, Arc<ScalarUDF>>, udf: Arc<ScalarUDF>) {
-    for alias in udf.aliases() {
-        registry.insert(alias.clone(), Arc::clone(&udf));
-    }
-    registry.insert(udf.name().to_owned(), udf);
-}
-
-fn register_existing_scalar_alias(
-    registry: &mut HashMap<String, Arc<ScalarUDF>>,
-    existing: &str,
-    alias: &str,
-) {
-    if let Some(udf) = registry.get(existing).cloned() {
-        registry.insert(alias.to_owned(), udf);
-    }
-}
-
-fn register_aggregate_udf(
-    registry: &mut HashMap<String, Arc<AggregateUDF>>,
-    udf: Arc<AggregateUDF>,
-) {
-    for alias in udf.aliases() {
-        registry.insert(alias.clone(), Arc::clone(&udf));
-    }
-    registry.insert(udf.name().to_owned(), udf);
-}
-
-fn register_existing_aggregate_alias(
-    registry: &mut HashMap<String, Arc<AggregateUDF>>,
-    existing: &str,
-    alias: &str,
-) {
-    if let Some(udf) = registry.get(existing).cloned() {
-        registry.insert(alias.to_owned(), udf);
-    }
-}
-
-fn register_window_udf(registry: &mut HashMap<String, Arc<WindowUDF>>, udf: Arc<WindowUDF>) {
-    for alias in udf.aliases() {
-        registry.insert(alias.clone(), Arc::clone(&udf));
-    }
-    registry.insert(udf.name().to_owned(), udf);
-}
-
 #[derive(Debug)]
 struct PgScanBuilder {
     config: PlanBuilderConfig,
@@ -1173,8 +627,10 @@ impl PgScanBuilder {
     }
 
     fn build_scans(&mut self, plan: LogicalPlan) -> Result<LogicalPlan, PlanBuildError> {
-        let transformed = plan.transform_up(|node| self.build_node(node))?;
-        Ok(transformed.data)
+        let transformed = plan.transform_up_with_subqueries(|node| self.build_node(node))?;
+        let logical_plan = deduplicate_cte_inputs(transformed.data)?;
+        self.retain_scans_used_by(&logical_plan)?;
+        Ok(logical_plan)
     }
 
     fn build_node(&mut self, plan: LogicalPlan) -> DataFusionResult<Transformed<LogicalPlan>> {
@@ -1187,21 +643,6 @@ impl PgScanBuilder {
     }
 
     fn build_table_scan(&mut self, table_scan: TableScan) -> DataFusionResult<LogicalPlan> {
-        let cte_source = table_scan
-            .source
-            .as_any()
-            .downcast_ref::<PgPlanningCteSource>()
-            .map(|source| {
-                (
-                    source.cte_id,
-                    source.name.clone(),
-                    source.definition.clone(),
-                )
-            });
-        if let Some((cte_id, name, definition)) = cte_source {
-            return self.build_cte_ref(table_scan, cte_id, name, definition);
-        }
-
         let source = table_scan
             .source
             .as_any()
@@ -1217,9 +658,11 @@ impl PgScanBuilder {
             table_scan.table_name.clone(),
             resolved.schema.as_ref(),
         )?;
+        let scan_relation =
+            scan_relation_for_table_scan(&resolved.relation, &table_scan.table_name);
 
         let compiled = compile_scan(CompileScanInput {
-            relation: &resolved.relation,
+            relation: &scan_relation,
             schema: resolved.schema.as_ref(),
             identifier_max_bytes: self.config.identifier_max_bytes,
             projection: table_scan.projection.as_deref(),
@@ -1240,7 +683,6 @@ impl PgScanBuilder {
             &source_schema,
             compiled,
         )?);
-
         let mut plan = PgScanNode::new(Arc::clone(&spec)).into_logical_plan();
         self.scans.push(spec);
 
@@ -1261,31 +703,6 @@ impl PgScanBuilder {
         Ok(plan)
     }
 
-    fn build_cte_ref(
-        &mut self,
-        table_scan: TableScan,
-        cte_id: PgCteId,
-        name: String,
-        definition: LogicalPlan,
-    ) -> DataFusionResult<LogicalPlan> {
-        if !table_scan.filters.is_empty() {
-            return Err(DataFusionError::Plan(format!(
-                "materialized CTE {} unexpectedly received pushed filters",
-                name
-            )));
-        }
-
-        Ok(PgCteRefNode::new(
-            cte_id,
-            name,
-            definition,
-            table_scan.projected_schema,
-            table_scan.projection,
-            table_scan.fetch,
-        )
-        .into_logical_plan())
-    }
-
     fn allocate_scan_id(&mut self) -> DataFusionResult<PgScanId> {
         let scan_id = self.next_scan_id;
         self.next_scan_id = self
@@ -1293,6 +710,62 @@ impl PgScanBuilder {
             .checked_add(1)
             .ok_or_else(|| DataFusionError::Plan("PgScanId counter overflowed".into()))?;
         Ok(PgScanId::new(scan_id))
+    }
+
+    fn retain_scans_used_by(&mut self, plan: &LogicalPlan) -> DataFusionResult<()> {
+        let mut used = HashSet::new();
+        plan.apply(|node| {
+            if let LogicalPlan::Extension(extension) = node {
+                if let Some(pg_scan) = extension.node.as_any().downcast_ref::<PgScanNode>() {
+                    used.insert(pg_scan.spec().scan_id);
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        self.scans.retain(|scan| used.contains(&scan.scan_id));
+        Ok(())
+    }
+}
+
+fn deduplicate_cte_inputs(plan: LogicalPlan) -> DataFusionResult<LogicalPlan> {
+    let mut inputs = HashMap::<PgCteId, LogicalPlan>::new();
+    let transformed = plan.transform_up(|node| {
+        let LogicalPlan::Extension(extension) = &node else {
+            return Ok(Transformed::no(node));
+        };
+        let Some(cte_ref) = extension.node.as_any().downcast_ref::<PgCteRefNode>() else {
+            return Ok(Transformed::no(node));
+        };
+
+        if let Some(input) = inputs.get(&cte_ref.cte_id()) {
+            return Ok(Transformed::yes(
+                PgCteRefNode::new(
+                    cte_ref.cte_id(),
+                    cte_ref.name().to_owned(),
+                    input.clone(),
+                    Arc::clone(cte_ref.schema()),
+                    cte_ref.projection().map(|projection| projection.to_vec()),
+                    cte_ref.fetch(),
+                )
+                .into_logical_plan(),
+            ));
+        }
+
+        inputs.insert(cte_ref.cte_id(), cte_ref.input().clone());
+        Ok(Transformed::no(node))
+    })?;
+    Ok(transformed.data)
+}
+
+fn scan_relation_for_table_scan(
+    relation: &scan_sql::PgRelation,
+    table_name: &TableReference,
+) -> scan_sql::PgRelation {
+    match table_name {
+        TableReference::Bare { table } if table.as_ref() != relation.table => {
+            relation.clone().with_alias(table.as_ref())
+        }
+        _ => relation.clone(),
     }
 }
 

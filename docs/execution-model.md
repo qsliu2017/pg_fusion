@@ -19,18 +19,17 @@ The setup command is documented in [Configuration](configuration.md#required-pre
 ## Planning
 
 `pg_fusion` currently targets top-level `SELECT` statements. The planner hook
-first decides whether the query should stay on PostgreSQL. Common bypasses
-include disabled `pg_fusion.enable`, non-`SELECT` statements, modifying CTEs,
-catalog or TOAST relations, function range entries, and bound parameters.
+bypasses pg_fusion for disabled `pg_fusion.enable`, non-`SELECT` statements,
+and pg_fusion management SQL such as metrics functions. With
+`pg_fusion.enable = on`, unsupported user SELECT shapes, including modifying
+CTEs, fail closed with a controlled pg_fusion planning error.
 
-Eligible queries are planned for DataFusion, but PostgreSQL table access is
+Supported queries are planned for DataFusion, but PostgreSQL table access is
 kept as PostgreSQL scan streams. PostgreSQL remains the authority for relation
-identity, snapshots, and PostgreSQL type metadata. pg_fusion can first try its
-typed PostgreSQL `Query` frontend for the subset it already supports. If that
-frontend rejects the query in the default migration mode, the planner falls
-back to the broader SQL-text planning path.
+identity, snapshots, and PostgreSQL type metadata. pg_fusion uses its typed
+PostgreSQL `Query` frontend; there is no SQL-text planner fallback.
 
-In both planning paths, pg_fusion tries to push filters and projections into
+During planning, pg_fusion tries to push filters and projections into
 PostgreSQL scans before rows cross into Arrow pages:
 
 - pushed filters run inside PostgreSQL scan SQL;

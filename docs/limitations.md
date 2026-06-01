@@ -53,8 +53,8 @@ and diagnostics are covered in [Configuration](configuration.md#worker-spill).
 
 ## Planning Boundary
 
-The current runtime path still uses SQL-text DataFusion planning as a bootstrap.
-PostgreSQL analyzed query-tree planning is the intended direction.
+The current runtime path uses PostgreSQL analyzed query-tree planning. There is
+no SQL-text planner fallback for user SELECTs while `pg_fusion.enable` is on.
 
 See the [Roadmap](roadmap.md) for why that matters for PostgreSQL types, casts,
 collations, operators, and parameters.

@@ -7,23 +7,23 @@ promise dates or release scope.
 
 ## Typed PostgreSQL Planning
 
-The current runtime path uses DataFusion SQL planning as a bootstrap:
+The current runtime path uses PostgreSQL analyzed query-tree planning:
 
 1. PostgreSQL receives and analyzes SQL.
-2. pg_fusion uses SQL text to build a DataFusion logical plan.
-3. DataFusion infers its own expression and output types.
+2. pg_fusion copies the analyzed query tree into a typed frontend model.
+3. pg_fusion lowers the typed model into a DataFusion logical plan.
 4. pg_fusion maps PostgreSQL table scans into scan streams and maps results
    back into PostgreSQL slots.
 
-This validated the execution path, shared-memory transport, and worker runtime,
-but it is not the intended long-term SQL semantics boundary.
+Earlier SQL-text planning validated the execution path, shared-memory
+transport, and worker runtime, but it is no longer the SQL semantics boundary
+for user SELECTs.
 
-The hard part is the current PostgreSQL -> DataFusion -> PostgreSQL scan
-sandwich. PostgreSQL has already analyzed the query and resolved types,
+The hard part is the PostgreSQL -> DataFusion -> PostgreSQL scan sandwich.
+PostgreSQL has already analyzed the query and resolved types,
 typmods, collations, casts, operators, functions, `unknown` literals, and
-parameters. If pg_fusion then lets DataFusion infer a similar-but-not-identical
-typed plan from SQL text, that PostgreSQL identity can be lost before
-predicates are rendered back into PostgreSQL scan SQL.
+parameters. pg_fusion must preserve that PostgreSQL identity before predicates
+are rendered back into PostgreSQL scan SQL.
 
 That round trip creates non-obvious correctness risks. A value can have a valid
 DataFusion type in the middle of the plan, but still need its original
@@ -48,25 +48,22 @@ The target direction is:
 This should reduce compatibility code around temporal values, numeric values,
 UUIDs, typmods, parameters, and pushed PostgreSQL scan SQL.
 
-The first production steps are in place as a migration path: supported
-single-relation projection/filter queries can be planned through `pg_frontend`,
-and the resulting typed DataFusion plan now flows through the same
-post-planning pipeline used by the SQL-text planner for PostgreSQL scan
-building and output normalization. The frontend path builds scans before
-generic DataFusion optimization can rewrite PostgreSQL-semantic predicates.
-Unsupported shapes still fall back to the existing SQL-text planner unless the
-frontend is explicitly required. The remaining work is to expand typed-query
-coverage until the fallback is no longer needed for common analytical queries.
+The first production steps are in place: supported query shapes are planned
+through `pg_frontend`, and the resulting typed DataFusion plan flows through the
+post-planning pipeline for PostgreSQL scan building and output normalization.
+The frontend path builds scans before generic DataFusion optimization can
+rewrite PostgreSQL-semantic predicates. There is no SQL-text or native
+PostgreSQL planner fallback for user SELECTs while `pg_fusion.enable` is on.
+The remaining work is to expand typed-query coverage for common analytical
+queries.
 
-Removing the SQL-text fallback requires at least:
+Expanding typed frontend coverage requires at least:
 
-- typed planning for joins, grouped aggregates, sorting, limits, CTEs, and the
-  expression/function subset already accepted by the SQL-text path;
+- typed planning for joins, grouped aggregates, CTEs, and the broader
+  expression/function subset previously accepted by the SQL-text path;
 - parameter value propagation for prepared and extended-protocol queries;
-- PostgreSQL relid/attnum-based scan identity instead of relying on deparsed
-  relation names at the frontend boundary;
 - compatibility tests that compare supported typed-frontend results with
-  vanilla PostgreSQL before making the frontend mandatory.
+  vanilla PostgreSQL.
 
 ## PostgreSQL Version Support
 

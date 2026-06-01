@@ -762,8 +762,15 @@ fn build_worker_planning_session_state() -> SessionState {
         .with_default_features()
         .build();
     let _ = state.register_udf(df_functions::pg_format_udf());
+    let _ = state.register_udf(df_functions::pg_int_add_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_sub_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_mul_checked_udf());
+    let _ = state.register_udf(df_functions::pg_interval_out_udf());
     let _ = state.register_udf(df_functions::pg_quote_literal_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
+    let _ = state.register_udaf(df_functions::pg_scalar_subquery_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::first_last::first_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::grouping::grouping_udaf());
     state
 }
 
@@ -906,13 +913,15 @@ mod tests {
     use std::ptr::NonNull;
     use std::sync::Mutex;
 
+    use arrow_schema::DataType;
     use control_transport::{
         BackendLeaseId, BackendSlotLease, TransportRegion, TransportRegionLayout,
     };
     use datafusion::physical_plan::{ExecutionPlanProperties, SendableRecordBatchStream};
-    use datafusion_common::{DFSchema, DFSchemaRef, Result as DFResult};
-    use datafusion_expr::logical_plan::{EmptyRelation, Extension as LogicalExtension};
-    use datafusion_expr::{Expr, UserDefinedLogicalNodeCore};
+    use datafusion_common::{DFSchema, DFSchemaRef, Result as DFResult, ScalarValue};
+    use datafusion_expr::expr::{BinaryExpr, Cast};
+    use datafusion_expr::logical_plan::{EmptyRelation, Extension as LogicalExtension, Projection};
+    use datafusion_expr::{Expr, Operator, UserDefinedLogicalNodeCore};
     use futures::executor::block_on;
     use issuance::{IssuanceConfig, IssuancePool, IssuedTx};
     use pool::{PagePool, PagePoolConfig};
@@ -1125,6 +1134,55 @@ mod tests {
     fn worker_planning_session_state_is_single_partition() {
         let state = build_worker_planning_session_state();
         assert_eq!(state.config_options().execution.target_partitions, 1);
+    }
+
+    #[test]
+    fn worker_executes_constant_int_shift_projection() {
+        let input = LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: true,
+            schema: Arc::new(DFSchema::empty()),
+        });
+        let shift = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Cast(Cast::new(
+                Box::new(Expr::Negative(Box::new(Expr::Literal(
+                    ScalarValue::Int16(Some(1)),
+                    None,
+                )))),
+                DataType::Int64,
+            ))),
+            Operator::BitwiseShiftLeft,
+            Box::new(Expr::Cast(Cast::new(
+                Box::new(Expr::Literal(ScalarValue::Int32(Some(15)), None)),
+                DataType::Int64,
+            ))),
+        ));
+        let plan = LogicalPlan::Projection(
+            Projection::try_new(
+                vec![Expr::Cast(Cast::new(
+                    Box::new(Expr::Cast(Cast::new(Box::new(shift), DataType::Int16))),
+                    DataType::Utf8View,
+                ))
+                .alias("text")],
+                Arc::new(input),
+            )
+            .expect("projection"),
+        );
+
+        let session_state = build_worker_planning_session_state();
+        let planner = DefaultPhysicalPlanner::default();
+        let physical =
+            block_on(planner.create_physical_plan(&plan, &session_state)).expect("physical plan");
+        let batches = block_on(datafusion::physical_plan::collect(
+            physical,
+            session_state.task_ctx(),
+        ))
+        .expect("collect");
+        let values = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringViewArray>()
+            .expect("string view");
+        assert_eq!(values.value(0), "-32768");
     }
 
     #[test]

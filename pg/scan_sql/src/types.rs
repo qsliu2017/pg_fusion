@@ -13,6 +13,7 @@ use crate::quote::quote_identifier;
 pub struct PgRelation {
     pub schema: Option<String>,
     pub table: String,
+    pub aliases: Vec<String>,
 }
 
 impl PgRelation {
@@ -20,7 +21,13 @@ impl PgRelation {
         Self {
             schema: schema.map(Into::into),
             table: table.into(),
+            aliases: Vec::new(),
         }
+    }
+
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.aliases.push(alias.into());
+        self
     }
 
     pub(crate) fn matches_reference(
@@ -32,7 +39,8 @@ impl PgRelation {
         match relation {
             TableReference::Bare { table } => {
                 validate_identifier(table.as_ref(), identifier_max_bytes, "table")?;
-                Ok(table.as_ref() == self.table)
+                Ok(table.as_ref() == self.table
+                    || self.aliases.iter().any(|alias| alias == table.as_ref()))
             }
             TableReference::Partial { schema, table }
             | TableReference::Full { schema, table, .. } => {

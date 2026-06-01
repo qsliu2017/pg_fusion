@@ -3,10 +3,11 @@ use std::slice;
 use std::str;
 
 use pg_type::is_supported_scalar_type;
+use pg_type::is_text_like_type;
 use pgrx::pg_sys;
 
 use crate::error::PgFrontendError;
-use crate::typed_query::QueryOperator;
+use crate::typed_query::{QueryOperator, QueryUnaryOperator};
 
 /// Return the DataFusion operator for PostgreSQL comparison operators that v1
 /// can compile.
@@ -39,6 +40,35 @@ pub(crate) unsafe fn supported_operator(
     classify_operator(&metadata).ok_or_else(|| {
         PgFrontendError::unsupported(format!(
             "operator oid {} ({}) is not supported by pg_frontend v1",
+            u32::from(opno),
+            metadata.describe()
+        ))
+    })
+}
+
+pub(crate) unsafe fn supported_unary_operator(
+    opno: pg_sys::Oid,
+) -> Result<QueryUnaryOperator, PgFrontendError> {
+    let tuple = unsafe {
+        pg_sys::SearchSysCache1(
+            pg_sys::SysCacheIdentifier::OPEROID as i32,
+            pg_sys::ObjectIdGetDatum(opno),
+        )
+    };
+    if tuple.is_null() {
+        return Err(PgFrontendError::unsupported(format!(
+            "operator oid {} is not present in pg_operator",
+            u32::from(opno)
+        )));
+    }
+
+    let form = unsafe { pg_sys::GETSTRUCT(tuple) as pg_sys::Form_pg_operator };
+    let metadata = unsafe { OperatorMetadata::from_pg_operator(&*form) };
+    unsafe { pg_sys::ReleaseSysCache(tuple) };
+
+    classify_unary_operator(&metadata).ok_or_else(|| {
+        PgFrontendError::unsupported(format!(
+            "unary operator oid {} ({}) is not supported by pg_frontend v1",
             u32::from(opno),
             metadata.describe()
         ))
@@ -82,25 +112,74 @@ fn classify_operator(metadata: &OperatorMetadata) -> Option<QueryOperator> {
     if metadata.kind != b'b' as c_char {
         return None;
     }
-    if metadata.left != metadata.right {
+    if metadata.name == "||" {
+        return (is_text_like_type(metadata.left)
+            && is_text_like_type(metadata.right)
+            && is_text_like_type(metadata.result))
+        .then_some(QueryOperator::StringConcat);
+    }
+    if metadata.name == "~" || metadata.name == "!~" {
+        return (is_text_like_type(metadata.left)
+            && is_text_like_type(metadata.right)
+            && metadata.result == u32::from(pg_sys::BOOLOID))
+        .then_some(if metadata.name == "~" {
+            QueryOperator::RegexMatch
+        } else {
+            QueryOperator::RegexNotMatch
+        });
+    }
+    if !is_supported_binary_operands(metadata.left, metadata.right) {
         return None;
     }
-    if !is_supported_scalar_type(metadata.left) {
-        return None;
-    }
-    if metadata.result != u32::from(pg_sys::BOOLOID) {
-        return None;
-    }
-
     match metadata.name.as_str() {
-        "=" => Some(QueryOperator::Eq),
-        "<>" => Some(QueryOperator::NotEq),
-        "<" => Some(QueryOperator::Lt),
-        "<=" => Some(QueryOperator::LtEq),
-        ">" => Some(QueryOperator::Gt),
-        ">=" => Some(QueryOperator::GtEq),
+        "=" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::Eq),
+        "<>" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::NotEq),
+        "<" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::Lt),
+        "<=" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::LtEq),
+        ">" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::Gt),
+        ">=" if metadata.result == u32::from(pg_sys::BOOLOID) => Some(QueryOperator::GtEq),
+        "+" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::Plus),
+        "-" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::Minus),
+        "*" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::Multiply),
+        "/" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::Divide),
+        "%" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::Modulo),
+        "<<" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::BitwiseShiftLeft),
+        ">>" if is_supported_scalar_type(metadata.result) => Some(QueryOperator::BitwiseShiftRight),
         _ => None,
     }
+}
+
+fn classify_unary_operator(metadata: &OperatorMetadata) -> Option<QueryUnaryOperator> {
+    if metadata.namespace != pg_sys::PG_CATALOG_NAMESPACE {
+        return None;
+    }
+    if metadata.kind == b'b' as c_char {
+        return None;
+    }
+    if !is_supported_scalar_type(metadata.result) {
+        return None;
+    }
+    match metadata.name.as_str() {
+        "+" => Some(QueryUnaryOperator::Plus),
+        "-" => Some(QueryUnaryOperator::Minus),
+        _ => None,
+    }
+}
+
+fn is_supported_binary_operands(left: u32, right: u32) -> bool {
+    if left == right {
+        return is_supported_scalar_type(left);
+    }
+    is_numeric_type(left) && is_numeric_type(right)
+}
+
+fn is_numeric_type(oid: u32) -> bool {
+    oid == u32::from(pg_sys::INT2OID)
+        || oid == u32::from(pg_sys::INT4OID)
+        || oid == u32::from(pg_sys::INT8OID)
+        || oid == u32::from(pg_sys::FLOAT4OID)
+        || oid == u32::from(pg_sys::FLOAT8OID)
+        || oid == u32::from(pg_sys::NUMERICOID)
 }
 
 fn decode_name_data(name: &pg_sys::NameData) -> String {
@@ -167,12 +246,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_operand_types_for_v1() {
+    fn accepts_catalog_comparison_over_mixed_numeric_types() {
+        assert_eq!(
+            classify_operator(&operator(
+                ">=",
+                pg_sys::INT8OID,
+                pg_sys::INT4OID,
+                pg_sys::BOOLOID
+            )),
+            Some(QueryOperator::GtEq)
+        );
+    }
+
+    #[test]
+    fn rejects_mixed_non_numeric_operand_types_for_v1() {
         assert_eq!(
             classify_operator(&operator(
                 "=",
-                pg_sys::INT2OID,
                 pg_sys::INT4OID,
+                pg_sys::TEXTOID,
                 pg_sys::BOOLOID
             )),
             None
@@ -206,27 +298,78 @@ mod tests {
     }
 
     #[test]
-    fn rejects_arithmetic_operator_names() {
-        for name in ["+", "-", "*", "/"] {
-            assert_eq!(
-                classify_operator(&operator(
-                    name,
-                    pg_sys::INT4OID,
-                    pg_sys::INT4OID,
-                    pg_sys::INT4OID,
-                )),
-                None
-            );
-        }
+    fn accepts_catalog_arithmetic_over_supported_type() {
+        assert_eq!(
+            classify_operator(&operator(
+                "+",
+                pg_sys::INT4OID,
+                pg_sys::INT4OID,
+                pg_sys::INT4OID,
+            )),
+            Some(QueryOperator::Plus)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "/",
+                pg_sys::FLOAT8OID,
+                pg_sys::FLOAT8OID,
+                pg_sys::FLOAT8OID,
+            )),
+            Some(QueryOperator::Divide)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "%",
+                pg_sys::INT2OID,
+                pg_sys::INT2OID,
+                pg_sys::INT2OID,
+            )),
+            Some(QueryOperator::Modulo)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "<<",
+                pg_sys::INT2OID,
+                pg_sys::INT4OID,
+                pg_sys::INT2OID,
+            )),
+            Some(QueryOperator::BitwiseShiftLeft)
+        );
     }
 
     #[test]
-    fn rejects_unary_operator_kind() {
+    fn accepts_catalog_text_concat() {
+        assert_eq!(
+            classify_operator(&operator(
+                "||",
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+            )),
+            Some(QueryOperator::StringConcat)
+        );
+    }
+
+    #[test]
+    fn accepts_catalog_unary_arithmetic_over_supported_type() {
         let metadata = OperatorMetadata {
             kind: b'l' as c_char,
-            ..operator("=", pg_sys::INT4OID, pg_sys::INT4OID, pg_sys::BOOLOID)
+            left: 0,
+            ..operator("-", pg_sys::INT2OID, pg_sys::INT2OID, pg_sys::INT2OID)
         };
-        assert_eq!(classify_operator(&metadata), None);
+        assert_eq!(
+            classify_unary_operator(&metadata),
+            Some(QueryUnaryOperator::Minus)
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_unary_operator_kind() {
+        let metadata = OperatorMetadata {
+            kind: b'l' as c_char,
+            ..operator("@", pg_sys::INT4OID, pg_sys::INT4OID, pg_sys::INT4OID)
+        };
+        assert_eq!(classify_unary_operator(&metadata), None);
     }
 
     fn operator(

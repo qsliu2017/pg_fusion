@@ -1,20 +1,38 @@
 use std::sync::Arc;
 
-use ::plan_builder::{PlanBuildInput, PlanBuilder};
+use ::plan_builder::{build_preplanned_logical_plan, HybridPlan, PlanBuilderConfig};
 use ::plan_codec::{DecodeProgress, EncodeProgress, PlanDecodeSession, PlanEncodeSession};
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion_common::ScalarValue;
-use datafusion_expr::logical_plan::LogicalPlan;
+use datafusion_common::{Column, TableReference};
+use datafusion_expr::expr::BinaryExpr;
+use datafusion_expr::logical_plan::{LogicalPlan, TableScan};
+use datafusion_expr::{lit, Expr, Operator, TableSource};
+use df_catalog::{CatalogResolver, PgPlanningTableSource, PgrxCatalogResolver};
 use pgrx::prelude::*;
 use scan_node::PgScanNode;
 
-fn roundtrip(sql: &str, params: Vec<ScalarValue>) -> (LogicalPlan, LogicalPlan) {
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput { sql, params })
-        .expect("build plan");
+fn roundtrip(plan: LogicalPlan) -> (LogicalPlan, LogicalPlan) {
+    let built = build_hybrid(plan);
     let encoded = encode_all::<29>(&built.logical_plan);
     let decoded = decode_all::<31>(&encoded).expect("decode plan");
     (built.logical_plan, decoded)
+}
+
+fn build_hybrid(plan: LogicalPlan) -> HybridPlan {
+    build_preplanned_logical_plan(plan, PlanBuilderConfig::default()).expect("build plan")
+}
+
+fn live_table_scan(
+    table: TableReference,
+    projection: Option<Vec<usize>>,
+    filters: Vec<Expr>,
+    fetch: Option<usize>,
+) -> LogicalPlan {
+    let resolved = PgrxCatalogResolver::new()
+        .resolve_table(&table)
+        .expect("resolve live table");
+    let source = Arc::new(PgPlanningTableSource::new(resolved)) as Arc<dyn TableSource>;
+    LogicalPlan::TableScan(TableScan::try_new(table, source, projection, filters, fetch).unwrap())
 }
 
 fn encode_all<const PAGE: usize>(plan: &LogicalPlan) -> Vec<u8> {
@@ -81,10 +99,17 @@ pub fn plan_codec_roundtrips_live_pg_scan() {
     Spi::run("CREATE SCHEMA plan_codec_ns").unwrap();
     Spi::run("CREATE TABLE plan_codec_ns.items (id int8 NOT NULL, payload text)").unwrap();
 
-    let (built, decoded) = roundtrip(
-        "SELECT id, payload FROM plan_codec_ns.items WHERE id > $1 LIMIT 5",
-        vec![ScalarValue::Int64(Some(7))],
-    );
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::from_name("id"))),
+        Operator::Gt,
+        Box::new(lit(7_i64)),
+    ));
+    let (built, decoded) = roundtrip(live_table_scan(
+        TableReference::partial("plan_codec_ns", "items"),
+        Some(vec![0, 1]),
+        vec![filter],
+        Some(5),
+    ));
 
     assert_eq!(
         built.display_indent().to_string(),
@@ -110,16 +135,22 @@ pub fn plan_codec_roundtrips_builtin_sql_forms() {
     Spi::run("CREATE TABLE public.plan_codec_functions (id int8 NOT NULL, payload text NOT NULL)")
         .unwrap();
 
-    let (built, decoded) = roundtrip(
-        "SELECT length(payload) AS len, substring(payload FROM 1 FOR 1), \
-         position('a' in payload) FROM public.plan_codec_functions WHERE payload ~ '^a'",
-        Vec::new(),
-    );
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::from_name("payload"))),
+        Operator::RegexMatch,
+        Box::new(lit("^a")),
+    ));
+    let (built, decoded) = roundtrip(live_table_scan(
+        TableReference::partial("public", "plan_codec_functions"),
+        None,
+        vec![filter],
+        None,
+    ));
 
     assert_eq!(
         built.display_indent().to_string(),
         decoded.display_indent().to_string()
     );
     assert_eq!(collect_pg_scans(&decoded).len(), 1);
-    assert!(decoded.display_indent().to_string().contains("Projection"));
+    assert!(decoded.display_indent().to_string().contains("Filter"));
 }

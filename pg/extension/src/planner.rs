@@ -2,22 +2,26 @@ use std::ffi::{c_char, c_int, c_void, CStr};
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::ptr::null_mut;
+use std::sync::Arc;
 
-use arrow_schema::DataType;
-use datafusion::logical_expr::LogicalPlan;
+use arrow_schema::SchemaRef;
+use datafusion::logical_expr::{
+    lit,
+    logical_plan::{EmptyRelation, Filter, Projection},
+    Expr, LogicalPlan,
+};
+use datafusion_common::{DFSchema, ScalarValue};
 use pg_frontend::{PgFrontend, PgFrontendConfig, Target};
-use pg_type::pg_oid_for_arrow_type;
-use pgrx::pg_sys::SysCacheIdentifier::TYPEOID;
 use pgrx::pg_sys::{
     list_append_unique_oid, list_append_unique_ptr, list_make1_impl, palloc0, planner_hook,
-    planner_hook_type, standard_planner, CommonTableExpr, Const, CustomScan, List, ListCell, Node,
-    NodeTag, Oid, ParamListInfo, Plan, PlannedStmt, Query, RangeTblEntry,
+    planner_hook_type, standard_planner, Const, CustomScan, List, ListCell, Node, NodeTag, Oid,
+    ParamListInfo, Plan, PlannedStmt, Query,
 };
 use pgrx::prelude::*;
 
 use crate::custom_scan::scan_methods;
-use crate::guc::{FrontendMode, HostConfig, ENABLE};
-use crate::plan_payload::{encode_frontend_plan, encode_sql_text};
+use crate::guc::{HostConfig, ENABLE};
+use crate::plan_payload::encode_frontend_plan;
 use crate::utility_hook::skip_planner;
 
 static mut PREV_PLANNER_HOOK: planner_hook_type = None;
@@ -43,13 +47,27 @@ unsafe extern "C-unwind" fn pg_fusion_planner_hook(
         && !skip_planner()
         && !parse.is_null()
         && (*parse).commandType == pgrx::pg_sys::CmdType::CMD_SELECT
-        && !(*parse).hasModifyingCTE
         && !is_pg_fusion_management_sql(query_string)
-        && !should_bypass_pg_fusion_planner(parse, bound_params)
     {
-        return build_planned_custom_scan(parse, query_string, bound_params);
+        let config =
+            crate::host_config().unwrap_or_else(|err| error!("pg_fusion config error: {err}"));
+        match build_planned_custom_scan(parse, &config) {
+            Ok(planned) => return planned.into_planned_stmt(),
+            Err(err) => {
+                error!("pg_fusion query-tree frontend planning failed: {err}");
+            }
+        }
     }
 
+    call_next_planner(parse, query_string, cursor_options, bound_params)
+}
+
+unsafe fn call_next_planner(
+    parse: *mut Query,
+    query_string: *const c_char,
+    cursor_options: c_int,
+    bound_params: ParamListInfo,
+) -> *mut PlannedStmt {
     if let Some(prev) = PREV_PLANNER_HOOK {
         prev(parse, query_string, cursor_options, bound_params)
     } else {
@@ -68,147 +86,15 @@ unsafe fn is_pg_fusion_management_sql(query_string: *const c_char) -> bool {
     sql.contains("pg_fusion_metrics(") || sql.contains("pg_fusion_metrics_reset(")
 }
 
-unsafe fn should_bypass_pg_fusion_planner(parse: *mut Query, bound_params: ParamListInfo) -> bool {
-    has_bound_params(bound_params) || query_requires_vanilla_planner(parse)
-}
-
-unsafe fn has_bound_params(bound_params: ParamListInfo) -> bool {
-    !bound_params.is_null() && (*bound_params).numParams > 0
-}
-
-unsafe fn query_requires_vanilla_planner(parse: *mut Query) -> bool {
-    if parse.is_null() {
-        return false;
-    }
-
-    rtable_requires_vanilla_planner((*parse).rtable)
-        || cte_list_requires_vanilla_planner((*parse).cteList)
-        || query_contains_param(parse)
-}
-
-unsafe fn rtable_requires_vanilla_planner(rtable: *mut List) -> bool {
-    for index in 0..list_len(rtable) {
-        let rte = list_ptr_at(rtable, index) as *mut RangeTblEntry;
-        if rte.is_null() {
-            continue;
-        }
-        match (*rte).rtekind {
-            pgrx::pg_sys::RTEKind::RTE_RELATION => {
-                if !(*rte).inh || relation_is_catalog_or_toast((*rte).relid) {
-                    return true;
-                }
-            }
-            pgrx::pg_sys::RTEKind::RTE_SUBQUERY => {
-                if query_requires_vanilla_planner((*rte).subquery) {
-                    return true;
-                }
-            }
-            pgrx::pg_sys::RTEKind::RTE_FUNCTION | pgrx::pg_sys::RTEKind::RTE_TABLEFUNC => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-unsafe fn query_contains_param(parse: *mut Query) -> bool {
-    if parse.is_null() {
-        return false;
-    }
-
-    let mut found = false;
-    pgrx::pg_sys::query_tree_walker(
-        parse,
-        Some(param_node_walker),
-        (&mut found as *mut bool).cast::<c_void>(),
-        0,
-    );
-    found
-}
-
-unsafe extern "C-unwind" fn param_node_walker(node: *mut Node, context: *mut c_void) -> bool {
-    if node.is_null() {
-        return false;
-    }
-
-    match (*node).type_ {
-        NodeTag::T_Query => pgrx::pg_sys::query_tree_walker(
-            node.cast::<Query>(),
-            Some(param_node_walker),
-            context,
-            0,
-        ),
-        NodeTag::T_Param => {
-            *context.cast::<bool>() = true;
-            true
-        }
-        _ => pgrx::pg_sys::expression_tree_walker(node, Some(param_node_walker), context),
-    }
-}
-
-unsafe fn cte_list_requires_vanilla_planner(cte_list: *mut List) -> bool {
-    for index in 0..list_len(cte_list) {
-        let cte = list_ptr_at(cte_list, index) as *mut CommonTableExpr;
-        if cte.is_null() || (*cte).ctequery.is_null() {
-            continue;
-        }
-        if (*(*cte).ctequery).type_ != NodeTag::T_Query {
-            continue;
-        }
-        if query_requires_vanilla_planner((*cte).ctequery as *mut Query) {
-            return true;
-        }
-    }
-    false
-}
-
-unsafe fn relation_is_catalog_or_toast(relid: Oid) -> bool {
-    let namespace = pgrx::pg_sys::get_rel_namespace(relid);
-    pgrx::pg_sys::IsCatalogNamespace(namespace) || pgrx::pg_sys::IsToastNamespace(namespace)
-}
-
-unsafe fn list_len(list: *mut List) -> i32 {
-    if list.is_null() {
-        0
-    } else {
-        (*list).length
-    }
-}
-
-unsafe fn list_ptr_at(list: *mut List, index: i32) -> *mut c_void {
-    if list.is_null() || index < 0 || index >= (*list).length {
-        return null_mut();
-    }
-    (*(*list).elements.offset(index as isize)).ptr_value
-}
-
-#[pg_guard]
-unsafe extern "C-unwind" fn build_planned_custom_scan(
+unsafe fn build_planned_custom_scan(
     parse: *mut Query,
-    query_string: *const c_char,
-    bound_params: ParamListInfo,
-) -> *mut PlannedStmt {
-    if !bound_params.is_null() && (*bound_params).numParams > 0 {
-        error!(
-            "pg_fusion v1 does not support bind parameters yet; see planner.rs TODO for ParamListInfo -> ScalarValue bridging"
-        );
-    }
+    config: &HostConfig,
+) -> Result<PlannedCustomScan, String> {
     if query_contains_special_numeric_const(parse) {
         error!("{SPECIAL_NUMERIC_ERROR}");
     }
 
-    let config = crate::host_config().unwrap_or_else(|err| error!("pg_fusion config error: {err}"));
-    let planned = match build_frontend_plan(parse, &config) {
-        Ok(Some(planned)) => planned,
-        Ok(None) => build_sql_text_plan(parse, query_string, &config),
-        Err(err) if config.frontend_mode == FrontendMode::Require => {
-            error!("pg_fusion query-tree frontend planning failed: {err}");
-        }
-        Err(_) => build_sql_text_plan(parse, query_string, &config),
-    };
-
-    planned.into_planned_stmt()
+    build_frontend_plan(parse, config)
 }
 
 struct PlannedCustomScan {
@@ -255,10 +141,7 @@ impl PlannedCustomScan {
 unsafe fn build_frontend_plan(
     parse: *mut Query,
     config: &HostConfig,
-) -> Result<Option<PlannedCustomScan>, String> {
-    if config.frontend_mode == FrontendMode::Off {
-        return Ok(None);
-    }
+) -> Result<PlannedCustomScan, String> {
     let frontend = PgFrontend::new().with_config(PgFrontendConfig {
         identifier_max_bytes: config.plan_builder_config().identifier_max_bytes,
     });
@@ -271,37 +154,52 @@ unsafe fn build_frontend_plan(
         config.plan_builder_config(),
     )
     .map_err(|err| err.to_string())?;
+    let logical_plan =
+        restore_frontend_empty_schema(built.logical_plan, output.result_schema.clone())?;
     let target_lists = build_custom_scan_target_lists_from_pg_targets(&output.result_targets)
         .map_err(|err| format!("pg_fusion frontend targetlist build failed: {err}"))?;
-    let payload = encode_frontend_plan(&built.logical_plan).map_err(|err| err.to_string())?;
+    let payload = encode_frontend_plan(&logical_plan).map_err(|err| err.to_string())?;
     let relation_oids = relation_oids_from_scans(built.scan_plan.scans());
-    Ok(Some(PlannedCustomScan {
+    Ok(PlannedCustomScan {
         custom_scan: pack_custom_scan_payload(&payload, target_lists),
         query_id_seed: payload,
         relation_oids,
-    }))
+    })
 }
 
-unsafe fn build_sql_text_plan(
-    parse: *mut Query,
-    query_string: *const c_char,
-    config: &HostConfig,
-) -> PlannedCustomScan {
-    let sql = select_sql_from_query(parse, query_string);
-    let built = plan_builder::PlanBuilder::new()
-        .with_config(config.plan_builder_config())
-        .build(plan_builder::PlanBuildInput {
-            sql: &sql,
-            params: Vec::new(),
-        })
-        .unwrap_or_else(|err| error!("pg_fusion planner build failed: {err}"));
+fn restore_frontend_empty_schema(
+    plan: LogicalPlan,
+    result_schema: SchemaRef,
+) -> Result<LogicalPlan, String> {
+    if result_schema.fields().is_empty() {
+        return Ok(plan);
+    }
 
-    let target_lists = build_custom_scan_target_lists(&built.logical_plan)
-        .unwrap_or_else(|err| error!("pg_fusion targetlist build failed: {err}"));
-    PlannedCustomScan {
-        custom_scan: pack_custom_scan_payload(&encode_sql_text(&sql), target_lists),
-        query_id_seed: sql,
-        relation_oids: relation_oids_from_scans(built.scan_plan.scans()),
+    match plan {
+        LogicalPlan::EmptyRelation(empty) if !empty.produce_one_row => {
+            let input = LogicalPlan::EmptyRelation(EmptyRelation {
+                produce_one_row: true,
+                schema: Arc::new(DFSchema::empty()),
+            });
+            let filter = LogicalPlan::Filter(
+                Filter::try_new(lit(false), Arc::new(input))
+                    .map_err(|err| format!("pg_fusion frontend empty filter failed: {err}"))?,
+            );
+            let projection = result_schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let value = ScalarValue::try_from(field.data_type()).map_err(|err| {
+                        format!("pg_fusion frontend empty result literal failed: {err}")
+                    })?;
+                    Ok(Expr::Literal(value, None).alias(field.name()))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Projection::try_new(projection, Arc::new(filter))
+                .map(LogicalPlan::Projection)
+                .map_err(|err| format!("pg_fusion frontend empty projection failed: {err}"))
+        }
+        other => Ok(other),
     }
 }
 
@@ -376,32 +274,6 @@ unsafe fn numeric_datum_is_special(datum: pgrx::pg_sys::Datum) -> bool {
     is_special
 }
 
-unsafe fn select_sql_from_query(parse: *mut Query, query_string: *const c_char) -> String {
-    let sql = CStr::from_ptr(query_string)
-        .to_str()
-        .expect("planner query string must be valid UTF-8");
-    if parse.is_null() {
-        return sql.to_owned();
-    }
-
-    if should_deparse_planner_query(sql) {
-        let deparsed = pgrx::pg_sys::pg_get_querydef(parse, false);
-        if !deparsed.is_null() {
-            return CStr::from_ptr(deparsed)
-                .to_str()
-                .expect("deparsed query text must be valid UTF-8")
-                .to_owned();
-        }
-    }
-
-    sql.to_owned()
-}
-
-fn should_deparse_planner_query(sql: &str) -> bool {
-    let sql = sql.trim_start().to_ascii_uppercase();
-    sql.starts_with("EXPLAIN") || sql.starts_with("COPY")
-}
-
 struct CustomScanTargetLists {
     plan_target_list: *mut List,
     scan_target_list: *mut List,
@@ -473,67 +345,10 @@ fn build_custom_scan_target_lists_from_pg_targets(
     })
 }
 
-fn build_custom_scan_target_lists(
-    logical_plan: &LogicalPlan,
-) -> Result<CustomScanTargetLists, String> {
-    let fields = logical_plan.schema().fields();
-    let mut plan_target_list: *mut List = std::ptr::null_mut();
-    let mut scan_target_list: *mut List = std::ptr::null_mut();
-    for (index, field) in fields.iter().enumerate() {
-        let oid = type_to_oid(field.data_type())
-            .ok_or_else(|| format!("unsupported output type {}", field.data_type()))?;
-        unsafe {
-            let tuple =
-                pgrx::pg_sys::SearchSysCache1(TYPEOID as i32, pgrx::pg_sys::ObjectIdGetDatum(oid));
-            if tuple.is_null() {
-                return Err(format!("type cache lookup failed for oid {}", oid.to_u32()));
-            }
-            let typtup = pgrx::pg_sys::GETSTRUCT(tuple) as pgrx::pg_sys::Form_pg_type;
-            let attr_number = i16::try_from(index + 1)
-                .map_err(|_| "custom scan output has too many columns".to_string())?;
-            let typmod = (*typtup).typtypmod;
-            let collation = (*typtup).typcollation;
-            let plan_expr = pgrx::pg_sys::makeVar(
-                pgrx::pg_sys::INDEX_VAR,
-                attr_number,
-                oid,
-                typmod,
-                collation,
-                0,
-            );
-            let scan_expr = pgrx::pg_sys::makeNullConst(oid, typmod, collation);
-            let name = field.name();
-            let plan_entry = pgrx::pg_sys::makeTargetEntry(
-                plan_expr as *mut pgrx::pg_sys::Expr,
-                attr_number as _,
-                pstrdup(name),
-                false,
-            );
-            let scan_entry = pgrx::pg_sys::makeTargetEntry(
-                scan_expr as *mut pgrx::pg_sys::Expr,
-                attr_number as _,
-                pstrdup(name),
-                false,
-            );
-            plan_target_list = list_append_unique_ptr(plan_target_list, plan_entry as *mut c_void);
-            scan_target_list = list_append_unique_ptr(scan_target_list, scan_entry as *mut c_void);
-            pgrx::pg_sys::ReleaseSysCache(tuple);
-        }
-    }
-    Ok(CustomScanTargetLists {
-        plan_target_list,
-        scan_target_list,
-    })
-}
-
 unsafe fn pstrdup(value: &str) -> *mut i8 {
     let ptr = palloc0(value.len() + 1) as *mut u8;
     std::ptr::copy_nonoverlapping(value.as_ptr(), ptr, value.len());
     ptr.cast()
-}
-
-fn type_to_oid(data_type: &DataType) -> Option<Oid> {
-    pg_oid_for_arrow_type(data_type).map(Oid::from_u32)
 }
 
 // TODO(darthunix): add ParamListInfo -> ScalarValue bridging for bind params in

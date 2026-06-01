@@ -3,7 +3,7 @@ id: component-pg-frontend-0001
 type: fact
 scope: component
 tags: ["postgres", "datafusion", "planning", "query-tree"]
-updated_at: "2026-05-29"
+updated_at: "2026-05-31"
 importance: 0.7
 ---
 
@@ -22,6 +22,12 @@ PostgreSQL major-version layout differences terminate at `adapter/`. Each build
 targets exactly one PostgreSQL major selected by Cargo feature; today only
 `pg17` is wired. The stable `TypedQuery` model, catalog resolution, and
 compiler code must stay free of PostgreSQL-version `cfg`.
+The `pg17` adapter is split by PostgreSQL tree concerns (`scope`, `rtable`,
+`expr`, `clauses`, `window`, `functions`, `consts`). The compiler is split by
+logical-planning concerns (`from`, `subquery`, `aggregate`, `window`,
+`projection`, `expr`, `sort`, `join`, and reference/schema helpers); these
+submodules are internal organization only and do not define separate public
+frontend phases.
 
 The frontend phases are explicit: PostgreSQL query tree -> `TypedQuery` ->
 in-place catalog resolution -> DataFusion logical plan -> `plan_builder`
@@ -29,20 +35,38 @@ in-place catalog resolution -> DataFusion logical plan -> `plan_builder`
 `TypedQuery` by filling column names, attnums, PostgreSQL type refs, nullability,
 and normalized scan relation identity. Compilation takes a `ResolvedQuery` view
 over the same tree, so catalog lookup is not mixed into expression lowering.
+`HybridPlan` is the boundary object after frontend compilation: it carries the
+DataFusion logical plan plus the PostgreSQL scan plan that the custom scan
+leaves reference.
 
-v1 is intentionally fail-closed and is now available on the production planner
-path behind `pg_fusion.frontend_mode`. In `try` mode the planner attempts
-`pg_frontend` first and falls back to SQL-text `plan_builder` when the typed
-frontend rejects a query. In `require` mode rejection becomes a controlled
-frontend planning error. The supported execution shape is one base relation
-with simple projection/filter expressions; joins, aggregates, windows, set
-operations, GROUP BY, HAVING, sort, limit, CTEs, row-locking clauses, `ONLY`
-scans, parameters, and subqueries return structured unsupported errors. The
-production planner also bypasses the frontend and SQL-text custom scan paths
-when the analyzed tree still contains `Param` nodes or an `RTE.inh = false`
-relation, so prepared/generic parameter values and `ONLY` semantics remain
-PostgreSQL-owned until the typed model and scan SQL can preserve them
-explicitly.
+v1 is intentionally fail-closed and is now the production planner path whenever
+`pg_fusion.enable = on`. The frontend no longer has a `try` mode and no longer
+falls back to PostgreSQL's native planner for user SELECTs. Rejection becomes a
+controlled frontend planning error. The supported execution shape includes
+no-FROM SELECTs, base relation/VALUES/CTE/subquery range table leaves,
+projection/filter expressions, ORDER BY/LIMIT, inner/left/right joins, GROUP BY,
+HAVING, grouping sets, full-row `DISTINCT`, PostgreSQL `DISTINCT ON`,
+`UNION`/`UNION ALL`, scalar expression subqueries,
+predicate `EXISTS`, top-level correlated `IN` lowered to a semi-join,
+`count`/`sum`/`avg`/`min`/`max`/statistical aggregates, `string_agg`,
+aggregate FILTER clauses, aggregate and rank-like window functions with typed
+frame offsets, and scalar functions such as `format`, `quote_literal`,
+`concat`, and `concat_ws`. CTE references compile to `PgCteRefNode` so
+multi-use CTEs share one materialization identity through the backend plan.
+`GROUPING()` remains a DataFusion grouping aggregate until frontend analysis so
+DataFusion rewrites it from its hidden grouping-set id; pg_frontend must not
+infer grouping bits from nullable grouped output values because real data NULLs
+and rollup NULLs are semantically distinct.
+Scalar subqueries are wrapped in the internal
+`pg_scalar_subquery_value` aggregate before DataFusion sees them as scalar
+values or joined bindings, preserving PostgreSQL cardinality semantics:
+zero rows become NULL, one row becomes the value, and more than one row raises
+the PostgreSQL scalar-subquery error during execution.
+Row marks are accepted as read-only query-tree markers; pg_fusion does not
+implement PostgreSQL row-lock semantics in custom scans. `ONLY` scans and
+parameters still return structured unsupported errors instead of bypassing
+pg_fusion. `FETCH ... WITH TIES` also fails closed because a plain DataFusion
+`Limit` cannot preserve PostgreSQL peer-row semantics.
 
 Frontend `CustomScan` nodes store a versioned text-safe wrapper around
 `plan_codec` bytes in `custom_private`. The active encoded payload contains the
@@ -73,19 +97,26 @@ carry PostgreSQL OID/typmod/collation metadata into `scan_sql` so `text`,
 semantics instead of untyped string literals.
 Non-null `date`, `timestamp`, and `timestamptz` constants fail closed until
 temporal representation is lossless across scan input, DataFusion execution,
-and PostgreSQL result import. Non-finite float constants also fail closed
-because PostgreSQL and Arrow/DataFusion disagree on `NaN` comparison semantics.
+and PostgreSQL result import. Non-finite `float4`/`float8` constants are allowed
+so PostgreSQL float aggregate semantics can be preserved through DataFusion.
+PostgreSQL `numeric` `NaN`/`Infinity` cannot enter Arrow Decimal128 execution:
+typed numeric constants and known text/VALUES sources cast to `numeric` fail in
+frontend planning before worker execution. Finite `numeric` comparisons across
+different typmods are cast to a common Decimal128 shape before DataFusion sees
+the predicate.
 `TIME '24:00:00'` constants fail closed because scan SQL renders time literals
 through interval arithmetic that PostgreSQL normalizes modulo one day.
 Operator compilation reads the resolved `OpExpr.opno` from PostgreSQL's syscache
-and accepts only binary `pg_catalog` comparison operators over identical
-supported scalar operand types with `bool` results. This keeps user-defined
-operators with builtin spellings, mixed-type comparison operators, arithmetic,
-and PostgreSQL-specific operator semantics fail-closed until scan SQL can
-preserve them explicitly.
+and accepts binary `pg_catalog` comparison, arithmetic, and text-concatenation
+operators over supported scalar operand/result types. This keeps user-defined
+operators with builtin spellings, mixed-type operators, and PostgreSQL-specific
+operator semantics fail-closed until scan SQL can preserve them explicitly.
+`int2`/`int4`/`int8` `+`, `-`, and `*` lower to internal checked DataFusion
+UDFs instead of DataFusion binary arithmetic so PostgreSQL integer overflow
+raises `smallint`/`integer`/`bigint out of range` instead of wrapping.
 Frontend `WHERE` filters must reach `scan_sql` before generic DataFusion
 optimization can fold or rewrite them. After scan building, those filters must
 fully compile into PostgreSQL scan SQL; residual DataFusion filters are
-rejected before execution. `SELECT` targets do not compile PostgreSQL operator
-expressions in v1 because scan SQL cannot yet project expressions with
-PostgreSQL semantics.
+rejected before execution. Target expressions compile in the DataFusion logical
+plan after PostgreSQL query-tree analysis has supplied function/operator OIDs
+and PostgreSQL type metadata.

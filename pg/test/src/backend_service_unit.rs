@@ -234,10 +234,7 @@ pub fn render_explain_is_rejected_while_execution_is_active() {
     BackendService::install_fake_execution_for_tests(3, 5, BackendExecutionState::Running);
 
     let err = BackendService::render_explain(ExplainInput {
-        plan_source: ExecutionPlanSource::SqlText {
-            sql: "SELECT 1",
-            params: Vec::new(),
-        },
+        plan_source: ExecutionPlanSource::EncodedHybridPlan { bytes: &[] },
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,

@@ -70,18 +70,33 @@ mod tests {
     }
 
     #[pg_test]
-    fn pg_fusion_planner_catalog_bypass_smoke() {
-        super::smoke_tests::planner_catalog_bypass_smoke();
+    fn pg_fusion_planner_catalog_strict_smoke() {
+        super::smoke_tests::planner_catalog_strict_smoke();
     }
 
     #[pg_test]
-    fn pg_fusion_planner_bound_params_bypass_smoke() {
-        super::smoke_tests::planner_bound_params_bypass_smoke();
+    fn pg_fusion_planner_bound_params_strict_smoke() {
+        super::smoke_tests::planner_bound_params_strict_smoke();
     }
 
     #[pg_test]
-    fn pg_fusion_frontend_mode_smoke() {
-        super::smoke_tests::frontend_mode_smoke();
+    fn pg_fusion_scalar_subquery_cardinality_smoke() {
+        super::smoke_tests::scalar_subquery_cardinality_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_checked_integer_arithmetic_smoke() {
+        super::smoke_tests::checked_integer_arithmetic_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_fetch_with_ties_rejected_smoke() {
+        super::smoke_tests::fetch_with_ties_rejected_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_strict_frontend_smoke() {
+        super::smoke_tests::strict_frontend_smoke();
     }
 
     #[pg_test]
@@ -90,8 +105,8 @@ mod tests {
     }
 
     #[pg_test]
-    fn pg_fusion_copy_catalog_bypass_smoke() {
-        super::smoke_tests::copy_catalog_bypass_smoke();
+    fn pg_fusion_copy_catalog_strict_smoke() {
+        super::smoke_tests::copy_catalog_strict_smoke();
     }
 
     #[pg_test]

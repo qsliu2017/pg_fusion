@@ -2096,10 +2096,6 @@ fn truncate_scan_failure_message(message: &str) -> String {
 impl CustomScanPlanSource {
     fn as_execution_source(&self) -> ExecutionPlanSource<'_> {
         match self {
-            Self::SqlText(sql) => ExecutionPlanSource::SqlText {
-                sql,
-                params: Vec::new(),
-            },
             Self::FrontendPlan(bytes) => ExecutionPlanSource::EncodedHybridPlan { bytes },
         }
     }

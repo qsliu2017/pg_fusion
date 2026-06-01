@@ -4,30 +4,10 @@ use std::ptr::null_mut;
 use pgrx::pg_sys;
 
 use crate::error::PgFrontendError;
-use crate::operator::supported_operator;
-use crate::typed_query::{BoolOp, ParamKind, PgTypeRef, QueryOperator};
+use crate::operator::{supported_operator, supported_unary_operator};
+use crate::typed_query::{BoolOp, ParamKind, PgTypeRef, QueryOperator, QueryUnaryOperator};
 
 const USECS_PER_DAY: i64 = 86_400_000_000;
-
-pub(super) fn finite_float32_const(value: f32) -> Result<f32, PgFrontendError> {
-    if value.is_finite() {
-        Ok(value)
-    } else {
-        Err(PgFrontendError::unsupported(
-            "non-finite float4 constants are not supported by pg_frontend v1",
-        ))
-    }
-}
-
-pub(super) fn finite_float64_const(value: f64) -> Result<f64, PgFrontendError> {
-    if value.is_finite() {
-        Ok(value)
-    } else {
-        Err(PgFrontendError::unsupported(
-            "non-finite float8 constants are not supported by pg_frontend v1",
-        ))
-    }
-}
 
 pub(super) fn time_const(value: i64) -> Result<i64, PgFrontendError> {
     if (0..USECS_PER_DAY).contains(&value) {
@@ -51,6 +31,12 @@ pub(super) fn unsupported_temporal_const(type_name: &str) -> PgFrontendError {
 
 pub(super) fn read_operator(opno: pg_sys::Oid) -> Result<QueryOperator, PgFrontendError> {
     unsafe { supported_operator(opno) }
+}
+
+pub(super) fn read_unary_operator(
+    opno: pg_sys::Oid,
+) -> Result<QueryUnaryOperator, PgFrontendError> {
+    unsafe { supported_unary_operator(opno) }
 }
 
 pub(super) fn bool_op(op: pg_sys::BoolExprType::Type) -> Result<BoolOp, PgFrontendError> {
@@ -101,6 +87,20 @@ pub(super) unsafe fn list_ptr_at(list: *mut pg_sys::List, index: i32) -> *mut st
     unsafe { (*(*list).elements.offset(index as isize)).ptr_value }
 }
 
+pub(super) unsafe fn list_oid_at(list: *mut pg_sys::List, index: i32) -> pg_sys::Oid {
+    if list.is_null() || index < 0 || index >= unsafe { (*list).length } {
+        return pg_sys::Oid::INVALID;
+    }
+    unsafe { (*(*list).elements.offset(index as isize)).oid_value }
+}
+
+pub(super) unsafe fn list_int_at(list: *mut pg_sys::List, index: i32) -> i32 {
+    if list.is_null() || index < 0 || index >= unsafe { (*list).length } {
+        return -1;
+    }
+    unsafe { (*(*list).elements.offset(index as isize)).int_value }
+}
+
 pub(super) unsafe fn cstr_from_pg(ptr: *mut std::ffi::c_char) -> Result<String, PgFrontendError> {
     if ptr.is_null() {
         return Err(PgFrontendError::unsupported(
@@ -115,22 +115,6 @@ pub(super) unsafe fn cstr_from_pg(ptr: *mut std::ffi::c_char) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finite_float_constants_are_accepted() {
-        assert_eq!(finite_float32_const(1.5).unwrap(), 1.5);
-        assert_eq!(finite_float64_const(-2.25).unwrap(), -2.25);
-    }
-
-    #[test]
-    fn non_finite_float_constants_are_rejected() {
-        assert!(finite_float32_const(f32::NAN).is_err());
-        assert!(finite_float32_const(f32::INFINITY).is_err());
-        assert!(finite_float32_const(f32::NEG_INFINITY).is_err());
-        assert!(finite_float64_const(f64::NAN).is_err());
-        assert!(finite_float64_const(f64::INFINITY).is_err());
-        assert!(finite_float64_const(f64::NEG_INFINITY).is_err());
-    }
 
     #[test]
     fn time_constants_reject_24_hour_sentinel() {

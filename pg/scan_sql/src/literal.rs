@@ -25,16 +25,16 @@ pub(crate) fn render_literal(
             || Some("NULL".into()),
             |value| {
                 let value = f32::from(value);
-                value.is_finite().then(|| value.to_string())
+                render_finite_float_literal(value, value.is_finite(), "REAL")
             },
         ),
         ScalarValue::Float32(value) => value.map_or_else(
             || Some("NULL".into()),
-            |value| value.is_finite().then(|| value.to_string()),
+            |value| render_finite_float_literal(value, value.is_finite(), "REAL"),
         ),
         ScalarValue::Float64(value) => value.map_or_else(
             || Some("NULL".into()),
-            |value| value.is_finite().then(|| value.to_string()),
+            |value| render_finite_float_literal(value, value.is_finite(), "DOUBLE PRECISION"),
         ),
         ScalarValue::Decimal32(value, precision, scale) => {
             render_decimal_literal(value.map(|value| value.to_string()), *precision, *scale)
@@ -114,6 +114,19 @@ pub(crate) fn render_literal(
         | ScalarValue::Union(_, _, _)
         | ScalarValue::RunEndEncoded(_, _, _) => None,
     }
+}
+
+fn render_finite_float_literal(
+    value: impl ToString,
+    is_finite: bool,
+    target: &'static str,
+) -> Option<String> {
+    is_finite.then(|| {
+        format!(
+            "CAST({} AS {target})",
+            render_string_literal(&value.to_string())
+        )
+    })
 }
 
 fn render_pg_typed_literal(literal: &ScalarValue, pg_type: PgTypeMetadata) -> Option<String> {

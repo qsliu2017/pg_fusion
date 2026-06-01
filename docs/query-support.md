@@ -3,8 +3,9 @@
 [Documentation home](index.md)
 
 `pg_fusion` supports a conservative subset of analytical PostgreSQL `SELECT`
-queries. Unsupported shapes are either bypassed before planning or rejected
-with controlled errors.
+queries. With `pg_fusion.enable = on`, unsupported user SELECT shapes are
+rejected with controlled pg_fusion planning errors instead of silently falling
+back to PostgreSQL's native planner.
 
 If the terms are new, start with [Glossary](glossary.md). The data path and
 page lifetime rules are described in [Execution Model](execution-model.md) and
@@ -30,16 +31,13 @@ The following invocation paths are not supported yet:
 The planner hook bypasses pg_fusion for:
 
 - non-`SELECT` statements;
-- modifying CTEs;
-- PostgreSQL catalog or TOAST relations;
-- PostgreSQL function or table-function range entries;
 - pg_fusion management SQL such as metrics functions.
 
 ## COPY
 
 `COPY (SELECT ...) TO STDOUT` can use pg_fusion when the nested `SELECT` is
-eligible for the pg_fusion planner path. The `SELECT` body follows the same
-support, bypass, and fail-closed rules as an ordinary top-level `SELECT`.
+supported by the pg_fusion planner path. The `SELECT` body follows the same
+support and fail-closed rules as an ordinary top-level `SELECT`.
 
 This does not mean pg_fusion accelerates data loading. `COPY FROM`, table
 loads, and other non-`SELECT` utility paths remain PostgreSQL-owned execution
@@ -47,20 +45,27 @@ paths.
 
 ## Relational Operators
 
-The intended supported direction is:
+The current strict query-tree frontend supports:
 
 - filters;
 - projections;
+- no-FROM SELECTs;
+- ORDER BY and LIMIT/OFFSET over supported plans;
+- simple `count`/`sum`/`avg`/`min`/`max` aggregate calls without GROUP BY;
+- selected scalar expressions and operators with PostgreSQL-compatible
+  mappings in pg_fusion.
+
+The intended supported direction is:
+
 - grouped aggregates;
 - selected joins;
 - selected CTE shapes after DataFusion optimization;
 - DataFusion-supported expressions and functions that have PostgreSQL-compatible
   mappings in pg_fusion.
 
-Subqueries are accepted only when DataFusion can decorrelate or rewrite them
-into ordinary relational operators before PostgreSQL scan building. Surviving
-`EXISTS`, `IN (SELECT ...)`, scalar subqueries, correlated subqueries, and
-logical subquery plan nodes are rejected.
+Subqueries are not supported by the current strict frontend. Longer term, they
+should be accepted only when they can be decorrelated or rewritten into
+ordinary relational operators before PostgreSQL scan building.
 
 ## Scan Pushdown And Parallel Scan Producers
 

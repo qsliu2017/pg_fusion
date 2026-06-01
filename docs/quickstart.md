@@ -104,16 +104,15 @@ ANALYZE t;
 
 SET pg_fusion.enable = on;
 
-SELECT group_id, count(*), avg(value)
+SELECT count(*), avg(value)
 FROM t
-GROUP BY group_id
-ORDER BY group_id;
+WHERE group_id >= 0;
 ```
 
-## Try A Join-Heavy Query
+## Try A Larger Aggregate Query
 
-This example returns one row, but the join creates substantial worker-local
-intermediate data after PostgreSQL scan rows have crossed into Arrow pages.
+This example returns one row after PostgreSQL scan rows have crossed into Arrow
+pages and DataFusion has computed the aggregate.
 
 ```sql
 DROP TABLE IF EXISTS t;
@@ -128,8 +127,8 @@ ANALYZE t;
 SET pg_fusion.enable = on;
 
 SELECT count(*)
-FROM t o
-JOIN t i USING (b);
+FROM t
+WHERE b >= 0;
 ```
 
 Expected result:
@@ -137,12 +136,11 @@ Expected result:
 ```text
   count
 ------------
- 1000000000
+ 1000000
 ```
 
-On one local release run this query completed through pg_fusion in about 9.3
-seconds. Treat that as a smoke result, not a benchmark claim; compare on your
-machine with `pg_fusion.enable` off and on.
+Treat timing as workload-specific; compare on your machine with
+`pg_fusion.enable` off and on.
 
 `COPY (SELECT ...) TO STDOUT` can use the same pg_fusion path when the nested
 `SELECT` is eligible:
@@ -150,8 +148,8 @@ machine with `pg_fusion.enable` off and on.
 ```sql
 COPY (
   SELECT count(*)
-  FROM t o
-  JOIN t i USING (b)
+  FROM t
+  WHERE b >= 0
 ) TO STDOUT WITH (FORMAT csv);
 ```
 
@@ -159,10 +157,9 @@ COPY (
 
 ```sql
 EXPLAIN
-SELECT group_id, count(*), avg(value)
+SELECT count(*), avg(value)
 FROM t
-GROUP BY group_id
-ORDER BY group_id;
+WHERE group_id >= 0;
 ```
 
 Look for `Custom Scan (PgFusionScan)` and PostgreSQL scan leaves. The scan
@@ -174,17 +171,15 @@ pages.
 ```sql
 SET pg_fusion.enable = off;
 EXPLAIN ANALYZE
-SELECT group_id, count(*), avg(value)
+SELECT count(*), avg(value)
 FROM t
-GROUP BY group_id
-ORDER BY group_id;
+WHERE group_id >= 0;
 
 SET pg_fusion.enable = on;
 EXPLAIN ANALYZE
-SELECT group_id, count(*), avg(value)
+SELECT count(*), avg(value)
 FROM t
-GROUP BY group_id
-ORDER BY group_id;
+WHERE group_id >= 0;
 ```
 
 If pg_fusion is slower, check whether the query sends many rows or columns to

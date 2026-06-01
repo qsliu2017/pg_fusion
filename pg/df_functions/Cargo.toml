@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 ahash = "0.8"
 arrow-array = { workspace = true }
+arrow-arith = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 datafusion-common = { workspace = true }

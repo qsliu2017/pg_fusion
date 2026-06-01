@@ -12,10 +12,10 @@ use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion_common::{Column, DFSchema, NullEquality, TableReference};
 use datafusion_expr::expr::BinaryExpr;
 use datafusion_expr::logical_plan::{
-    build_join_schema, EmptyRelation, Extension as LogicalExtension, Filter, Join, JoinConstraint,
-    JoinType, LogicalPlan, Projection, UserDefinedLogicalNodeCore,
+    build_join_schema, Aggregate, EmptyRelation, Extension as LogicalExtension, Filter, Join,
+    JoinConstraint, JoinType, LogicalPlan, Projection, UserDefinedLogicalNodeCore,
 };
-use datafusion_expr::{lit, Expr, Operator};
+use datafusion_expr::{lit, Expr, ExprFunctionExt, Operator};
 use datafusion_proto::protobuf::logical_plan_node::LogicalPlanType;
 use scan_node::{PgCteId, PgCteRefNode, PgScanId, PgScanNode, PgScanSpec};
 use scan_sql::{compile_scan, CompileScanInput, LimitLowering, PgRelation};
@@ -83,6 +83,24 @@ fn pg_scan_spec(
     requested_limit: Option<usize>,
 ) -> Arc<PgScanSpec> {
     let source_schema = qualified_source_schema(&table);
+    pg_scan_spec_with_source_schema(
+        scan_id,
+        table,
+        &source_schema,
+        projection,
+        filters,
+        requested_limit,
+    )
+}
+
+fn pg_scan_spec_with_source_schema(
+    scan_id: u64,
+    table: TestTable,
+    source_schema: &DFSchema,
+    projection: Option<&[usize]>,
+    filters: &[Expr],
+    requested_limit: Option<usize>,
+) -> Arc<PgScanSpec> {
     let compiled = compile_scan(CompileScanInput {
         relation: &table.relation,
         schema: table.schema.as_ref(),
@@ -98,7 +116,7 @@ fn pg_scan_spec(
             PgScanId::new(scan_id),
             table.table_oid,
             table.relation,
-            &source_schema,
+            source_schema,
             compiled,
         )
         .expect("scan spec"),
@@ -107,6 +125,26 @@ fn pg_scan_spec(
 
 fn pg_scan_plan(scan_id: u64, table: TestTable, projection: Option<&[usize]>) -> LogicalPlan {
     PgScanNode::new(pg_scan_spec(scan_id, table, projection, &[], None)).into_logical_plan()
+}
+
+fn pg_scan_plan_with_alias(
+    scan_id: u64,
+    alias: &str,
+    table: TestTable,
+    projection: Option<&[usize]>,
+) -> LogicalPlan {
+    let source_schema =
+        DFSchema::try_from_qualified_schema(TableReference::bare(alias), table.schema.as_ref())
+            .expect("alias schema");
+    PgScanNode::new(pg_scan_spec_with_source_schema(
+        scan_id,
+        table,
+        &source_schema,
+        projection,
+        &[],
+        None,
+    ))
+    .into_logical_plan()
 }
 
 fn simple_scan_plan() -> LogicalPlan {
@@ -139,6 +177,52 @@ fn quote_literal_no_scan_plan() -> LogicalPlan {
     });
     let expr = df_functions::pg_quote_literal_udf().call(vec![lit("World")]);
     LogicalPlan::Projection(Projection::try_new(vec![expr], Arc::new(input)).expect("projection"))
+}
+
+fn first_value_aggregate_no_scan_plan() -> LogicalPlan {
+    let input = LogicalPlan::EmptyRelation(EmptyRelation {
+        produce_one_row: true,
+        schema: Arc::new(DFSchema::empty()),
+    });
+    let input = LogicalPlan::Projection(
+        Projection::try_new(
+            vec![lit(1_i64).alias("id"), lit(2.0_f64).alias("score")],
+            Arc::new(input),
+        )
+        .expect("projection"),
+    );
+    let score = Expr::Column(Column::from_name("score"));
+    let first_score = datafusion::functions_aggregate::first_last::first_value_udaf()
+        .call(vec![score.clone()])
+        .order_by(vec![score.sort(false, false)])
+        .build()
+        .expect("first_value aggregate")
+        .alias("first_score");
+    LogicalPlan::Aggregate(
+        Aggregate::try_new(
+            Arc::new(input),
+            vec![Expr::Column(Column::from_name("id"))],
+            vec![first_score],
+        )
+        .expect("aggregate"),
+    )
+}
+
+fn scalar_subquery_value_aggregate_no_scan_plan() -> LogicalPlan {
+    let input = LogicalPlan::EmptyRelation(EmptyRelation {
+        produce_one_row: true,
+        schema: Arc::new(DFSchema::empty()),
+    });
+    let input = LogicalPlan::Projection(
+        Projection::try_new(vec![lit(7_i64).alias("value")], Arc::new(input)).expect("projection"),
+    );
+    let value = Expr::Column(Column::from_name("value"));
+    let scalar_value = df_functions::pg_scalar_subquery_value_udaf()
+        .call(vec![value])
+        .alias("scalar_value");
+    LogicalPlan::Aggregate(
+        Aggregate::try_new(Arc::new(input), Vec::new(), vec![scalar_value]).expect("aggregate"),
+    )
 }
 
 fn join_plan(
@@ -380,6 +464,25 @@ fn roundtrips_join_with_multiple_pg_scans() {
 }
 
 #[test]
+fn roundtrips_join_with_aliased_pg_scans() {
+    let left = pg_scan_plan_with_alias(1, "l", user_table(), None);
+    let right = pg_scan_plan_with_alias(2, "r", order_table(), None);
+    let plan = join_plan(
+        left.clone(),
+        right.clone(),
+        column_at(&left, 0),
+        column_at(&right, 1),
+        JoinType::Inner,
+    );
+    let decoded = roundtrip(&plan);
+
+    assert_eq!(
+        plan.display_indent().to_string(),
+        decoded.display_indent().to_string()
+    );
+}
+
+#[test]
 fn roundtrips_left_semi_join_with_multiple_pg_scans() {
     let left = pg_scan_plan(1, user_table(), Some(&[0]));
     let right = pg_scan_plan(2, order_table(), Some(&[1]));
@@ -498,6 +601,41 @@ fn roundtrips_pg_quote_literal_no_scan_query() {
             .to_string()
             .contains("quote_literal"),
         "decoded plan should retain the pg_quote_literal scalar UDF"
+    );
+    assert!(collect_pg_scans(&decoded).is_empty());
+}
+
+#[test]
+fn roundtrips_first_value_aggregate_no_scan_query() {
+    let plan = first_value_aggregate_no_scan_plan();
+    let decoded = roundtrip(&plan);
+
+    assert_eq!(
+        plan.display_indent().to_string(),
+        decoded.display_indent().to_string()
+    );
+    assert!(
+        decoded.display_indent().to_string().contains("first_value"),
+        "decoded plan should retain the first_value aggregate UDF"
+    );
+    assert!(collect_pg_scans(&decoded).is_empty());
+}
+
+#[test]
+fn roundtrips_pg_scalar_subquery_value_aggregate_no_scan_query() {
+    let plan = scalar_subquery_value_aggregate_no_scan_plan();
+    let decoded = roundtrip(&plan);
+
+    assert_eq!(
+        plan.display_indent().to_string(),
+        decoded.display_indent().to_string()
+    );
+    assert!(
+        decoded
+            .display_indent()
+            .to_string()
+            .contains("pg_scalar_subquery_value"),
+        "decoded plan should retain the pg_scalar_subquery_value aggregate UDF"
     );
     assert!(collect_pg_scans(&decoded).is_empty());
 }

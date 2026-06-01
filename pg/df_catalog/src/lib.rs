@@ -145,9 +145,9 @@ pub trait CatalogResolver {
 /// DataFusion planning source for a resolved PostgreSQL relation.
 ///
 /// This type intentionally lives with catalog resolution rather than with any
-/// SQL parser frontend. Typed query-tree lowering and SQL-text planning both
-/// use it as the DataFusion `TableSource` marker that later scan lowering
-/// recognizes and turns into a PostgreSQL-owned scan stream.
+/// query-tree frontend. Typed query-tree lowering uses it as the DataFusion
+/// `TableSource` marker that later scan lowering recognizes and turns into a
+/// PostgreSQL-owned scan stream.
 #[derive(Debug)]
 pub struct PgPlanningTableSource {
     resolved: ResolvedTable,

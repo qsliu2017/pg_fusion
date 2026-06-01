@@ -62,6 +62,7 @@ mod tests {
             pgrx::pg_sys::INT8OID,
             pgrx::pg_sys::FLOAT4OID,
             pgrx::pg_sys::FLOAT8OID,
+            pgrx::pg_sys::NUMERICOID,
             pgrx::pg_sys::TEXTOID,
             pgrx::pg_sys::VARCHAROID,
             pgrx::pg_sys::BPCHAROID,
@@ -103,7 +104,6 @@ mod tests {
     #[test]
     fn non_null_const_types_reject_value_only_types() {
         for (oid, expected) in [
-            (pgrx::pg_sys::NUMERICOID, "numeric"),
             (pgrx::pg_sys::DATEOID, "date"),
             (pgrx::pg_sys::TIMESTAMPOID, "timestamp"),
             (pgrx::pg_sys::TIMESTAMPTZOID, "timestamptz"),

@@ -336,7 +336,16 @@ fn render_scalar_function(
     let name = function.name().to_ascii_lowercase();
 
     let sql = match (name.as_str(), args_sql.as_slice()) {
+        ("abs", [value]) => format!("abs({value})"),
+        ("acosh", [value]) => format!("acosh({value})"),
+        ("asinh", [value]) => format!("asinh({value})"),
+        ("atanh", [value]) => format!("atanh({value})"),
+        ("ceil", [value]) => format!("ceil({value})"),
         ("lower", [value]) => format!("lower({value})"),
+        ("floor", [value]) => format!("floor({value})"),
+        ("cosh", [value]) => format!("cosh({value})"),
+        ("exp", [value]) => format!("exp({value})"),
+        ("ln", [value]) => format!("ln({value})"),
         ("upper", [value]) => format!("upper({value})"),
         ("trim", [value]) => format!("trim({value})"),
         ("ltrim", [value]) => format!("ltrim({value})"),
@@ -346,6 +355,15 @@ fn render_scalar_function(
         ("strpos", [haystack, needle]) => format!("strpos({haystack}, {needle})"),
         ("contains", [haystack, needle]) => format!("(strpos({haystack}, {needle}) > 0)"),
         ("concat", args) if !args.is_empty() => format!("concat({})", args.join(", ")),
+        ("nullif", [left, right]) => format!("nullif({left}, {right})"),
+        ("power", [left, right]) => format!("power({left}, {right})"),
+        ("round", [value]) => format!("round({value})"),
+        ("round", [value, precision]) => format!("round({value}, {precision})"),
+        ("sinh", [value]) => format!("sinh({value})"),
+        ("sqrt", [value]) => format!("sqrt({value})"),
+        ("tanh", [value]) => format!("tanh({value})"),
+        ("trunc", [value]) => format!("trunc({value})"),
+        ("trunc", [value, precision]) => format!("trunc({value}, {precision})"),
         _ => return Ok(None),
     };
 

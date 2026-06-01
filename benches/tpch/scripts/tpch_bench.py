@@ -357,6 +357,27 @@ def run_query_mode(
     hashes: list[str] = []
     stdout: str | None = None
     total_runs = args.warmup + args.runs
+    if fusion_enable == "on":
+        plan_check = run_psql_sql(
+            psql,
+            args,
+            render_explain(args, query),
+            results_dir,
+            unaligned=True,
+            timeout=args.timeout,
+        )
+        if plan_check.returncode != 0:
+            error = (plan_check.stderr or plan_check.stdout).strip()
+            return QueryRun(False, times, row_counts, hashes, stdout, tail(error))
+        if "Custom Scan (PgFusionScan)" not in plan_check.stdout:
+            return QueryRun(
+                False,
+                times,
+                row_counts,
+                hashes,
+                stdout,
+                "fusion EXPLAIN did not contain PgFusionScan",
+            )
     for index in range(total_runs):
         sql = render_query(args, query, fusion_enable)
         start = time.perf_counter()
@@ -395,6 +416,20 @@ SET statement_timeout = {timeout_ms};
 SET max_parallel_workers_per_gather = {args.parallel_workers};
 SET pg_fusion.enable = {fusion_enable};
 {query}
+"""
+
+
+def render_explain(args: argparse.Namespace, query: str) -> str:
+    query = query.strip()
+    if not query.endswith(";"):
+        query += ";"
+    timeout_ms = max(1, int(args.timeout * 1000))
+    return f"""
+SET search_path TO {args.schema}, public;
+SET statement_timeout = {timeout_ms};
+SET max_parallel_workers_per_gather = {args.parallel_workers};
+SET pg_fusion.enable = on;
+EXPLAIN {query}
 """
 
 

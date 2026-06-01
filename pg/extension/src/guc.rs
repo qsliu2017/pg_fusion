@@ -11,7 +11,6 @@ use protocol::{
 use thiserror::Error;
 
 pub(crate) static ENABLE: GucSetting<bool> = GucSetting::<bool>::new(false);
-pub(crate) static FRONTEND_MODE: GucSetting<i32> = GucSetting::<i32>::new(1);
 pub(crate) static WORKER_THREADS: GucSetting<i32> = GucSetting::<i32>::new(0);
 pub(crate) static LOG_PATH: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"/tmp/pg_fusion.log"));
@@ -55,7 +54,6 @@ const RUNTIME_FILTER_SEED: u64 = 0x7067_6675_7369_6f6e;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostConfig {
     pub enable: bool,
-    pub frontend_mode: FrontendMode,
     pub worker_threads: Option<usize>,
     pub log_path: String,
     pub worker_log_filter: String,
@@ -81,13 +79,6 @@ pub struct HostConfig {
     pub runtime_filter_hashes: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrontendMode {
-    Off,
-    Try,
-    Require,
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HostConfigError {
     #[error("GUC {name} must be positive, got {actual}")]
@@ -102,8 +93,6 @@ pub enum HostConfigError {
     ScanInboundCapacityTooSmall { required: usize, actual: usize },
     #[error("scan worker-to-backend capacity must be at least {required}, got {actual}")]
     ScanOutboundCapacityTooSmall { required: usize, actual: usize },
-    #[error("GUC pg_fusion.frontend_mode must be 0=off, 1=try, or 2=require, got {actual}")]
-    InvalidFrontendMode { actual: i32 },
 }
 
 pub fn register_gucs() {
@@ -112,17 +101,6 @@ pub fn register_gucs() {
         c"Enable pg_fusion",
         c"Enable the new pg_fusion runtime path",
         &ENABLE,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_int_guc(
-        c"pg_fusion.frontend_mode",
-        c"PostgreSQL query-tree frontend mode",
-        c"Use pg_frontend typed Query planning: 0=off, 1=try with SQL fallback, 2=require",
-        &FRONTEND_MODE,
-        0,
-        2,
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -322,7 +300,6 @@ pub fn host_config() -> Result<HostConfig, HostConfigError> {
 
     Ok(HostConfig {
         enable: ENABLE.get(),
-        frontend_mode: frontend_mode()?,
         worker_threads: normalize_worker_threads(WORKER_THREADS.get()),
         log_path: extension_log_path(),
         worker_log_filter: string_setting(&WORKER_LOG_FILTER, "warn"),
@@ -465,15 +442,6 @@ fn define_positive_int(
     );
 }
 
-fn frontend_mode() -> Result<FrontendMode, HostConfigError> {
-    match FRONTEND_MODE.get() {
-        0 => Ok(FrontendMode::Off),
-        1 => Ok(FrontendMode::Try),
-        2 => Ok(FrontendMode::Require),
-        actual => Err(HostConfigError::InvalidFrontendMode { actual }),
-    }
-}
-
 fn define_userset_int(
     name: &'static std::ffi::CStr,
     short_desc: &'static std::ffi::CStr,
@@ -574,14 +542,13 @@ mod tests {
 
     #[test]
     fn runtime_filter_defaults_to_enabled() {
-        assert_eq!(RUNTIME_FILTER_ENABLE.get(), DEFAULT_RUNTIME_FILTER_ENABLE);
+        assert!(DEFAULT_RUNTIME_FILTER_ENABLE);
     }
 
     #[test]
     fn backend_service_config_uses_new_guc_surface() {
         let config = HostConfig {
             enable: true,
-            frontend_mode: FrontendMode::Try,
             worker_threads: Some(4),
             log_path: "/tmp/pg_fusion.log".into(),
             worker_log_filter: "warn".into(),

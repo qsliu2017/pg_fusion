@@ -156,7 +156,7 @@ fn computes_filter_only_columns() {
     assert_eq!(compiled.residual_filter_columns, Vec::<usize>::new());
     assert_eq!(
         compiled.sql,
-        "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"score\" > 1.5)"
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"score\" > CAST('1.5' AS DOUBLE PRECISION))"
     );
 }
 
@@ -458,6 +458,30 @@ fn errors_on_relation_mismatch() {
 }
 
 #[test]
+fn accepts_alias_qualified_columns() {
+    let schema = test_schema();
+    let relation = test_relation().with_alias("u");
+    let filter = Expr::Column(Column::new(Some(TableReference::bare("u")), "id")).eq(lit(1_i64));
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &relation,
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[0]),
+        filters: &[filter],
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(compiled.all_filters_compiled);
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"id\" = 1)"
+    );
+}
+
+#[test]
 fn rejects_overlong_column_names() {
     let long_column = format!("score_{}", "x".repeat(80));
     let schema = Schema::new(vec![Field::new("score", DataType::Float64, true)]);
@@ -535,7 +559,7 @@ fn accepts_exact_limit_column_names() {
     assert_eq!(
         compiled.sql,
         format!(
-            "SELECT \"{exact_column}\" FROM \"public\".\"users\" WHERE (\"{exact_column}\" < 10.5)"
+            "SELECT \"{exact_column}\" FROM \"public\".\"users\" WHERE (\"{exact_column}\" < CAST('10.5' AS DOUBLE PRECISION))"
         )
     );
 }

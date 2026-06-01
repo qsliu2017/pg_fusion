@@ -19,9 +19,9 @@
 //!   which creates the paired DataFusion and PostgreSQL scan plan.
 //!
 //! The v1 surface is intentionally narrow and fail-closed. Unsupported
-//! PostgreSQL query shapes return structured [`PgFrontendError`] values so the
-//! production planner can fall back to SQL-text planning when configured to do
-//! so.
+//! PostgreSQL query shapes return structured [`PgFrontendError`] values; when
+//! `pg_fusion.enable` is on, the extension reports those as planning errors
+//! instead of falling back to PostgreSQL's native planner.
 
 mod adapter;
 mod compiler;
@@ -35,8 +35,9 @@ pub use compiler::CompiledQuery;
 pub use error::PgFrontendError;
 pub use resolve::{resolve_catalog, ResolvedQuery};
 pub use typed_query::{
-    BoolOp, ColumnRef, Const, FromItem, Param, ParamKind, PgConstValue, PgTypeRef, QueryCommand,
-    QueryExpr, QueryOperator, RelationRef, Target, TypedQuery, Var,
+    AggregateFunction, BoolOp, ColumnRef, Const, FromItem, Param, ParamKind, PgConstValue,
+    PgTypeRef, QueryCommand, QueryExpr, QueryOperator, RelationRef, SortKey, Target, TypedQuery,
+    Var,
 };
 
 use df_catalog::{CatalogResolver, PgrxCatalogResolver};
@@ -107,12 +108,13 @@ where
 
     /// Build a DataFusion logical plan from a stable typed query model.
     pub fn build_query(&self, mut query: TypedQuery) -> Result<PgFrontendOutput, PgFrontendError> {
-        let result_targets = query
+        let result_targets: Vec<Target> = query
             .targets
             .iter()
             .filter(|target| !target.resjunk)
             .cloned()
             .collect();
+        let result_schema = compiler::result_schema_for_targets(&result_targets)?;
         let resolved = query.resolve_catalog(&self.resolver)?;
         let result = compiler::compile_query(
             resolved,
@@ -123,6 +125,7 @@ where
         Ok(PgFrontendOutput {
             logical_plan: result.logical_plan,
             result_targets,
+            result_schema,
             diagnostics: Vec::new(),
         })
     }
@@ -147,6 +150,7 @@ where
 pub struct PgFrontendOutput {
     pub logical_plan: datafusion_expr::logical_plan::LogicalPlan,
     pub result_targets: Vec<Target>,
+    pub result_schema: arrow_schema::SchemaRef,
     pub diagnostics: Vec<String>,
 }
 

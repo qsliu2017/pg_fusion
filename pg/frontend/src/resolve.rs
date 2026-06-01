@@ -1,7 +1,7 @@
 use df_catalog::CatalogResolver;
 
 use crate::error::PgFrontendError;
-use crate::typed_query::{ColumnRef, TypedQuery};
+use crate::typed_query::{ColumnRef, QueryExpr, TypedQuery};
 
 /// Borrowed proof that a [`TypedQuery`] has been resolved against a PostgreSQL catalog.
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +56,99 @@ where
         relation.catalog_resolved = true;
     }
 
+    for cte in &mut query.ctes {
+        resolve_catalog(&mut cte.query, resolver)?;
+    }
+    for subquery in &mut query.subqueries {
+        resolve_catalog(&mut subquery.query, resolver)?;
+    }
+    for target in &mut query.targets {
+        resolve_expr_catalog(&mut target.expr, resolver)?;
+    }
+    if let Some(selection) = &mut query.selection {
+        resolve_expr_catalog(selection, resolver)?;
+    }
+    if let Some(having) = &mut query.having {
+        resolve_expr_catalog(having, resolver)?;
+    }
+    if let Some(limit_count) = &mut query.limit_count {
+        resolve_expr_catalog(limit_count, resolver)?;
+    }
+    if let Some(limit_offset) = &mut query.limit_offset {
+        resolve_expr_catalog(limit_offset, resolver)?;
+    }
+
     Ok(ResolvedQuery { query })
+}
+
+fn resolve_expr_catalog<R>(expr: &mut QueryExpr, resolver: &R) -> Result<(), PgFrontendError>
+where
+    R: CatalogResolver + Send + Sync,
+{
+    match expr {
+        QueryExpr::RelabelType(inner)
+        | QueryExpr::Cast { arg: inner, .. }
+        | QueryExpr::UnaryOp { arg: inner, .. }
+        | QueryExpr::NullTest { arg: inner, .. }
+        | QueryExpr::BooleanTest { arg: inner, .. } => resolve_expr_catalog(inner, resolver),
+        QueryExpr::FunctionCall { args, .. }
+        | QueryExpr::Array { elements: args, .. }
+        | QueryExpr::Coalesce { args, .. }
+        | QueryExpr::Bool { args, .. } => args
+            .iter_mut()
+            .try_for_each(|arg| resolve_expr_catalog(arg, resolver)),
+        QueryExpr::ArraySubscript { array, index, .. } => {
+            resolve_expr_catalog(array, resolver)?;
+            resolve_expr_catalog(index, resolver)
+        }
+        QueryExpr::Case {
+            operand,
+            when_then,
+            else_expr,
+            ..
+        } => {
+            if let Some(operand) = operand {
+                resolve_expr_catalog(operand, resolver)?;
+            }
+            for (when, then) in when_then {
+                resolve_expr_catalog(when, resolver)?;
+                resolve_expr_catalog(then, resolver)?;
+            }
+            if let Some(else_expr) = else_expr {
+                resolve_expr_catalog(else_expr, resolver)?;
+            }
+            Ok(())
+        }
+        QueryExpr::BinaryOp { left, right, .. } => {
+            resolve_expr_catalog(left, resolver)?;
+            resolve_expr_catalog(right, resolver)
+        }
+        QueryExpr::AggregateCall { args, filter, .. }
+        | QueryExpr::WindowCall { args, filter, .. } => {
+            for arg in args {
+                resolve_expr_catalog(arg, resolver)?;
+            }
+            if let Some(filter) = filter {
+                resolve_expr_catalog(filter, resolver)?;
+            }
+            Ok(())
+        }
+        QueryExpr::ScalarSubquery(query)
+        | QueryExpr::ExistsSubquery {
+            subquery: query, ..
+        } => {
+            resolve_catalog(query, resolver)?;
+            Ok(())
+        }
+        QueryExpr::InSubquery { expr, subquery, .. } => {
+            resolve_expr_catalog(expr, resolver)?;
+            resolve_catalog(subquery, resolver)?;
+            Ok(())
+        }
+        QueryExpr::Var(_) | QueryExpr::OuterVar(_) | QueryExpr::Const(_) | QueryExpr::Param(_) => {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -69,7 +161,7 @@ mod tests {
     use pg_type::PgTypeRef;
 
     use super::*;
-    use crate::typed_query::{FromItem, QueryCommand, RelationRef};
+    use crate::typed_query::{DistinctSpec, FromItem, QueryCommand, RelationRef};
 
     #[test]
     fn resolve_catalog_mutates_relation_metadata_in_place() {
@@ -84,19 +176,29 @@ mod tests {
                 columns: Vec::new(),
                 catalog_resolved: false,
             }],
+            values: Vec::new(),
+            ctes: Vec::new(),
+            cte_refs: Vec::new(),
+            subqueries: Vec::new(),
             from: FromItem::Relation { rtindex: 1 },
             selection: None,
+            having: None,
             targets: Vec::new(),
+            group_refs: Vec::new(),
+            grouping_sets: Vec::new(),
+            windows: Vec::new(),
+            set_operation: None,
+            sort: Vec::new(),
+            limit_count: None,
+            limit_offset: None,
             has_aggregates: false,
             has_windows: false,
             has_sublinks: false,
-            has_distinct: false,
+            distinct: DistinctSpec::None,
             has_group_by: false,
             has_having: false,
             has_grouping_sets: false,
             has_set_operations: false,
-            has_limit: false,
-            has_sort: false,
             has_row_marks: false,
         };
 
@@ -123,19 +225,29 @@ mod tests {
                 columns: Vec::new(),
                 catalog_resolved: false,
             }],
+            values: Vec::new(),
+            ctes: Vec::new(),
+            cte_refs: Vec::new(),
+            subqueries: Vec::new(),
             from: FromItem::Relation { rtindex: 1 },
             selection: None,
+            having: None,
             targets: Vec::new(),
+            group_refs: Vec::new(),
+            grouping_sets: Vec::new(),
+            windows: Vec::new(),
+            set_operation: None,
+            sort: Vec::new(),
+            limit_count: None,
+            limit_offset: None,
             has_aggregates: false,
             has_windows: false,
             has_sublinks: false,
-            has_distinct: false,
+            distinct: DistinctSpec::None,
             has_group_by: false,
             has_having: false,
             has_grouping_sets: false,
             has_set_operations: false,
-            has_limit: false,
-            has_sort: false,
             has_row_marks: false,
         };
 

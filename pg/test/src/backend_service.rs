@@ -6,11 +6,20 @@ use backend_service::{
     OpenScanInput, ScanStreamStep, ScanYieldReason, StartExecutionInput,
 };
 use control_transport::{BackendLeaseId, BackendLeaseSlot, TransportRegion, TransportRegionLayout};
-use datafusion_common::ScalarValue;
+use datafusion::execution::SessionStateDefaults;
+use datafusion_common::{Column, DFSchemaRef, NullEquality, TableReference};
+use datafusion_expr::expr::BinaryExpr;
+use datafusion_expr::logical_plan::{
+    build_join_schema, Join, JoinConstraint, JoinType, LogicalPlan, LogicalPlanBuilder, Projection,
+    TableScan,
+};
+use datafusion_expr::{lit, Expr, Operator, TableSource};
+use df_catalog::{CatalogResolver, PgPlanningTableSource, PgrxCatalogResolver};
 use import::ArrowPageDecoder;
 use issuance::{IssuanceConfig, IssuancePool, IssueEvent, IssuedRx, IssuedTx};
 use pgrx::prelude::*;
-use plan_builder::{PlanBuildInput, PlanBuilder};
+use plan_builder::{build_preplanned_logical_plan, HybridPlan, PlanBuilderConfig};
+use plan_codec::{EncodeProgress, PlanEncodeSession};
 use plan_flow::{FlowId as PlanFlowId, PlanOpen, WorkerPlanRole, WorkerStep};
 use pool::{PagePool, PagePoolConfig};
 use protocol::{
@@ -185,16 +194,163 @@ fn reset_backend_service_table() {
     .unwrap();
 }
 
+fn encode_plan(plan: &LogicalPlan) -> Vec<u8> {
+    let mut session = PlanEncodeSession::new(plan).expect("create encode session");
+    let mut bytes = Vec::new();
+    loop {
+        let mut chunk = [0_u8; 8192];
+        match session.write_chunk(&mut chunk).expect("encode plan chunk") {
+            EncodeProgress::NeedMoreOutput { written } => {
+                bytes.extend_from_slice(&chunk[..written]);
+            }
+            EncodeProgress::Done { written } => {
+                bytes.extend_from_slice(&chunk[..written]);
+                break;
+            }
+        }
+    }
+    bytes
+}
+
+fn live_table_scan(
+    table_name: TableReference,
+    projection: Option<Vec<usize>>,
+    filters: Vec<Expr>,
+    fetch: Option<usize>,
+) -> LogicalPlan {
+    live_table_scan_from(table_name.clone(), table_name, projection, filters, fetch)
+}
+
+fn live_table_scan_from(
+    source_table: TableReference,
+    table_name: TableReference,
+    projection: Option<Vec<usize>>,
+    filters: Vec<Expr>,
+    fetch: Option<usize>,
+) -> LogicalPlan {
+    let resolved = PgrxCatalogResolver::new()
+        .resolve_table(&source_table)
+        .expect("resolve backend service test table");
+    let source = Arc::new(PgPlanningTableSource::new(resolved)) as Arc<dyn TableSource>;
+    LogicalPlan::TableScan(
+        TableScan::try_new(table_name, source, projection, filters, fetch)
+            .expect("build backend service test scan"),
+    )
+}
+
+fn backend_service_table_reference() -> TableReference {
+    let (schema, table) = BACKEND_SERVICE_TABLE
+        .split_once('.')
+        .expect("backend service test table is schema-qualified");
+    TableReference::partial(schema, table)
+}
+
+fn column_at(plan: &LogicalPlan, index: usize) -> Column {
+    let (qualifier, field) = plan.schema().qualified_field(index);
+    Column::from((qualifier, field))
+}
+
+fn self_join_plan() -> LogicalPlan {
+    let source_table = backend_service_table_reference();
+    let left = live_table_scan_from(
+        source_table.clone(),
+        TableReference::bare("l"),
+        None,
+        Vec::new(),
+        None,
+    );
+    let right = live_table_scan_from(
+        source_table,
+        TableReference::bare("r"),
+        None,
+        Vec::new(),
+        None,
+    );
+    let schema = DFSchemaRef::new(
+        build_join_schema(left.schema(), right.schema(), &JoinType::Inner).expect("join schema"),
+    );
+    let join = LogicalPlan::Join(Join {
+        on: vec![(
+            Expr::Column(column_at(&left, 0)),
+            Expr::Column(column_at(&right, 0)),
+        )],
+        left: Arc::new(left),
+        right: Arc::new(right),
+        filter: None,
+        join_type: JoinType::Inner,
+        join_constraint: JoinConstraint::On,
+        schema,
+        null_equality: NullEquality::NullEqualsNothing,
+        null_aware: false,
+    });
+    let projection = vec![
+        Expr::Column(column_at(&join, 0)),
+        Expr::Column(column_at(&join, 3)),
+    ];
+    LogicalPlan::Projection(Projection::try_new(projection, Arc::new(join)).unwrap())
+}
+
+fn build_test_hybrid(query: &str) -> HybridPlan {
+    if query.contains(" JOIN ") {
+        return build_preplanned_logical_plan(self_join_plan(), PlanBuilderConfig::default())
+            .expect("build self join test plan");
+    }
+
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::from_name("id"))),
+        Operator::Gt,
+        Box::new(lit(0_i32)),
+    ));
+    let projection = if query.contains("SELECT id FROM") {
+        Some(vec![0])
+    } else {
+        Some(vec![0, 1])
+    };
+    let fetch = query.contains("LIMIT 1").then_some(1);
+    let plan = live_table_scan(
+        backend_service_table_reference(),
+        projection,
+        vec![filter],
+        fetch,
+    );
+    let plan = if query.contains("ORDER BY payload") {
+        LogicalPlanBuilder::new(plan)
+            .sort(vec![
+                Expr::Column(Column::from_name("payload")).sort(true, true)
+            ])
+            .expect("sort test plan")
+            .build()
+            .expect("build sort test plan")
+    } else if query.contains("avg(id)") {
+        let avg = SessionStateDefaults::default_aggregate_functions()
+            .into_iter()
+            .find(|udf| udf.name() == "avg")
+            .expect("default avg aggregate")
+            .call(vec![Expr::Column(Column::from_name("id"))]);
+        LogicalPlanBuilder::new(plan)
+            .aggregate(Vec::<Expr>::new(), vec![avg])
+            .expect("aggregate test plan")
+            .build()
+            .expect("build aggregate test plan")
+    } else {
+        plan
+    };
+    build_preplanned_logical_plan(plan, PlanBuilderConfig::default()).expect("build test plan")
+}
+
+fn encoded_plan_source(bytes: &[u8]) -> ExecutionPlanSource<'_> {
+    ExecutionPlanSource::EncodedHybridPlan { bytes }
+}
+
 pub fn backend_service_render_explain_uses_physical_plan_and_pg_leaf() {
     reset_backend_service_table();
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let sql = format!("SELECT id FROM {BACKEND_SERVICE_TABLE} WHERE id > 0 LIMIT 1");
+    let built = build_test_hybrid(&sql);
+    let encoded = encode_plan(&built.logical_plan);
 
     let rendered = BackendService::render_explain(ExplainInput {
-        plan_source: ExecutionPlanSource::SqlText {
-            sql: &sql,
-            params: Vec::new(),
-        },
+        plan_source: encoded_plan_source(&encoded),
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -251,10 +407,7 @@ pub fn backend_service_render_explain_uses_physical_plan_and_pg_leaf() {
     );
 
     let verbose_rendered = BackendService::render_explain(ExplainInput {
-        plan_source: ExecutionPlanSource::SqlText {
-            sql: &sql,
-            params: Vec::new(),
-        },
+        plan_source: encoded_plan_source(&encoded),
         options: ExplainRenderOptions {
             verbose: true,
             ..Default::default()
@@ -285,12 +438,11 @@ pub fn backend_service_render_explain_materializes_retaining_sort_input() {
     reset_backend_service_table();
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let sql = format!("SELECT id, payload FROM {BACKEND_SERVICE_TABLE} ORDER BY payload");
+    let built = build_test_hybrid(&sql);
+    let encoded = encode_plan(&built.logical_plan);
 
     let rendered = BackendService::render_explain(ExplainInput {
-        plan_source: ExecutionPlanSource::SqlText {
-            sql: &sql,
-            params: Vec::new(),
-        },
+        plan_source: encoded_plan_source(&encoded),
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -322,12 +474,11 @@ pub fn backend_service_render_explain_keeps_aggregate_scan_zero_copy() {
     reset_backend_service_table();
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let sql = format!("SELECT avg(id) FROM {BACKEND_SERVICE_TABLE}");
+    let built = build_test_hybrid(&sql);
+    let encoded = encode_plan(&built.logical_plan);
 
     let rendered = BackendService::render_explain(ExplainInput {
-        plan_source: ExecutionPlanSource::SqlText {
-            sql: &sql,
-            params: Vec::new(),
-        },
+        plan_source: encoded_plan_source(&encoded),
         options: Default::default(),
         config: BackendServiceConfig::default(),
         scan_worker_launcher: None,
@@ -379,14 +530,13 @@ fn begin_and_finalize_execution(
     config: &BackendServiceConfig,
     scan_slots: &TransportRegion,
 ) -> BeginExecutionOutput {
+    let built = build_test_hybrid(sql);
+    let encoded = encode_plan(&built.logical_plan);
     let plan_transport = IssuedTransportHarness::new();
     let plan_rx = plan_transport.rx();
     let begin = BackendService::begin_execution(StartExecutionInput {
         slot_id,
-        plan_source: ExecutionPlanSource::SqlText {
-            sql,
-            params: Vec::new(),
-        },
+        plan_source: encoded_plan_source(&encoded),
         plan_tx: plan_transport.tx(),
         scan_slot_region: scan_slots,
         config: config.clone(),
@@ -584,12 +734,7 @@ pub fn backend_service_streams_scan_under_saved_snapshot() {
     ))
     .unwrap();
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -674,12 +819,7 @@ pub fn backend_service_yields_for_control_on_permit_backpressure() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -776,12 +916,7 @@ pub fn backend_service_deferred_outbound_page_is_replayed_before_scan_progress()
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -886,12 +1021,7 @@ pub fn backend_service_deferred_terminal_step_is_replayed() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -961,12 +1091,7 @@ pub fn backend_service_driver_fail_execution_from_control_yield() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -1032,12 +1157,7 @@ pub fn backend_service_wait_interrupt_cleans_up_active_execution() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -1141,12 +1261,7 @@ pub fn backend_service_cancel_during_stream_marks_scan_used() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -1213,12 +1328,7 @@ pub fn backend_service_rejects_descriptor_mismatch_without_poisoning_execution()
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         1,
@@ -1277,12 +1387,7 @@ pub fn backend_service_interleaves_two_scan_portals_under_shared_spi() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build multi-scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         2,
@@ -1347,12 +1452,7 @@ pub fn backend_service_drop_finished_driver_does_not_cancel_sibling_scan() {
     let begin = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut execution_guard = ActiveExecutionGuard::new(begin.key);
 
-    let built = PlanBuilder::new()
-        .build(PlanBuildInput {
-            sql: &query,
-            params: Vec::<ScalarValue>::new(),
-        })
-        .expect("build multi-scan metadata");
+    let built = build_test_hybrid(&query);
     assert_eq!(
         built.scan_plan.scans.len(),
         2,

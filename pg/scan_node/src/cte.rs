@@ -4,7 +4,7 @@ use std::fmt::{self, Debug};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::SchemaRef;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
@@ -529,6 +529,7 @@ impl ExecutionPlan for MaterializedCteExec {
             input: Arc::clone(&self.input),
             ctx,
             shared: Arc::clone(&self.state),
+            output_schema: Arc::clone(&self.output_schema),
             projection: self.projection.clone(),
             fetch: self.fetch,
         };
@@ -558,12 +559,14 @@ enum CteStreamState {
         input: Arc<dyn ExecutionPlan>,
         ctx: Arc<TaskContext>,
         shared: Arc<MaterializedCteState>,
+        output_schema: SchemaRef,
         projection: Option<Vec<usize>>,
         fetch: Option<usize>,
     },
     Emit {
         batches: Arc<Vec<RecordBatch>>,
         index: usize,
+        output_schema: SchemaRef,
         projection: Option<Vec<usize>>,
         remaining: Option<usize>,
     },
@@ -575,24 +578,27 @@ async fn next_cte_batch(state: CteStreamState) -> Result<Option<(RecordBatch, Ct
             input,
             ctx,
             shared,
+            output_schema,
             projection,
             fetch,
         } => {
             let batches = shared.get_or_compute(input, ctx).await?;
-            emit_next_batch(batches, 0, projection, fetch)
+            emit_next_batch(batches, 0, output_schema, projection, fetch)
         }
         CteStreamState::Emit {
             batches,
             index,
+            output_schema,
             projection,
             remaining,
-        } => emit_next_batch(batches, index, projection, remaining),
+        } => emit_next_batch(batches, index, output_schema, projection, remaining),
     }
 }
 
 fn emit_next_batch(
     batches: Arc<Vec<RecordBatch>>,
     mut index: usize,
+    output_schema: SchemaRef,
     projection: Option<Vec<usize>>,
     mut remaining: Option<usize>,
 ) -> Result<Option<(RecordBatch, CteStreamState)>> {
@@ -603,13 +609,15 @@ fn emit_next_batch(
 
         let batch = &batches[index];
         index += 1;
-        let Some(batch) = project_and_slice_batch(batch, projection.as_deref(), &mut remaining)?
+        let Some(batch) =
+            project_and_slice_batch(batch, projection.as_deref(), &output_schema, &mut remaining)?
         else {
             continue;
         };
         let next = CteStreamState::Emit {
             batches,
             index,
+            output_schema,
             projection,
             remaining,
         };
@@ -620,6 +628,7 @@ fn emit_next_batch(
 fn project_and_slice_batch(
     batch: &RecordBatch,
     projection: Option<&[usize]>,
+    output_schema: &SchemaRef,
     remaining: &mut Option<usize>,
 ) -> Result<Option<RecordBatch>> {
     if batch.num_rows() == 0 {
@@ -644,5 +653,39 @@ fn project_and_slice_batch(
         }
     }
 
-    Ok(Some(batch))
+    Ok(Some(batch_with_output_schema(batch, output_schema)?))
+}
+
+fn batch_with_output_schema(batch: RecordBatch, output_schema: &SchemaRef) -> Result<RecordBatch> {
+    if batch.schema().as_ref() == output_schema.as_ref() {
+        return Ok(batch);
+    }
+    if batch.num_columns() != output_schema.fields().len() {
+        return Err(DataFusionError::Plan(format!(
+            "CteScanExec output schema has {} columns but batch has {} columns",
+            output_schema.fields().len(),
+            batch.num_columns()
+        )));
+    }
+    for (index, (input, output)) in batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(output_schema.fields().iter())
+        .enumerate()
+    {
+        if input.data_type() != output.data_type() {
+            return Err(DataFusionError::Plan(format!(
+                "CteScanExec output schema column {index} type {} does not match batch type {}",
+                output.data_type(),
+                input.data_type()
+            )));
+        }
+    }
+    RecordBatch::try_new_with_options(
+        Arc::clone(output_schema),
+        batch.columns().to_vec(),
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )
+    .map_err(DataFusionError::from)
 }

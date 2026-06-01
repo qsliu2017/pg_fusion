@@ -38,9 +38,8 @@ runtime filters, wakeups, and metrics.
 ## What Happens To A Query
 
 When a backend receives a top-level `SELECT`, the pg_fusion planner hook checks
-whether the query is eligible. Unsupported queries stay on PostgreSQL or fail
-closed with a controlled error, depending on the point where the unsupported
-shape is discovered.
+whether the query is supported. With `pg_fusion.enable = on`, unsupported user
+SELECT shapes fail closed with a controlled pg_fusion planning error.
 
 For an eligible query:
 

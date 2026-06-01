@@ -462,8 +462,24 @@ impl PlanDecodeSession {
     pub fn new() -> Self {
         let mut ctx = SessionContext::new();
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_format_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_add_checked_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_sub_checked_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_mul_checked_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_interval_out_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_quote_literal_udf());
         let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
+        let _ = FunctionRegistry::register_udaf(
+            &mut ctx,
+            df_functions::pg_scalar_subquery_value_udaf(),
+        );
+        let _ = FunctionRegistry::register_udaf(
+            &mut ctx,
+            datafusion::functions_aggregate::first_last::first_value_udaf(),
+        );
+        let _ = FunctionRegistry::register_udaf(
+            &mut ctx,
+            datafusion::functions_aggregate::grouping::grouping_udaf(),
+        );
         let ctx = ctx.task_ctx();
         Self {
             ctx,
@@ -967,11 +983,145 @@ fn collect_used_scan_ids(
 struct NoopLogicalExtensionCodec;
 
 fn decode_pg_scalar_udf(name: &str) -> Option<Arc<ScalarUDF>> {
+    if name.eq_ignore_ascii_case("abs") {
+        return Some(datafusion::functions::math::abs());
+    }
+    if name.eq_ignore_ascii_case("acosh") {
+        return Some(datafusion::functions::math::acosh());
+    }
+    if name.eq_ignore_ascii_case("asinh") {
+        return Some(datafusion::functions::math::asinh());
+    }
+    if name.eq_ignore_ascii_case("atanh") {
+        return Some(datafusion::functions::math::atanh());
+    }
+    if name.eq_ignore_ascii_case("ceil") {
+        return Some(datafusion::functions::math::ceil());
+    }
+    if name.eq_ignore_ascii_case("concat") {
+        return Some(datafusion::functions::string::concat());
+    }
+    if name.eq_ignore_ascii_case("concat_ws") {
+        return Some(datafusion::functions::string::concat_ws());
+    }
+    if name.eq_ignore_ascii_case("cosh") {
+        return Some(datafusion::functions::math::cosh());
+    }
+    if name.eq_ignore_ascii_case("exp") {
+        return Some(datafusion::functions::math::exp());
+    }
+    if name.eq_ignore_ascii_case("floor") {
+        return Some(datafusion::functions::math::floor());
+    }
+    if name.eq_ignore_ascii_case("character_length") || name.eq_ignore_ascii_case("length") {
+        return Some(datafusion::functions::unicode::character_length());
+    }
+    if name.eq_ignore_ascii_case("make_array") {
+        return Some(datafusion::functions_nested::make_array::make_array_udf());
+    }
+    if name.eq_ignore_ascii_case("array_element") {
+        return Some(datafusion::functions_nested::extract::array_element_udf());
+    }
+    if name.eq_ignore_ascii_case("ln") {
+        return Some(datafusion::functions::math::ln());
+    }
     if name.eq_ignore_ascii_case("format") {
         return Some(df_functions::pg_format_udf());
     }
+    if name.eq_ignore_ascii_case("pg_fusion_int_add_checked") {
+        return Some(df_functions::pg_int_add_checked_udf());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_int_sub_checked") {
+        return Some(df_functions::pg_int_sub_checked_udf());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_int_mul_checked") {
+        return Some(df_functions::pg_int_mul_checked_udf());
+    }
+    if name.eq_ignore_ascii_case("nullif") {
+        return Some(datafusion::functions::core::nullif());
+    }
+    if name.eq_ignore_ascii_case("power") {
+        return Some(datafusion::functions::math::power());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_interval_out") {
+        return Some(df_functions::pg_interval_out_udf());
+    }
+    if name.eq_ignore_ascii_case("random") {
+        return Some(datafusion::functions::math::random());
+    }
+    if name.eq_ignore_ascii_case("reverse") {
+        return Some(datafusion::functions::unicode::reverse());
+    }
+    if name.eq_ignore_ascii_case("round") {
+        return Some(datafusion::functions::math::round());
+    }
     if name.eq_ignore_ascii_case("quote_literal") {
         return Some(df_functions::pg_quote_literal_udf());
+    }
+    if name.eq_ignore_ascii_case("sinh") {
+        return Some(datafusion::functions::math::sinh());
+    }
+    if name.eq_ignore_ascii_case("sqrt") {
+        return Some(datafusion::functions::math::sqrt());
+    }
+    if name.eq_ignore_ascii_case("tanh") {
+        return Some(datafusion::functions::math::tanh());
+    }
+    if name.eq_ignore_ascii_case("trunc") {
+        return Some(datafusion::functions::math::trunc());
+    }
+    None
+}
+
+fn decode_pg_aggregate_udaf(name: &str) -> Option<Arc<AggregateUDF>> {
+    if name.eq_ignore_ascii_case("avg") {
+        return Some(df_functions::pg_avg_udaf());
+    }
+    if name.eq_ignore_ascii_case("pg_scalar_subquery_value") {
+        return Some(df_functions::pg_scalar_subquery_value_udaf());
+    }
+    if name.eq_ignore_ascii_case("first_value") {
+        return Some(datafusion::functions_aggregate::first_last::first_value_udaf());
+    }
+    if name.eq_ignore_ascii_case("grouping") {
+        return Some(datafusion::functions_aggregate::grouping::grouping_udaf());
+    }
+    None
+}
+
+fn decode_pg_window_udf(name: &str) -> Option<Arc<WindowUDF>> {
+    if name.eq_ignore_ascii_case("cume_dist") {
+        return Some(datafusion::functions_window::cume_dist::cume_dist_udwf());
+    }
+    if name.eq_ignore_ascii_case("dense_rank") {
+        return Some(datafusion::functions_window::rank::dense_rank_udwf());
+    }
+    if name.eq_ignore_ascii_case("first_value") {
+        return Some(datafusion::functions_window::nth_value::first_value_udwf());
+    }
+    if name.eq_ignore_ascii_case("lag") {
+        return Some(datafusion::functions_window::lead_lag::lag_udwf());
+    }
+    if name.eq_ignore_ascii_case("last_value") {
+        return Some(datafusion::functions_window::nth_value::last_value_udwf());
+    }
+    if name.eq_ignore_ascii_case("lead") {
+        return Some(datafusion::functions_window::lead_lag::lead_udwf());
+    }
+    if name.eq_ignore_ascii_case("nth_value") {
+        return Some(datafusion::functions_window::nth_value::nth_value_udwf());
+    }
+    if name.eq_ignore_ascii_case("ntile") {
+        return Some(datafusion::functions_window::ntile::ntile_udwf());
+    }
+    if name.eq_ignore_ascii_case("percent_rank") {
+        return Some(datafusion::functions_window::rank::percent_rank_udwf());
+    }
+    if name.eq_ignore_ascii_case("rank") {
+        return Some(datafusion::functions_window::rank::rank_udwf());
+    }
+    if name.eq_ignore_ascii_case("row_number") {
+        return Some(datafusion::functions_window::row_number::row_number_udwf());
     }
     None
 }
@@ -1031,8 +1181,8 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
     }
 
     fn try_decode_udaf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
-        if name.eq_ignore_ascii_case("avg") {
-            return Ok(df_functions::pg_avg_udaf());
+        if let Some(udaf) = decode_pg_aggregate_udaf(name) {
+            return Ok(udaf);
         }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom aggregate UDF definitions".into(),
@@ -1043,7 +1193,10 @@ impl LogicalExtensionCodec for NoopLogicalExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udwf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+    fn try_decode_udwf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+        if let Some(udwf) = decode_pg_window_udf(name) {
+            return Ok(udwf);
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom window UDF definitions".into(),
         ))
@@ -1123,8 +1276,8 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
     }
 
     fn try_decode_udaf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
-        if name.eq_ignore_ascii_case("avg") {
-            return Ok(df_functions::pg_avg_udaf());
+        if let Some(udaf) = decode_pg_aggregate_udaf(name) {
+            return Ok(udaf);
         }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom aggregate UDF definitions".into(),
@@ -1135,7 +1288,10 @@ impl LogicalExtensionCodec for PgScanEncodeExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udwf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+    fn try_decode_udwf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+        if let Some(udwf) = decode_pg_window_udf(name) {
+            return Ok(udwf);
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom window UDF definitions".into(),
         ))
@@ -1239,7 +1395,10 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udaf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+    fn try_decode_udaf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<AggregateUDF>> {
+        if let Some(udaf) = decode_pg_aggregate_udaf(name) {
+            return Ok(udaf);
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom aggregate UDF definitions".into(),
         ))
@@ -1249,7 +1408,10 @@ impl LogicalExtensionCodec for PgScanDecodeExtensionCodec {
         Ok(())
     }
 
-    fn try_decode_udwf(&self, _name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+    fn try_decode_udwf(&self, name: &str, _buf: &[u8]) -> DataFusionResult<Arc<WindowUDF>> {
+        if let Some(udwf) = decode_pg_window_udf(name) {
+            return Ok(udwf);
+        }
         Err(DataFusionError::Plan(
             "plan_codec does not decode custom window UDF definitions".into(),
         ))
@@ -1451,7 +1613,7 @@ where
     expect_array_len_from(source, PG_SCAN_RELATION_LEN, "PgRelation")?;
     let schema = read_optional_string_from(source)?;
     let table = read_string_from(source, "table name")?;
-    Ok(PgRelation { schema, table })
+    Ok(PgRelation::new(schema, table))
 }
 
 fn encode_compiled_scan_into<S>(sink: &mut S, scan: &CompiledScan) -> Result<(), EncodeError>

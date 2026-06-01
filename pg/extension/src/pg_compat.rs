@@ -156,9 +156,16 @@ fn query_rows(
         .unwrap_or_else(|err| panic!("set pg_fusion.enable for {} failed: {err}", case.id));
     tx.simple_query(&case.sql)
         .unwrap_or_else(|err| {
+            let message = err
+                .as_db_error()
+                .map(|db_error| db_error.message().to_owned())
+                .unwrap_or_else(|| err.to_string());
             panic!(
                 "compat case {} from {} failed with pg_fusion.enable={enabled}:\n{}\nerror: {err}",
-                case.id, case.origin, case.sql
+                case.id,
+                case.origin,
+                case.sql,
+                err = message,
             )
         })
         .into_iter()

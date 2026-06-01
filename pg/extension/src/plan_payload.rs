@@ -3,21 +3,18 @@ use plan_codec::{EncodeProgress, PlanEncodeSession};
 use thiserror::Error;
 
 const PAYLOAD_PREFIX: &str = "PGFUSION_CUSTOM_SCAN_V1\n";
-const SQL_TAG: &str = "sql\n";
 const LEGACY_FRONTEND_TAG: &str = "frontend\n";
 const FRONTEND_PLAN_TAG: &str = "frontend_plan\n";
 const PLAN_ENCODE_CHUNK_LEN: usize = 8192;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CustomScanPlanSource {
-    SqlText(String),
     FrontendPlan(Vec<u8>),
 }
 
 impl CustomScanPlanSource {
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            Self::SqlText(_) => "sql_text",
             Self::FrontendPlan(_) => "pg_frontend",
         }
     }
@@ -39,20 +36,12 @@ pub(crate) fn encode_frontend_plan(plan: &LogicalPlan) -> Result<String, PlanPay
     ))
 }
 
-pub(crate) fn encode_sql_text(sql: &str) -> String {
-    format!("{PAYLOAD_PREFIX}{SQL_TAG}{}", hex_encode(sql.as_bytes()))
-}
-
 pub(crate) fn decode_plan_source(value: &str) -> Result<CustomScanPlanSource, PlanPayloadError> {
     let Some(rest) = value.strip_prefix(PAYLOAD_PREFIX) else {
-        return Ok(CustomScanPlanSource::SqlText(value.to_string()));
+        return Err(PlanPayloadError::Invalid(
+            "legacy SQL-text payload is no longer supported".into(),
+        ));
     };
-    if let Some(hex) = rest.strip_prefix(SQL_TAG) {
-        let bytes = hex_decode(hex)?;
-        let sql = String::from_utf8(bytes)
-            .map_err(|err| PlanPayloadError::Invalid(format!("SQL payload is not UTF-8: {err}")))?;
-        return Ok(CustomScanPlanSource::SqlText(sql));
-    }
     if let Some(hex) = rest.strip_prefix(FRONTEND_PLAN_TAG) {
         return Ok(CustomScanPlanSource::FrontendPlan(hex_decode(hex)?));
     }
@@ -132,21 +121,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_payload_decodes_as_sql_text() {
-        let decoded = decode_plan_source("SELECT 1").unwrap();
-        match decoded {
-            CustomScanPlanSource::SqlText(sql) => assert_eq!(sql, "SELECT 1"),
-            other => panic!("unexpected payload {other:?}"),
-        }
-    }
-
-    #[test]
-    fn tagged_sql_payload_roundtrips() {
-        let decoded = decode_plan_source(&encode_sql_text("SELECT 'value'")).unwrap();
-        match decoded {
-            CustomScanPlanSource::SqlText(sql) => assert_eq!(sql, "SELECT 'value'"),
-            other => panic!("unexpected payload {other:?}"),
-        }
+    fn legacy_sql_payload_is_rejected() {
+        let err = decode_plan_source("SELECT 1").expect_err("legacy SQL payload must be rejected");
+        assert!(
+            err.to_string().contains("legacy SQL-text payload"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -160,10 +140,8 @@ mod tests {
     fn frontend_plan_payload_decodes_raw_plan_bytes() {
         let decoded =
             decode_plan_source(&format!("{PAYLOAD_PREFIX}{FRONTEND_PLAN_TAG}0001ff")).unwrap();
-        match decoded {
-            CustomScanPlanSource::FrontendPlan(bytes) => assert_eq!(bytes, vec![0x00, 0x01, 0xff]),
-            other => panic!("unexpected payload {other:?}"),
-        }
+        let CustomScanPlanSource::FrontendPlan(bytes) = decoded;
+        assert_eq!(bytes, vec![0x00, 0x01, 0xff]);
     }
 
     #[test]

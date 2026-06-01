@@ -11,7 +11,7 @@ is adapted to the current `pg_fusion` data path:
 - date fields are loaded as ISO `text` values, so range predicates still work
   lexicographically;
 - some queries intentionally contain subqueries/CTEs to show which shapes still
-  fail or fall back.
+  fail under the strict query-tree frontend.
 
 Those choices keep this historical diagnostic focused on scan and DataFusion
 operator behavior. They do not exercise the newer finite `numeric` or `date`

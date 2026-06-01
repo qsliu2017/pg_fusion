@@ -24,7 +24,7 @@ hooks, shared memory, and a background worker.
 
 | Setting | Default | Level | Description |
 | --- | ---: | --- | --- |
-| `pg_fusion.enable` | `off` | User/session | Enables the pg_fusion path for eligible queries in the session. |
+| `pg_fusion.enable` | `off` | User/session | Enables the strict pg_fusion path for supported SELECT queries in the session. |
 | `pg_fusion.backend_log_level` | `0` | User/session | Backend diagnostics: `0=off`, `1=basic`, `2=trace`. |
 
 Use `pg_fusion.enable` when comparing a query against vanilla PostgreSQL:
@@ -34,7 +34,7 @@ SET pg_fusion.enable = off;
 -- run PostgreSQL plan
 
 SET pg_fusion.enable = on;
--- run pg_fusion plan if eligible
+-- run pg_fusion plan, or fail with a pg_fusion planning error if unsupported
 ```
 
 ## Size The Worker
@@ -115,17 +115,10 @@ than worker execution.
 
 | Setting | Default | Level | Description |
 | --- | ---: | --- | --- |
-| `pg_fusion.frontend_mode` | `1` | User/session | Tries the typed PostgreSQL `Query` frontend before the legacy SQL-text planner. |
 | `pg_fusion.join_reordering` | `on` | User/session | Enables statistics-based join reordering for eligible joins. |
 
 PostgreSQL scan planning still matters because scan leaves execute trusted
 PostgreSQL scan SQL through PostgreSQL executor portals.
-
-`pg_fusion.frontend_mode = 1` is the gradual migration mode. It uses
-PostgreSQL's analyzed query tree for the subset currently supported by
-`pg_frontend`, then falls back to SQL-text planning for broader query shapes.
-Use `0` to force the legacy path and `2` when testing the typed frontend as a
-required planner.
 
 Useful PostgreSQL planner experiment settings include:
 

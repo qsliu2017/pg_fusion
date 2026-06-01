@@ -3,7 +3,7 @@ id: arch-overview-0001
 type: fact
 scope: repo
 tags: ["architecture", "datafusion", "pgrx", "shared-memory", "ipc", "slot_scan", "statistics"]
-updated_at: "2026-05-07"
+updated_at: "2026-05-31"
 importance: 0.8
 ---
 
@@ -53,13 +53,15 @@ page-backed Arrow batches.
   analyzed relation OID rather than schema/name lookup. The host-side
   frontend pipeline builds those leaves into PostgreSQL scan nodes before
   generic DataFusion optimization can rewrite PostgreSQL-semantic scan
-  predicates. The production planner hook can try this frontend first behind
-  `pg_fusion.frontend_mode`; unsupported frontend shapes fall back to the
-  SQL-text `plan_builder` path unless the mode is `require`.
+  predicates. `pg_fusion.enable` is the only user-facing planner switch:
+  when it is on, unsupported frontend shapes raise controlled errors instead
+  of silently falling back to PostgreSQL's native planner.
 - `pg/df_functions`: PostgreSQL-compatible DataFusion function overrides used
   by both backend planning and worker/codec decoding. Its `format(text, ...)`
   scalar UDF supports PostgreSQL `%s`/`%I`/`%L`, argument positions, and width
-  handling for ordinary non-`VARIADIC ARRAY` calls. Its `avg` UDAF returns
+  handling for ordinary non-`VARIADIC ARRAY` calls. Internal checked integer
+  arithmetic UDFs preserve PostgreSQL `int2`/`int4`/`int8` overflow errors for
+  frontend-lowered `+`, `-`, and `*`. Its `avg` UDAF returns
   `Float64` for `float4`/`float8` inputs with PostgreSQL-facing
   `NaN`/`Infinity` and finite-overflow behavior, while integer and finite
   Decimal128 averages use the fast Arrow `Decimal128(38,16)` result path.
@@ -69,8 +71,10 @@ page-backed Arrow batches.
   is intentionally a pragmatic `numeric` subset with documented
   precision/display-scale limitations, and all `avg` accumulators implement
   inverse transitions so bounded/sliding window frames can retract rows during
-  DataFusion window execution. `quote_literal(text)` shares the same text
-  quoting helper as `format(... %L ...)`.
+  DataFusion window execution. Its internal `pg_scalar_subquery_value` aggregate
+  enforces PostgreSQL scalar-subquery cardinality after frontend lowering.
+  `quote_literal(text)` shares the same text quoting helper as
+  `format(... %L ...)`.
 - `pg/statistics`: PostgreSQL planner/catalog statistics bridge. It is
   PostgreSQL-specific but independent of DataFusion and `join_order`;
   `plan_builder` uses it to turn pushed-down scan SQL, `pg_class`,
@@ -83,24 +87,16 @@ page-backed Arrow batches.
 
 ## Data Path
 
-1. Backend planning first keeps PostgreSQL-owned service paths out of
-   `pg_fusion`: the planner hook bypasses DataFusion planning for queries with
-   bind parameters, relations in `pg_catalog`/TOAST namespaces, or
-   function/table-function range entries produced by PostgreSQL rewrite, then
-   deparses wrapper query strings such as `EXPLAIN` and `COPY (SELECT ...)` back
-   to the inner `Query` text so PostgreSQL can keep native wrapper execution
-   around a pg_fusion custom scan. The typed `pg_frontend` path can compile a
+1. Backend planning bypasses `pg_fusion` only when `pg_fusion.enable = off`,
+   for non-SELECT statements, or for pg_fusion's own management queries such
+   as `pg_fusion_metrics()`. With `pg_fusion.enable = on`, user SELECTs are
+   strictly planned through the typed `pg_frontend` path. That path compiles a
    supported analyzed `Query` tree into a DataFusion logical plan without SQL
    re-parsing, then hands that plan to the frontend scan-building pipeline so
    PostgreSQL-typed predicates reach `scan_sql` before generic DataFusion
-   rewrites. The SQL-text fallback path parses eligible user query text with
-   sqlparser's PostgreSQL dialect before DataFusion planning; deparsed casts to
-   PostgreSQL's `unknown` pseudo-type are stripped so untyped NULL/string
-   literals can still be coerced by DataFusion function planning. This accepts
-   more PostgreSQL surface syntax but does not make unsupported PostgreSQL
-   semantics executable. Both paths resolve PostgreSQL catalog metadata for
-   eligible user queries. The SQL-text path runs DataFusion logical
-   optimization, then uses
+   rewrites. Unsupported frontend shapes become controlled errors. There is no
+   SQL-text or native PostgreSQL planner fallback for user SELECTs.
+   The post-frontend path runs DataFusion logical optimization, then uses
    `pg_statistics` plus `join_order` to reorder eligible inner/cross join
    components before scan building. The reorder pass
    estimates each PostgreSQL leaf from the same pushed-down scan SQL that will
@@ -111,7 +107,7 @@ page-backed Arrow batches.
    child because `CollectLeft` hash joins build the left input, then restores
    the original visible output order with a projection when needed. Ineligible
    join shapes keep their DataFusion order. PostgreSQL-compatible function
-   overrides are registered before SQL planning, logical optimization, plan
+   overrides are registered before logical optimization, plan
    codec decoding, worker physical planning, and EXPLAIN physical planning; in
    particular ordinary `format(text, ...)` and `quote_literal(text)` calls
    execute through pg_fusion, PostgreSQL aliases such as `ceiling` and
@@ -119,13 +115,17 @@ page-backed Arrow batches.
    implementations, `float4`/`float8` `avg` keeps float semantics, integer
    and finite Decimal128 `avg` are planned as `Decimal128(38,16)`, and finite
    `interval` `avg` stays as `Interval(MonthDayNano)` end to end. PostgreSQL `numeric`
-   `NaN`/`Infinity` constants and literal numeric casts are rejected before
-   they can enter Arrow Decimal128 execution, interval infinities are rejected
-   before/while converting through Arrow interval pages, and accepted decimal
-   formatting/precision differences live in
+   `NaN`/`Infinity` constants and known text-to-numeric casts from typed
+   constants/VALUES are rejected before they can enter Arrow Decimal128
+   execution, interval infinities are rejected before/while converting through
+   Arrow interval pages, and accepted decimal formatting/precision differences
+   live in
    `pg/extension/pg_compat/limitations.sql`. Root `UInt64` and `LargeUtf8`
    outputs are cast to PostgreSQL-facing `bigint`/`text` Arrow types before
-   result transport. Scan leaves are then built as
+   result transport. Decimal comparisons that PostgreSQL analyzes as `numeric`
+   on both sides are coerced to a shared Arrow Decimal128 shape when typmods
+   imply different precision/scale, so runtime filters and DataFusion
+   comparisons do not see incompatible decimal operands. Scan leaves are then built as
    `PgScanNode`/`scan_sql` descriptors. `plan_builder` returns a `HybridPlan`:
    the DataFusion logical plan and the PostgreSQL scan plan that its custom
    scan leaves reference. For the subset supported by `pg_frontend`, the
@@ -133,12 +133,7 @@ page-backed Arrow batches.
    plan and `PgScanSpec` table in `CustomScan.custom_private`; `BeginCustomScan`
    decodes that payload instead of recompiling the `TypedQuery` model,
    re-resolving catalogs, or rebuilding scan SQL. Serialized `TypedQuery`
-   payloads are not supported. The SQL-text
-   `plan_builder` path remains the fallback for broader query coverage.
-   Non-recursive CTEs
-   referenced more than once are planned as `PgCteRefNode` reads over a single
-   built CTE producer so worker execution materializes the CTE once and
-   reuses the owned batches. PostgreSQL text-like columns are represented as
+   payloads are not supported. PostgreSQL text-like columns are represented as
    Arrow `Utf8View` in the DataFusion logical schema so scan pages can stay
    zero-copy for string payloads.
 2. Worker physical planning attaches runtime Bloom filters to eligible
@@ -193,8 +188,10 @@ page-backed Arrow batches.
    Backend heap scans encode the finite PostgreSQL `numeric` subset as
    Decimal128: `numeric(p,s)` uses `Decimal128(p,s)` when `p <= 38` and
    `0 <= s <= p`, while bare `numeric` uses the fixed
-   `Decimal128(38,16)` fallback. PostgreSQL `numeric` `NaN`/`Infinity` and
-   values outside the selected Decimal128 shape fail during scan encoding.
+   `Decimal128(38,16)` fallback and marks PostgreSQL-facing output fields so
+   `slot_import` trims fallback fractional zero padding. PostgreSQL `numeric`
+   `NaN`/`Infinity` and values outside the selected Decimal128 shape fail
+   during scan encoding.
 
 Page-backed scan batches stay zero-copy through streaming DataFusion operators.
 After physical planning, `scan_node` inserts `PageMaterializeExec` only before

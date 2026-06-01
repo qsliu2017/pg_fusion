@@ -6,9 +6,12 @@ use arrow_array::{
     StringViewArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_layout::TypeTag;
-use arrow_schema::{DataType, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use import::{ArrowPageDecoder, OwnedPage};
-use pg_type::{oid as pg_oid, type_tag_for_pg_type, PgTypeRef};
+use pg_type::{
+    oid as pg_oid, type_tag_for_pg_type, PgTypeRef, NUMERIC_FALLBACK_SCALE,
+    PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY,
+};
 use pgrx::fcinfo::direct_function_call_as_datum;
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -164,13 +167,8 @@ impl ArrowSlotProjector {
                 Err(_) => unreachable!("ArrowPageDecoder already validated the schema"),
             };
 
-            let projector = projector_for_attr(
-                index,
-                attr.atttypid,
-                attr.atttypmod,
-                type_tag,
-                field.data_type(),
-            )?;
+            let projector =
+                projector_for_attr(index, attr.atttypid, attr.atttypmod, type_tag, field)?;
             if !checked_utf8_encoding && matches!(projector, ColumnProjector::TextLike(_)) {
                 let encoding = database_encoding();
                 if encoding != pg_sys::pg_enc::PG_UTF8 as i32 {
@@ -560,8 +558,9 @@ fn projector_for_attr(
     oid: pg_sys::Oid,
     atttypmod: i32,
     type_tag: TypeTag,
-    data_type: &DataType,
+    field: &Field,
 ) -> Result<ColumnProjector, ConfigError> {
+    let data_type = field.data_type();
     let oid = oid.to_u32();
     let pg_type = PgTypeRef::new(oid, atttypmod, 0);
     if type_tag_for_pg_type(pg_type) != Some(type_tag) {
@@ -590,12 +589,11 @@ fn projector_for_attr(
             };
             ColumnProjector::Numeric {
                 scale: *scale,
-                // PostgreSQL `numeric` without typmod does not display a fixed
-                // fractional scale, while Arrow Decimal128 always has one. The
-                // CustomScan output TupleDesc may also omit typmod for
-                // numeric(p,s), so only trim the bare-numeric fallback shape.
-                trim_trailing_zeros: atttypmod < 0
-                    && matches!(data_type, DataType::Decimal128(38, 16)),
+                trim_trailing_zeros: (atttypmod < 0 && *scale != NUMERIC_FALLBACK_SCALE)
+                    || field
+                        .metadata()
+                        .get(PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY)
+                        .is_some_and(|value| value == "true"),
             }
         }
         pg_oid::INTERVALOID => ColumnProjector::Interval,
@@ -788,14 +786,14 @@ fn format_decimal128(value: i128, scale: i8, trim_trailing_zeros: bool) -> Strin
                 rendered.extend(std::iter::repeat_n('0', scale - digits.len()));
                 rendered.push_str(&digits);
                 if trim_trailing_zeros {
-                    trim_decimal_fraction(&mut rendered);
+                    trim_integer_decimal_fraction(&mut rendered);
                 }
                 return rendered;
             }
             let split = digits.len() - scale;
             digits.insert(split, '.');
             if trim_trailing_zeros {
-                trim_decimal_fraction(&mut digits);
+                trim_integer_decimal_fraction(&mut digits);
             }
         }
     }
@@ -810,11 +808,14 @@ fn format_decimal128(value: i128, scale: i8, trim_trailing_zeros: bool) -> Strin
     }
 }
 
-fn trim_decimal_fraction(value: &mut String) {
+fn trim_integer_decimal_fraction(value: &mut String) {
+    let Some(dot) = value.find('.') else {
+        return;
+    };
     while value.ends_with('0') {
         value.pop();
     }
-    if value.ends_with('.') {
+    if value.len() == dot + 1 {
         value.pop();
     }
 }
@@ -883,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn format_decimal128_can_trim_bare_numeric_fallback_scale() {
+    fn format_decimal128_can_trim_bare_numeric_integer_fallback_scale() {
         assert_eq!(format_decimal128(1230000, 6, true), "1.23");
         assert_eq!(format_decimal128(1000000, 6, true), "1");
         assert_eq!(format_decimal128(-500000, 6, true), "-0.5");

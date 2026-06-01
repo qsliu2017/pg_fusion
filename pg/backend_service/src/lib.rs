@@ -11,7 +11,6 @@ use control_transport::{
     BackendLeaseSlot, BackendSlotLease, BackendTxError, CommitOutcome, TransportRegion, TxError,
 };
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion_common::ScalarValue;
 use datafusion_expr::logical_plan::LogicalPlan;
 use filter::RuntimeFilterPool;
 use fsm::backend_execution_flow::StateMachine as BackendExecutionMachine;
@@ -23,7 +22,6 @@ use pg_type::{arrow_data_type_for_type_tag, normalize_arrow_transport_field, PgT
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::{PgRelation as PgrxRelation, PgTryBuilder};
-use plan_builder::{PlanBuildInput, PlanBuilder};
 use plan_codec::{DecodeProgress, PlanDecodeSession};
 use plan_flow::{BackendPlanRole, BackendPlanStep, PlanOpen};
 use protocol::{
@@ -209,19 +207,12 @@ pub struct StartPreparedExecutionInput<'a> {
 }
 
 pub enum ExecutionPlanSource<'a> {
-    SqlText {
-        sql: &'a str,
-        params: Vec<ScalarValue>,
-    },
-    EncodedHybridPlan {
-        bytes: &'a [u8],
-    },
+    EncodedHybridPlan { bytes: &'a [u8] },
 }
 
 impl ExecutionPlanSource<'_> {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::SqlText { .. } => "sql_text",
             Self::EncodedHybridPlan { .. } => "pg_frontend",
         }
     }
@@ -526,31 +517,15 @@ pub(crate) fn build_execution_plan(
     source: ExecutionPlanSource<'_>,
     config: &BackendServiceConfig,
 ) -> Result<PreparedExecutionPlan, BackendServiceError> {
-    let (logical_plan, scans) = match source {
-        ExecutionPlanSource::EncodedHybridPlan { bytes } => decode_hybrid_plan(bytes)?,
-        other => build_execution_plan_from_source(other, config)?,
-    };
+    let _ = config;
+    let ExecutionPlanSource::EncodedHybridPlan { bytes } = source;
+    let (logical_plan, scans) = decode_hybrid_plan(bytes)?;
     let output_schema = output_schema_from_logical_plan(&logical_plan);
     Ok(PreparedExecutionPlan {
         logical_plan,
         scans,
         output_schema,
     })
-}
-
-fn build_execution_plan_from_source(
-    source: ExecutionPlanSource<'_>,
-    config: &BackendServiceConfig,
-) -> Result<(LogicalPlan, Vec<Arc<PgScanSpec>>), BackendServiceError> {
-    match source {
-        ExecutionPlanSource::SqlText { sql, params } => {
-            let built = PlanBuilder::new()
-                .with_config(config.plan_builder_config())
-                .build(PlanBuildInput { sql, params })?;
-            Ok((built.logical_plan, built.scan_plan.into_scans()))
-        }
-        ExecutionPlanSource::EncodedHybridPlan { bytes } => decode_hybrid_plan(bytes),
-    }
 }
 
 fn decode_hybrid_plan(
@@ -599,13 +574,17 @@ fn collect_pg_scans(plan: &LogicalPlan) -> Result<Vec<Arc<PgScanSpec>>, BackendS
 }
 
 fn output_schema_from_logical_plan(logical_plan: &LogicalPlan) -> SchemaRef {
-    Arc::new(Schema::new(
+    Arc::new(Schema::new_with_metadata(
         logical_plan
             .schema()
             .fields()
             .iter()
-            .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
+            .map(|field| {
+                Field::new(field.name(), field.data_type().clone(), field.is_nullable())
+                    .with_metadata(field.metadata().clone())
+            })
             .collect::<Vec<_>>(),
+        logical_plan.schema().as_arrow().metadata().clone(),
     ))
 }
 

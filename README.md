@@ -21,15 +21,17 @@ pages back into PostgreSQL tuple slots.
 
 ## Try A Query
 
-After local setup, enable pg_fusion for the session and run an eligible
-analytical `SELECT`:
+After local setup, enable pg_fusion for the session and run a supported
+analytical `SELECT`. With `pg_fusion.enable = on`, unsupported SELECT shapes
+fail with a pg_fusion planning error instead of silently using PostgreSQL's
+native planner:
 
 ```sql
 SET pg_fusion.enable = on;
 
 SELECT count(*)
 FROM orders
-JOIN lineitem USING (orderkey);
+WHERE orderkey > 0;
 ```
 
 See [Quick start](docs/quickstart.md) for a runnable local table setup.

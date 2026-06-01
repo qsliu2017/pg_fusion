@@ -12,8 +12,6 @@ mod df_catalog;
 #[cfg(any(test, feature = "pg_test"))]
 mod page_arrow_pipeline;
 #[cfg(any(test, feature = "pg_test"))]
-mod plan_builder;
-#[cfg(any(test, feature = "pg_test"))]
 mod plan_codec;
 #[cfg(any(test, feature = "pg_test"))]
 mod row_estimator_seed;
@@ -374,51 +372,6 @@ mod tests {
     #[pg_test]
     fn df_catalog_skips_dropped_columns_and_preserves_nullability() {
         super::df_catalog::df_catalog_skips_dropped_columns_and_preserves_nullability();
-    }
-
-    #[pg_test]
-    fn plan_builder_lowers_live_table_scan() {
-        super::plan_builder::plan_builder_lowers_live_table_scan();
-    }
-
-    #[pg_test]
-    fn plan_builder_resolves_schema_qualified_table() {
-        super::plan_builder::plan_builder_resolves_schema_qualified_table();
-    }
-
-    #[pg_test]
-    fn plan_builder_binds_params_before_lowering() {
-        super::plan_builder::plan_builder_binds_params_before_lowering();
-    }
-
-    #[pg_test]
-    fn plan_builder_partitioned_parent_lowers_to_pg_scan() {
-        super::plan_builder::plan_builder_partitioned_parent_lowers_to_pg_scan();
-    }
-
-    #[pg_test]
-    fn plan_builder_supports_builtin_sql_forms() {
-        super::plan_builder::plan_builder_supports_builtin_sql_forms();
-    }
-
-    #[pg_test]
-    fn plan_builder_rejects_exists_subqueries() {
-        super::plan_builder::plan_builder_rejects_exists_subqueries();
-    }
-
-    #[pg_test]
-    fn plan_builder_rewrites_in_subquery_predicates() {
-        super::plan_builder::plan_builder_rewrites_in_subquery_predicates();
-    }
-
-    #[pg_test]
-    fn plan_builder_reorders_inner_joins_from_live_stats() {
-        super::plan_builder::plan_builder_reorders_inner_joins_from_live_stats();
-    }
-
-    #[pg_test]
-    fn plan_builder_join_reordering_uses_live_attnums_after_drop() {
-        super::plan_builder::plan_builder_join_reordering_uses_live_attnums_after_drop();
     }
 
     #[pg_test]

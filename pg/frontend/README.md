@@ -27,11 +27,13 @@ containing the already built logical plan and PostgreSQL scan specs.
 
 ## Scope
 
-The v1 frontend is intentionally fail-closed. It targets one base relation with
-simple projection/filter expressions and PostgreSQL type metadata preserved for
-scan SQL compilation. Unsupported query shapes return structured frontend
-errors so the production planner can fall back to the SQL-text `plan_builder`
-path in `try` mode.
+The v1 frontend is intentionally fail-closed. It currently covers no-FROM
+SELECTs, one base relation with projection/filter expressions, ORDER BY/LIMIT,
+and simple `count`/`sum`/`avg`/`min`/`max` aggregate calls without GROUP BY.
+PostgreSQL type metadata is preserved for scan SQL compilation. Unsupported
+query shapes return structured frontend errors; pg_fusion no longer has a
+SQL-text or native PostgreSQL planner fallback for user SELECTs when
+`pg_fusion.enable` is on.
 
 PostgreSQL major-version layout details must stop at `adapter/`. The stable
 typed model, catalog resolution, and compiler code should stay independent of

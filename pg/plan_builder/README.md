@@ -1,61 +1,57 @@
 # plan_builder
 
-`plan_builder` builds backend-side DataFusion logical plans whose PostgreSQL
-table leaves are built as `scan_node::PgScanNode`.
+`plan_builder` is pg_fusion's post-frontend planning bridge. It accepts an
+already typed DataFusion `LogicalPlan`, validates the supported shape, applies
+pg_fusion planning passes, and replaces PostgreSQL table-source leaves with
+`scan_node::PgScanNode` leaves backed by `scan_node::PgScanSpec`.
 
-The crate is intentionally a planning bridge:
+The crate does not parse SQL. SQL text planning was removed; user queries enter
+pg_fusion through PostgreSQL's analyzed `Query` tree and `pg_frontend`.
 
-- input is SQL text plus positional DataFusion `ScalarValue` params
-- relation metadata comes from `df_catalog`
-- pushdown SQL is compiled by `scan_sql`
-- PostgreSQL scan leaves are represented by `scan_node::PgScanSpec`
+## Role
+
+- input is a DataFusion logical plan whose PostgreSQL relation leaves use
+  `df_catalog::PgPlanningTableSource`
+- pushdown SQL for each leaf is compiled by `scan_sql`
+- scan leaves are represented by `scan_node::PgScanSpec`
 - eligible inner/cross join components are reordered with PostgreSQL
   statistics through `pg_statistics` and the standalone `join_order` optimizer
-- non-recursive CTEs referenced more than once are built through
-  `scan_node::PgCteRefNode` so the worker can materialize them once and reuse
-  the same batches
 - snapshot ownership, plan serialization, backend scan serving, and page
   transport are left to later layers
-- subquery expressions are accepted when DataFusion optimization rewrites them
-  into ordinary relational operators above PostgreSQL scan leaves
+- subquery expressions are accepted only when the incoming plan or DataFusion
+  optimization rewrites them into ordinary relational operators above
+  PostgreSQL scan leaves
 
-The output logical plan is the future `plan_codec` serialization target. It is
-self-contained enough to carry the compiled scan SQL, relation identity,
+The output `HybridPlan` contains both the DataFusion logical plan and the
+PostgreSQL scan plan referenced by its custom scan leaves. It is self-contained
+enough for `plan_codec` to serialize the compiled scan SQL, relation identity,
 `scan_id`, `table_oid`, and fetch hints, but it does not contain snapshot ids.
 
 ## Execution Contract
 
-`PlanBuilder` performs DataFusion logical optimization with
+`build_preplanned_logical_plan` performs DataFusion logical optimization with
 `target_partitions = 1` in v1. This avoids inventing DataFusion-level
 multi-partition semantics for one PostgreSQL scan id. It does not disable
 PostgreSQL-side parallel planning: `slot_scan` can still prepare and run a
 PostgreSQL plan that contains `Gather` or other PostgreSQL parallel scan nodes.
 
-Filter pushdown is deliberately two-stage. The planning `TableSource` reports
+The frontend-specific entry point, `build_frontend_logical_plan`, builds scan
+leaves before generic DataFusion optimization so PostgreSQL type metadata on
+scan predicates reaches `scan_sql` intact. It rejects residual scan filters,
+because frontend WHERE predicates are expected to execute inside PostgreSQL
+scan SQL until DataFusion/PostgreSQL semantic differences are modeled more
+widely.
+
+Filter pushdown is deliberately two-stage. Planning table sources report
 filters as exactly pushable so DataFusion attaches them to `TableScan`. During
-scan building, `scan_sql` recompiles those filters and returns any unsupported
+scan building, `scan_sql` recompiles those filters and returns unsupported
 predicates as residual filters. `plan_builder` restores those residual
 predicates above `PgScanNode` and projects away residual-only columns if needed.
 
-Subquery expressions are validated after DataFusion logical optimization. If
-DataFusion decorrelates or rewrites them into joins, aggregates, projections,
-and filters, `plan_builder` can build the remaining table leaves normally.
-Residual `EXISTS (...)`, `IN (SELECT ...)`, scalar subqueries,
-`LogicalPlan::Subquery`, or correlated `OuterReferenceColumn` nodes are still
-rejected before scan building so the later `plan_codec` contract only needs to
-round-trip ordinary relational operators plus PostgreSQL leaf scans.
-
-DataFusion normally clones CTE plans at every reference. Before calling
-`SqlToRel`, `plan_builder` rewrites multi-use CTE definitions to synthetic
-planning table sources and plans the original CTE body separately. During scan
-building, each synthetic source becomes a `PgCteRefNode` with the built CTE
-definition as its child. This preserves PostgreSQL-style "compute once, read
-many" behavior for floating aggregates and other non-bit-stable computations.
-
 ## Join Ordering
 
-`PlanBuilderConfig::join_reordering_enabled` is on by default. After the normal
-DataFusion logical optimization and subquery validation pass, `plan_builder`
+`PlanBuilderConfig::join_reordering_enabled` is on by default. After normal
+DataFusion logical optimization and subquery validation, `plan_builder`
 searches for maximal reorderable join components and replaces them with a
 costed tree from `join_order`.
 
@@ -72,37 +68,14 @@ A component is reorderable only when all of these are true:
 For each leaf, the reordering pass recompiles the same pushed-down scan SQL that
 will later become `PgScanSpec`, asks `pg_statistics::estimate_scan_sql` for
 filtered rows/bytes, loads column NDV/null stats for join columns, and loads
-relation-wide unique keys. Equi-join selectivity is estimated from NDV/null
-fractions and clamped when the join columns cover a unique key. Partial unique
-indexes are deliberately ignored by `pg_statistics`, because they are not
-relation-wide keys unless predicate implication is modeled.
-
-The `join_order` solution also carries the preferred hash build side for every
-binary join. When rebuilding DataFusion logical joins, `plan_builder` orients
-that build side as the left child because DataFusion's `CollectLeft` hash join
-mode builds the left input. If this changes the visible column order,
-`plan_builder` restores the original output schema with a projection.
-
-The pass is intentionally conservative: unsupported join shapes are left
-unchanged, while statistics/optimizer errors are returned as planning errors
-when join reordering is explicitly enabled. The extension exposes this through
-`pg_fusion.join_reordering`, so runtime comparisons can use:
-
-```sql
-SET pg_fusion.join_reordering = off;
-```
+relation-wide unique keys.
 
 ## Example
 
 ```rust,ignore
-use datafusion_common::ScalarValue;
-use plan_builder::{PlanBuildInput, PlanBuilder};
+use plan_builder::{build_frontend_logical_plan, PlanBuilderConfig};
 
-let builder = PlanBuilder::new();
-let hybrid = builder.build(PlanBuildInput {
-    sql: "SELECT id, payload FROM public.orders WHERE id > $1 LIMIT 32",
-    params: vec![ScalarValue::Int64(Some(10))],
-})?;
+let hybrid = build_frontend_logical_plan(logical_plan, PlanBuilderConfig::default())?;
 
 for scan in hybrid.scan_plan.scans() {
     println!(

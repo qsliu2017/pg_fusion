@@ -16,9 +16,17 @@ pg17 = ["df_catalog/pg17", "pgrx/pg17"]
 [dependencies]
 arrow-schema = { workspace = true }
 datafusion-common = { workspace = true }
+datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
 df_catalog = { path = "../df_catalog", version = "25.0" }
+df_functions = { path = "../df_functions", version = "25.0" }
 pgrx = { workspace = true }
 pg_type = { path = "../type", version = "25.0", features = ["datafusion"] }
+scan_node = { path = "../scan_node", version = "25.0" }
 scan_sql = { path = "../scan_sql", version = "25.0" }
 thiserror = "2.0"
+
+[dev-dependencies]
+futures = "0.3"
+plan_codec = { path = "../../page/plan_codec", version = "25.0" }
+tokio = { version = "1.36", features = ["rt"] }

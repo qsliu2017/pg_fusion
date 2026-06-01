@@ -50,6 +50,8 @@ pub const NUMERIC_FALLBACK_SCALE: i8 = 16;
 pub const PG_TYPE_OID_METADATA_KEY: &str = "pg_fusion.pg_type_oid";
 pub const PG_TYPE_TYPMOD_METADATA_KEY: &str = "pg_fusion.pg_type_typmod";
 pub const PG_TYPE_COLLATION_METADATA_KEY: &str = "pg_fusion.pg_type_collation";
+pub const PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY: &str =
+    "pg_fusion.numeric_trim_trailing_zeros";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PgTypeRef {
@@ -93,6 +95,7 @@ pub enum PgConstValue {
     Int64(i64),
     Float32(f32),
     Float64(f64),
+    Numeric(String),
     Text(String),
     Binary(Vec<u8>),
     Time64Microsecond(i64),
@@ -187,6 +190,7 @@ pub fn is_supported_non_null_const_type(oid: u32) -> bool {
             | oid::INT8OID
             | oid::FLOAT4OID
             | oid::FLOAT8OID
+            | oid::NUMERICOID
             | oid::TEXTOID
             | oid::VARCHAROID
             | oid::BPCHAROID
@@ -483,12 +487,82 @@ pub fn scalar_for_pg_const(
         Some(PgConstValue::Int64(value)) => Ok(ScalarValue::Int64(Some(*value))),
         Some(PgConstValue::Float32(value)) => Ok(ScalarValue::Float32(Some(*value))),
         Some(PgConstValue::Float64(value)) => Ok(ScalarValue::Float64(Some(*value))),
+        Some(PgConstValue::Numeric(value)) => {
+            let (precision, scale) = numeric_shape_from_typmod(pg_type.typmod).ok_or(
+                PgTypeError::UnsupportedNumericTypmod {
+                    typmod: pg_type.typmod,
+                },
+            )?;
+            Ok(ScalarValue::Decimal128(
+                Some(decimal128_for_numeric_text(value, precision, scale)?),
+                precision,
+                scale,
+            ))
+        }
         Some(PgConstValue::Text(value)) => Ok(ScalarValue::Utf8View(Some(value.clone()))),
         Some(PgConstValue::Binary(value)) => Ok(ScalarValue::BinaryView(Some(value.clone()))),
         Some(PgConstValue::Time64Microsecond(value)) => {
             Ok(ScalarValue::Time64Microsecond(Some(*value)))
         }
     }
+}
+
+#[cfg(feature = "datafusion")]
+fn decimal128_for_numeric_text(value: &str, precision: u8, scale: i8) -> Result<i128, PgTypeError> {
+    let scale = usize::try_from(scale).map_err(|_| PgTypeError::UnsupportedConstValue {
+        oid: oid::NUMERICOID,
+    })?;
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("nan")
+        || value.eq_ignore_ascii_case("infinity")
+        || value.eq_ignore_ascii_case("+infinity")
+        || value.eq_ignore_ascii_case("-infinity")
+    {
+        return Err(PgTypeError::UnsupportedConstValue {
+            oid: oid::NUMERICOID,
+        });
+    }
+
+    let (negative, unsigned) = match value.as_bytes().first().copied() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let (whole, fractional) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if whole.is_empty() && fractional.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+        || fractional.len() > scale
+    {
+        return Err(PgTypeError::UnsupportedConstValue {
+            oid: oid::NUMERICOID,
+        });
+    }
+
+    let whole = whole.trim_start_matches('0');
+    let significant_whole = if whole.is_empty() { "" } else { whole };
+    let digit_count = significant_whole.len().saturating_add(scale);
+    if digit_count > usize::from(precision) {
+        return Err(PgTypeError::UnsupportedConstValue {
+            oid: oid::NUMERICOID,
+        });
+    }
+
+    let mut digits = String::with_capacity(significant_whole.len() + scale);
+    digits.push_str(significant_whole);
+    digits.push_str(fractional);
+    for _ in fractional.len()..scale {
+        digits.push('0');
+    }
+    if digits.is_empty() {
+        digits.push('0');
+    }
+    let scaled = digits
+        .parse::<i128>()
+        .map_err(|_| PgTypeError::UnsupportedConstValue {
+            oid: oid::NUMERICOID,
+        })?;
+    Ok(if negative { -scaled } else { scaled })
 }
 
 #[cfg(feature = "datafusion")]
@@ -590,6 +664,23 @@ mod tests {
         assert_eq!(numeric_shape_from_typmod(numeric_typmod(39, 0)), None);
         assert_eq!(numeric_shape_from_typmod(numeric_typmod(3, 4)), None);
         assert_eq!(numeric_shape_from_typmod(numeric_typmod(3, -1)), None);
+    }
+
+    #[cfg(feature = "datafusion")]
+    #[test]
+    fn maps_numeric_constants_to_decimal128() {
+        let scalar = scalar_for_pg_const(
+            Some(&PgConstValue::Numeric("-12.5".into())),
+            PgTypeRef::new(oid::NUMERICOID, numeric_typmod(5, 2), 0),
+        )
+        .unwrap();
+        assert_eq!(scalar, ScalarValue::Decimal128(Some(-1250), 5, 2));
+
+        assert!(scalar_for_pg_const(
+            Some(&PgConstValue::Numeric("1.234".into())),
+            PgTypeRef::new(oid::NUMERICOID, numeric_typmod(5, 2), 0),
+        )
+        .is_err());
     }
 
     #[test]

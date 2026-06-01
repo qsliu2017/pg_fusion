@@ -194,8 +194,15 @@ fn build_explain_session_state() -> SessionState {
         .with_default_features()
         .build();
     let _ = state.register_udf(df_functions::pg_format_udf());
+    let _ = state.register_udf(df_functions::pg_int_add_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_sub_checked_udf());
+    let _ = state.register_udf(df_functions::pg_int_mul_checked_udf());
+    let _ = state.register_udf(df_functions::pg_interval_out_udf());
     let _ = state.register_udf(df_functions::pg_quote_literal_udf());
     let _ = state.register_udaf(df_functions::pg_avg_udaf());
+    let _ = state.register_udaf(df_functions::pg_scalar_subquery_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::first_last::first_value_udaf());
+    let _ = state.register_udaf(datafusion::functions_aggregate::grouping::grouping_udaf());
     state
 }
 

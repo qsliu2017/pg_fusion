@@ -150,6 +150,12 @@ fn fusion_scan_metric_summary_tx(tx: &mut Transaction<'_>) -> (i64, i64, i64) {
     (parts[0], parts[1], parts[2])
 }
 
+fn error_message(err: &postgres::Error) -> String {
+    err.as_db_error()
+        .map(|db_error| db_error.message().to_owned())
+        .unwrap_or_else(|| err.to_string())
+}
+
 pub(crate) fn simple_select_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
@@ -172,13 +178,12 @@ pub(crate) fn numeric_special_value_error_smoke() {
         let err = tx
             .simple_query(sql)
             .expect_err("special numeric query must fail with pg_fusion enabled");
-        let message = err
-            .as_db_error()
-            .map(|db_error| db_error.message().to_owned())
-            .unwrap_or_else(|| err.to_string());
+        let message = error_message(&err);
         assert!(
             message.contains(
                 "pg_fusion Decimal128 avg cannot represent PostgreSQL numeric NaN/Infinity values"
+            ) || message.contains(
+                "pg_fusion Decimal128 numeric cannot represent PostgreSQL numeric NaN/Infinity values"
             ),
             "unexpected error for {sql}: {message}"
         );
@@ -272,72 +277,26 @@ pub(crate) fn explain_smoke() {
     );
 }
 
-pub(crate) fn planner_catalog_bypass_smoke() {
+pub(crate) fn planner_catalog_strict_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
 
-    let catalog_explain = simple_query_first_column_rows_tx(
-        &mut tx,
-        "EXPLAIN SELECT count(*)::bigint FROM pg_catalog.pg_class",
-    )
-    .join("\n");
+    let catalog_error = tx
+        .simple_query("EXPLAIN SELECT count(*)::bigint FROM pg_catalog.pg_class")
+        .expect_err("catalog SELECT should fail closed when pg_fusion is enabled");
+    let message = error_message(&catalog_error);
     assert!(
-        !catalog_explain.contains("Custom Scan (PgFusionScan)"),
-        "catalog query should bypass pg_fusion planner: {catalog_explain}"
+        message.contains("pg_fusion query-tree frontend planning failed"),
+        "catalog query should fail through strict pg_fusion planner: {message}"
     );
+    tx.rollback()
+        .expect("rollback aborted catalog strict smoke transaction");
 
-    let completion_count: i64 = simple_query_first_column_tx(
-        &mut tx,
-        "\
-        SELECT count(*)::bigint
-        FROM pg_catalog.pg_class AS c
-        JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-        WHERE c.oid = 'pg_catalog.pg_class'::regclass
-          AND pg_catalog.pg_table_is_visible(c.oid)
-        ",
-    )
-    .expect("catalog completion-style query must return one row")
-    .parse()
-    .expect("catalog completion-style query must return a bigint value");
-    assert_eq!(completion_count, 1);
-
-    let settings_completion_explain = simple_query_first_column_rows_tx(
-        &mut tx,
-        "\
-        EXPLAIN
-        SELECT pg_catalog.lower(name)
-        FROM pg_catalog.pg_settings
-        WHERE context IN ('user', 'superuser')
-          AND pg_catalog.lower(name) LIKE pg_catalog.lower('pg\\_fu%')
-        LIMIT 1000
-        ",
-    )
-    .join("\n");
-    assert!(
-        !settings_completion_explain.contains("Custom Scan (PgFusionScan)"),
-        "pg_settings completion query should bypass pg_fusion planner: {settings_completion_explain}"
-    );
-
-    let cte_explain = simple_query_first_column_rows_tx(
-        &mut tx,
-        "\
-        EXPLAIN
-        WITH catalog_rel AS (
-            SELECT oid FROM pg_catalog.pg_class WHERE relname = 'pg_class'
-        )
-        SELECT count(*)::bigint FROM catalog_rel
-        ",
-    )
-    .join("\n");
-    assert!(
-        !cte_explain.contains("Custom Scan (PgFusionScan)"),
-        "catalog relation inside CTE should bypass pg_fusion planner: {cte_explain}"
-    );
-
-    reset_heap_fixture(&mut tx, "pg_fusion_catalog_bypass_user_table");
+    let mut tx = smoke_transaction(&mut client);
+    reset_heap_fixture(&mut tx, "pg_fusion_catalog_strict_user_table");
     let user_explain = simple_query_first_column_rows_tx(
         &mut tx,
-        "EXPLAIN SELECT count(*)::bigint FROM pg_fusion_catalog_bypass_user_table",
+        "EXPLAIN SELECT count(*)::bigint FROM pg_fusion_catalog_strict_user_table",
     )
     .join("\n");
     assert!(
@@ -346,57 +305,123 @@ pub(crate) fn planner_catalog_bypass_smoke() {
     );
 }
 
-pub(crate) fn planner_bound_params_bypass_smoke() {
+pub(crate) fn planner_bound_params_strict_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
 
-    let row = tx
+    let err = tx
         .query_one("SELECT $1::bigint", &[&42_i64])
-        .expect("parameterized query should bypass pg_fusion and execute with vanilla planner");
-    let value: i64 = row.get(0);
-    assert_eq!(value, 42);
+        .expect_err("parameterized SELECT should fail closed when pg_fusion is enabled");
+    let message = error_message(&err);
+    assert!(
+        message.contains("pg_fusion query-tree frontend planning failed"),
+        "parameterized query should fail through pg_fusion strict planner: {message}"
+    );
+}
 
-    let table_name = "pgf_bound_params_bypass_smoke";
+pub(crate) fn scalar_subquery_cardinality_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+
+    let err = tx
+        .simple_query(
+            "\
+            SELECT x
+            FROM (VALUES (1)) AS t(x)
+            WHERE x = (SELECT y FROM (VALUES (1), (1)) AS u(y))
+            ",
+        )
+        .expect_err("multi-row scalar subquery must fail with PostgreSQL cardinality semantics");
+    let message = error_message(&err);
+    assert!(
+        message.contains("more than one row returned by a subquery used as an expression"),
+        "unexpected scalar subquery cardinality error: {message}"
+    );
+}
+
+pub(crate) fn checked_integer_arithmetic_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+
+    let normal = simple_query_first_column_tx(
+        &mut tx,
+        "\
+        SELECT concat_ws(
+            ',',
+            32000::int2 + 1::int2,
+            10::int4 - 12::int4,
+            3037000499::int8 * 2::int8
+        )
+        ",
+    )
+    .expect("checked integer arithmetic should return one row");
+    assert_eq!(normal, "32001,-2,6074000998");
+
+    for (sql, expected) in [
+        ("SELECT 32767::int2 + 1::int2", "smallint out of range"),
+        ("SELECT 2147483647::int4 + 1::int4", "integer out of range"),
+        ("SELECT 1073741824::int4 * 2::int4", "integer out of range"),
+        (
+            "SELECT ((-2147483647::int4 - 1::int4) - 1::int4)",
+            "integer out of range",
+        ),
+        (
+            "SELECT 9223372036854775807::int8 + 1::int8",
+            "bigint out of range",
+        ),
+    ] {
+        let err = tx
+            .simple_query(sql)
+            .expect_err("integer overflow must fail with PostgreSQL-compatible error");
+        let message = error_message(&err);
+        assert!(
+            message.contains(expected),
+            "unexpected integer overflow error for {sql}: {message}"
+        );
+    }
+}
+
+pub(crate) fn fetch_with_ties_rejected_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_fetch_with_ties_rejected_smoke";
     batch_execute_pg_fusion_disabled(
         &mut tx,
         &format!(
             "\
-            CREATE TABLE {table_name} (id integer NOT NULL);
-            INSERT INTO {table_name} (id) VALUES (1)
+            CREATE TABLE {table_name} (k integer NOT NULL, v text NOT NULL);
+            INSERT INTO {table_name} (k, v)
+            VALUES (1, 'a'), (1, 'b'), (2, 'c')
             "
         ),
     );
-    tx.batch_execute(
-        "\
-        SET LOCAL pg_fusion.frontend_mode = 2;
-        SET LOCAL plan_cache_mode = force_generic_plan;
-        PREPARE pgf_param_frontend_bypass(integer) AS
-            SELECT $1::integer AS v FROM pgf_bound_params_bypass_smoke WHERE id = 1
-        ",
-    )
-    .expect("generic prepared statement with Param nodes should prepare through vanilla planner");
 
-    let prepared_explain = simple_query_first_column_rows_tx(
-        &mut tx,
-        "EXPLAIN (VERBOSE) EXECUTE pgf_param_frontend_bypass(42)",
-    )
-    .join("\n");
+    let err = tx
+        .simple_query(&format!(
+            "\
+            SELECT k, v
+            FROM {table_name}
+            ORDER BY k
+            FETCH FIRST 1 ROW WITH TIES
+            "
+        ))
+        .expect_err("FETCH WITH TIES must fail closed in pg_frontend");
+    let message = error_message(&err);
     assert!(
-        !prepared_explain.contains("Custom Scan (PgFusionScan)"),
-        "generic prepared Param query should bypass pg_fusion custom scans: {prepared_explain}"
+        message.contains("pg_fusion query-tree frontend planning failed"),
+        "FETCH WITH TIES should fail through the strict frontend: {message}"
     );
-
-    let row = tx
-        .query_one("EXECUTE pgf_param_frontend_bypass(42)", &[])
-        .expect("generic prepared Param query should execute through vanilla planner");
-    let value: i32 = row.get(0);
-    assert_eq!(value, 42);
+    assert!(
+        message.contains("FETCH WITH TIES"),
+        "FETCH WITH TIES error should name the unsupported option: {message}"
+    );
 }
 
-pub(crate) fn frontend_mode_smoke() {
+pub(crate) fn strict_frontend_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
-    let table_name = "pgf_frontend_mode_smoke";
+
+    let table_name = "pgf_strict_frontend_smoke";
     batch_execute_pg_fusion_disabled(
         &mut tx,
         &format!(
@@ -407,8 +432,6 @@ pub(crate) fn frontend_mode_smoke() {
             "
         ),
     );
-    tx.batch_execute("SET LOCAL pg_fusion.frontend_mode = 2")
-        .expect("require pg_frontend planning");
 
     let frontend_explain = simple_query_first_column_rows_tx(
         &mut tx,
@@ -418,6 +441,16 @@ pub(crate) fn frontend_mode_smoke() {
     assert!(
         frontend_explain.contains("Planning Source: pg_frontend"),
         "supported frontend query should use pg_frontend path: {frontend_explain}"
+    );
+
+    let no_from_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        "EXPLAIN (VERBOSE) SELECT 1 AS one ORDER BY one",
+    )
+    .join("\n");
+    assert!(
+        no_from_explain.contains("Custom Scan (PgFusionScan)"),
+        "no-FROM SELECT should use strict pg_fusion frontend: {no_from_explain}"
     );
 
     let const_bpchar_rows = simple_query_first_column_rows_tx(
@@ -450,26 +483,31 @@ pub(crate) fn frontend_mode_smoke() {
         "frontend bpchar column predicate should match PostgreSQL trailing-space semantics"
     );
 
-    let only_explain = simple_query_first_column_rows_tx(
-        &mut tx,
-        &format!("EXPLAIN (VERBOSE) SELECT id FROM ONLY {table_name} WHERE id = 2"),
-    )
-    .join("\n");
+    tx.batch_execute("SAVEPOINT pgf_only_error")
+        .expect("create expected-error savepoint");
+    let only_error = tx
+        .simple_query(&format!(
+            "EXPLAIN (VERBOSE) SELECT id FROM ONLY {table_name} WHERE id = 2"
+        ))
+        .expect_err("ONLY scans should fail closed when pg_fusion is enabled");
+    tx.batch_execute("ROLLBACK TO SAVEPOINT pgf_only_error; RELEASE SAVEPOINT pgf_only_error")
+        .expect("clear expected ONLY scan error state");
+    let message = error_message(&only_error);
     assert!(
-        !only_explain.contains("Custom Scan (PgFusionScan)"),
-        "ONLY scans should bypass pg_fusion custom scans: {only_explain}"
+        message.contains("pg_fusion query-tree frontend planning failed"),
+        "ONLY scans should fail through the strict frontend: {message}"
     );
 
-    tx.batch_execute("SET LOCAL pg_fusion.frontend_mode = 0")
-        .expect("disable pg_frontend planning");
-    let sql_text_explain = simple_query_first_column_rows_tx(
+    tx.batch_execute("SET LOCAL pg_fusion.enable = off")
+        .expect("disable pg_fusion planning");
+    let off_explain = simple_query_first_column_rows_tx(
         &mut tx,
         &format!("EXPLAIN (VERBOSE) SELECT id FROM {table_name} WHERE id = 2"),
     )
     .join("\n");
     assert!(
-        sql_text_explain.contains("Planning Source: sql_text"),
-        "frontend_mode=0 should force legacy SQL-text path: {sql_text_explain}"
+        !off_explain.contains("Custom Scan (PgFusionScan)"),
+        "pg_fusion.enable=off should bypass pg_fusion planner: {off_explain}"
     );
 }
 
@@ -510,18 +548,11 @@ pub(crate) fn copy_select_smoke() {
     assert_eq!(metrics_epoch, reset_epoch);
 }
 
-pub(crate) fn copy_catalog_bypass_smoke() {
+pub(crate) fn copy_catalog_strict_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);
 
-    let reset_epoch: i64 =
-        simple_query_first_column_tx(&mut tx, "SELECT pg_fusion_metrics_reset()")
-            .expect("metrics reset must return an epoch")
-            .parse()
-            .expect("metrics reset epoch must be an integer");
-
-    let output = copy_out_to_string_tx(
-        &mut tx,
+    let err = match tx.copy_out(
         "\
         COPY (
             SELECT name
@@ -530,19 +561,15 @@ pub(crate) fn copy_catalog_bypass_smoke() {
             ORDER BY name
         ) TO STDOUT WITH (FORMAT csv)
         ",
+    ) {
+        Ok(_) => panic!("catalog COPY query should fail closed when pg_fusion is enabled"),
+        Err(err) => err,
+    };
+    let message = error_message(&err);
+    assert!(
+        message.contains("pg_fusion query-tree frontend planning failed"),
+        "catalog COPY should fail through strict pg_fusion planner: {message}"
     );
-    assert_eq!(output, "pg_fusion.enable\n");
-
-    let (rows_encoded, rows_returned, metrics_epoch) = fusion_scan_metric_summary_tx(&mut tx);
-    assert_eq!(
-        rows_encoded, 0,
-        "catalog COPY query should bypass pg_fusion scans"
-    );
-    assert_eq!(
-        rows_returned, 0,
-        "catalog COPY query should bypass pg_fusion custom scan"
-    );
-    assert_eq!(metrics_epoch, reset_epoch);
 }
 
 fn reset_heap_fixture(tx: &mut Transaction<'_>, table_name: &str) {
