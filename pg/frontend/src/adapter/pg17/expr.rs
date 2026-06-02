@@ -398,7 +398,7 @@ pub(super) unsafe fn read_expr(
         }
         pg_sys::NodeTag::T_CoerceViaIO => {
             let cast = unsafe { &*node.cast::<pg_sys::CoerceViaIO>() };
-            let pg_type = type_ref(cast.resulttype, -1, cast.resultcollid);
+            let pg_type = unsafe { expr_type_ref(node) };
             supported_value_type(pg_type)
                 .map_err(|reason| PgFrontendError::unsupported(reason.message))?;
             Ok(QueryExpr::Cast {
@@ -428,7 +428,7 @@ pub(super) unsafe fn read_expr(
                 });
             }
             Ok(QueryExpr::FunctionCall {
-                func: read_scalar_function_name(&func_name)?,
+                func: read_scalar_function(func.funcid, &func_name, &args, pg_type)?,
                 args,
                 pg_type,
             })

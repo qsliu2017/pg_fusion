@@ -6,6 +6,7 @@ mod pg_format;
 mod pg_interval_out;
 mod pg_quote_literal;
 mod pg_scalar_subquery_value;
+mod pg_text_typmod;
 
 pub use pg_avg::{pg_avg_udaf, PgAvg};
 pub use pg_checked_int_arithmetic::{
@@ -15,3 +16,4 @@ pub use pg_format::{pg_format_udf, PgFormat};
 pub use pg_interval_out::{pg_interval_out_udf, PgIntervalOut};
 pub use pg_quote_literal::{pg_quote_literal_udf, PgQuoteLiteral};
 pub use pg_scalar_subquery_value::{pg_scalar_subquery_value_udaf, PgScalarSubqueryValue};
+pub use pg_text_typmod::{pg_bpchar_typmod_udf, pg_varchar_typmod_udf, PgTextTypmod};

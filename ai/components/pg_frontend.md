@@ -114,9 +114,26 @@ operator semantics fail-closed until scan SQL can preserve them explicitly.
 `int2`/`int4`/`int8` `+`, `-`, and `*` lower to internal checked DataFusion
 UDFs instead of DataFusion binary arithmetic so PostgreSQL integer overflow
 raises `smallint`/`integer`/`bigint out of range` instead of wrapping.
-Frontend `WHERE` filters must reach `scan_sql` before generic DataFusion
-optimization can fold or rewrite them. After scan building, those filters must
-fully compile into PostgreSQL scan SQL; residual DataFusion filters are
-rejected before execution. Target expressions compile in the DataFusion logical
-plan after PostgreSQL query-tree analysis has supplied function/operator OIDs
-and PostgreSQL type metadata.
+`varchar(n)` and `bpchar(n)` casts lower to internal text-typmod DataFusion
+UDFs so intermediate expressions apply PostgreSQL truncation/padding before
+DataFusion compares, filters, sorts, or projects the value. The pg17 adapter
+must preserve `exprTypmod` for cast nodes; `TypedQuery` is the authority for
+the target PostgreSQL OID/typmod/collation, while Arrow `Utf8View` is only the
+transport type.
+Scalar function lowering validates PostgreSQL's resolved `FuncExpr.funcid`,
+argument OIDs, and result OID before recording a neutral `ScalarFunction`; a
+supported spelling with an unsupported overload, such as `length(bytea)`, must
+fail closed instead of lowering to a same-named DataFusion function.
+Frontend `WHERE` filters are split by top-level `AND` before logical planning.
+Relation-local filters are pushed into PostgreSQL scans whenever the current
+join tree preserves that relation (`INNER` preserves both sides; `LEFT`/`RIGHT`
+only the preserved side; `FULL` neither). Filters that reach `scan_sql` must
+fully compile into PostgreSQL scan SQL; scan residuals are rejected before
+execution. Residual filters above joins may execute in DataFusion only when
+their typed expression is known not to depend on PostgreSQL-specific text-like
+semantics; `bpchar` equality/order, text ordering, regex, and unsupported
+collation residuals fail closed until pg_fusion has PG-aware UDFs for those
+semantics.
+Target expressions compile in the DataFusion logical plan after PostgreSQL
+query-tree analysis has supplied function/operator OIDs and PostgreSQL type
+metadata.

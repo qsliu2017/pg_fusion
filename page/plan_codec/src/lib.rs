@@ -466,6 +466,8 @@ impl PlanDecodeSession {
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_sub_checked_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_mul_checked_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_interval_out_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_varchar_typmod_udf());
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_bpchar_typmod_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_quote_literal_udf());
         let _ = FunctionRegistry::register_udaf(&mut ctx, df_functions::pg_avg_udaf());
         let _ = FunctionRegistry::register_udaf(
@@ -1045,6 +1047,12 @@ fn decode_pg_scalar_udf(name: &str) -> Option<Arc<ScalarUDF>> {
     }
     if name.eq_ignore_ascii_case("pg_fusion_interval_out") {
         return Some(df_functions::pg_interval_out_udf());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_varchar_typmod") {
+        return Some(df_functions::pg_varchar_typmod_udf());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_bpchar_typmod") {
+        return Some(df_functions::pg_bpchar_typmod_udf());
     }
     if name.eq_ignore_ascii_case("random") {
         return Some(datafusion::functions::math::random());

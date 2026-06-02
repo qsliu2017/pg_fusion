@@ -321,6 +321,20 @@ pub(super) fn compile_cast(
         )?;
         return Ok(df_functions::pg_interval_out_udf().call(vec![arg]));
     }
+    if let Some(udf) = text_typmod_cast_udf(pg_type) {
+        let arg = compile_expr_with_windows(
+            arg,
+            query,
+            ctx,
+            window_bindings,
+            scalar_bindings,
+            aggregate_bindings,
+        )?;
+        return Ok(udf.call(vec![
+            arg,
+            Expr::Literal(ScalarValue::Int32(Some(pg_type.typmod)), None),
+        ]));
+    }
     let data_type = arrow_type_for_pg_type(pg_type).ok_or_else(|| {
         PgFrontendError::unsupported(format!(
             "cast target PostgreSQL type oid {} is not supported by pg_frontend v1",
@@ -338,6 +352,19 @@ pub(super) fn compile_cast(
         )?),
         data_type,
     )))
+}
+
+fn text_typmod_cast_udf(pg_type: pg_type::PgTypeRef) -> Option<Arc<ScalarUDF>> {
+    if pg_type::text_typmod_length(pg_type.typmod).is_none() {
+        return None;
+    }
+    if pg_type.oid == u32::from(pgrx::pg_sys::VARCHAROID) {
+        return Some(df_functions::pg_varchar_typmod_udf());
+    }
+    if pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID) {
+        return Some(df_functions::pg_bpchar_typmod_udf());
+    }
+    None
 }
 
 pub(super) fn expr_contains_nonfinite_numeric_text_source(

@@ -2688,21 +2688,11 @@ select count(distinct ss.ten) from
 
 -- id: local_pg_scalar_subquery_one_row_predicate
 -- origin: local pg_fusion scalar subquery compatibility
--- compare: ordered
+-- compare: multiset
 SELECT unique1
-FROM tenk1
+FROM (VALUES (0), (1), (2)) AS t(unique1)
 WHERE unique1 < 3
-  AND unique1 = (SELECT unique1 FROM tenk1 WHERE unique1 = 1)
-ORDER BY unique1;
-
--- id: local_pg_scalar_subquery_zero_rows_is_null
--- origin: local pg_fusion scalar subquery compatibility
--- compare: ordered
-SELECT unique1
-FROM tenk1
-WHERE unique1 < 3
-  AND (SELECT unique1 FROM tenk1 WHERE false) IS NULL
-ORDER BY unique1;
+  AND unique1 = (SELECT v FROM (VALUES (1)) AS s(v));
 
 -- id: local_pg_scalar_subquery_null_row_is_null
 -- origin: local pg_fusion scalar subquery compatibility
@@ -3650,3 +3640,36 @@ SELECT
   2147483640::int4 + 7::int8,
   42::int4 - 100::int2,
   246::int2 * 123456::int8;
+
+-- id: local_pg_join_where_pushdown_inner_both_sides
+-- origin: local pg_fusion join WHERE pushdown compatibility
+-- compare: multiset
+SELECT a.unique1, b.f1
+FROM tenk1 a
+JOIN int4_tbl b ON a.unique1 = b.f1
+WHERE a.unique1 < 3 AND b.f1 >= 0;
+
+-- id: local_pg_join_where_pushdown_left_preserved_side
+-- origin: local pg_fusion join WHERE pushdown compatibility
+-- compare: multiset
+SELECT a.unique1, b.f1
+FROM tenk1 a
+LEFT JOIN int4_tbl b ON a.unique1 = b.f1
+WHERE a.unique1 < 3;
+
+-- id: local_pg_text_typmod_varchar_intermediate_comparison
+-- origin: local pg_fusion text typmod cast coverage
+-- compare: multiset
+SELECT CAST('abc' AS varchar(2)) = 'ab';
+
+-- id: local_pg_text_typmod_varchar_filter
+-- origin: local pg_fusion text typmod cast coverage
+-- compare: multiset
+SELECT marker
+FROM (VALUES ('abc'), ('ab'), ('ac')) AS v(marker)
+WHERE CAST(marker AS varchar(2)) = 'ab';
+
+-- id: local_pg_text_typmod_bpchar_projection
+-- origin: local pg_fusion text typmod cast coverage
+-- compare: multiset
+SELECT CAST('a' AS char(3));

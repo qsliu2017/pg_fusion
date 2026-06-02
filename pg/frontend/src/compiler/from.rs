@@ -18,8 +18,14 @@ pub(super) fn base_plan(
         let mut outer_query = query.clone();
         outer_query.selection = selection.clone();
         add_correlated_outer_targets(&mut outer_query, &exists_subqueries)?;
-        let mut plan = build_from_item(&outer_query, &outer_query.from, ctx, None)?;
-        if let Some(selection) = selection.as_ref() {
+        let selection = split_selection_for_scan_pushdown(&outer_query)?;
+        let mut plan = build_from_item(
+            &outer_query,
+            &outer_query.from,
+            ctx,
+            &selection.scan_filters,
+        )?;
+        if let Some(selection) = selection.residual.as_ref() {
             let mut scalar_bindings = Vec::new();
             plan = attach_scalar_subqueries(plan, selection, ctx, &mut scalar_bindings)?;
             let predicate = compile_expr_with_windows(
@@ -45,8 +51,14 @@ pub(super) fn base_plan(
         let mut outer_query = query.clone();
         outer_query.selection = selection.clone();
         add_correlated_in_outer_targets(&mut outer_query, &in_subqueries)?;
-        let mut plan = build_from_item(&outer_query, &outer_query.from, ctx, None)?;
-        if let Some(selection) = selection.as_ref() {
+        let selection = split_selection_for_scan_pushdown(&outer_query)?;
+        let mut plan = build_from_item(
+            &outer_query,
+            &outer_query.from,
+            ctx,
+            &selection.scan_filters,
+        )?;
+        if let Some(selection) = selection.residual.as_ref() {
             let mut scalar_bindings = Vec::new();
             plan = attach_scalar_subqueries(plan, selection, ctx, &mut scalar_bindings)?;
             let predicate = compile_expr_with_windows(
@@ -68,33 +80,329 @@ pub(super) fn base_plan(
         return Ok(plan);
     }
 
-    let push_selection_into_scan = matches!(query.from, FromItem::Relation { .. })
-        && !query.selection.as_ref().is_some_and(|expr| {
-            contains_scalar_subquery(expr)
-                || contains_predicate_subquery(expr)
-                || expr_contains_outer_var(expr)
-        });
-    let mut plan = build_from_item(
-        query,
-        &query.from,
-        ctx,
-        push_selection_into_scan
-            .then_some(query.selection.as_ref())
-            .flatten(),
-    )?;
-    if !push_selection_into_scan {
-        if let Some(selection) = query.selection.as_ref() {
-            let mut scalar_bindings = Vec::new();
-            plan = attach_scalar_subqueries(plan, selection, ctx, &mut scalar_bindings)?;
-            let predicate =
-                compile_expr_with_windows(selection, query, ctx, &[], &scalar_bindings, &[])?;
-            plan = LogicalPlan::Filter(datafusion_expr::logical_plan::Filter::try_new(
-                predicate,
-                Arc::new(plan),
-            )?);
-        }
+    let selection = split_selection_for_scan_pushdown(query)?;
+    let mut plan = build_from_item(query, &query.from, ctx, &selection.scan_filters)?;
+    if let Some(selection) = selection.residual.as_ref() {
+        let mut scalar_bindings = Vec::new();
+        plan = attach_scalar_subqueries(plan, selection, ctx, &mut scalar_bindings)?;
+        let predicate =
+            compile_expr_with_windows(selection, query, ctx, &[], &scalar_bindings, &[])?;
+        plan = LogicalPlan::Filter(datafusion_expr::logical_plan::Filter::try_new(
+            predicate,
+            Arc::new(plan),
+        )?);
     }
     Ok(plan)
+}
+
+#[derive(Debug, Default)]
+pub(super) struct SelectionPushdown {
+    pub scan_filters: HashMap<usize, Vec<QueryExpr>>,
+    pub residual: Option<QueryExpr>,
+}
+
+pub(super) fn split_selection_for_scan_pushdown(
+    query: &TypedQuery,
+) -> Result<SelectionPushdown, PgFrontendError> {
+    let Some(selection) = query.selection.as_ref() else {
+        return Ok(SelectionPushdown::default());
+    };
+
+    if contains_scalar_subquery(selection)
+        || contains_predicate_subquery(selection)
+        || expr_contains_outer_var(selection)
+    {
+        reject_pg_sensitive_residual_filter(selection)?;
+        return Ok(SelectionPushdown {
+            scan_filters: HashMap::new(),
+            residual: Some(selection.clone()),
+        });
+    }
+
+    let pushable_rtindexes = top_level_where_pushdown_rtindexes(&query.from);
+    let mut scan_filters: HashMap<usize, Vec<QueryExpr>> = HashMap::new();
+    let mut residual = Vec::new();
+
+    for predicate in split_and_predicates(selection) {
+        if can_push_predicate_into_scan(&predicate) {
+            let referenced_rtindexes = predicate_rtindexes(&predicate);
+            match referenced_rtindexes.len() {
+                1 => {
+                    let rtindex = *referenced_rtindexes.iter().next().expect("one rtindex");
+                    if pushable_rtindexes.contains(&rtindex) {
+                        scan_filters.entry(rtindex).or_default().push(predicate);
+                        continue;
+                    }
+                }
+                0 if residual_filter_needs_pg_text_semantics(&predicate) => {
+                    if let Some(rtindex) = pushable_rtindexes.iter().next().copied() {
+                        scan_filters.entry(rtindex).or_default().push(predicate);
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        reject_pg_sensitive_residual_filter(&predicate)?;
+        residual.push(predicate);
+    }
+
+    Ok(SelectionPushdown {
+        scan_filters,
+        residual: combine_and_predicates(residual),
+    })
+}
+
+pub(super) fn can_push_predicate_into_scan(predicate: &QueryExpr) -> bool {
+    !contains_scalar_subquery(predicate)
+        && !contains_predicate_subquery(predicate)
+        && !expr_contains_outer_var(predicate)
+        && !contains_aggregate_call(predicate)
+}
+
+pub(super) fn top_level_where_pushdown_rtindexes(item: &FromItem) -> HashSet<usize> {
+    let mut rtindexes = HashSet::new();
+    collect_top_level_where_pushdown_rtindexes(item, &mut rtindexes);
+    rtindexes
+}
+
+pub(super) fn collect_top_level_where_pushdown_rtindexes(
+    item: &FromItem,
+    rtindexes: &mut HashSet<usize>,
+) {
+    match item {
+        FromItem::Relation { rtindex } => {
+            rtindexes.insert(*rtindex);
+        }
+        FromItem::Join {
+            kind: JoinKind::Inner,
+            left,
+            right,
+            ..
+        } => {
+            collect_top_level_where_pushdown_rtindexes(left, rtindexes);
+            collect_top_level_where_pushdown_rtindexes(right, rtindexes);
+        }
+        FromItem::Join {
+            kind: JoinKind::Left,
+            left,
+            ..
+        } => collect_top_level_where_pushdown_rtindexes(left, rtindexes),
+        FromItem::Join {
+            kind: JoinKind::Right,
+            right,
+            ..
+        } => collect_top_level_where_pushdown_rtindexes(right, rtindexes),
+        FromItem::Join {
+            kind: JoinKind::Full,
+            ..
+        }
+        | FromItem::Empty
+        | FromItem::Values { .. }
+        | FromItem::Cte { .. }
+        | FromItem::Subquery { .. } => {}
+    }
+}
+
+pub(super) fn predicate_rtindexes(expr: &QueryExpr) -> HashSet<usize> {
+    let mut rtindexes = HashSet::new();
+    collect_expr_rtindexes(expr, &mut rtindexes);
+    rtindexes
+}
+
+pub(super) fn collect_expr_rtindexes(expr: &QueryExpr, rtindexes: &mut HashSet<usize>) {
+    match expr {
+        QueryExpr::Var(var) => {
+            rtindexes.insert(var.rtindex);
+        }
+        QueryExpr::RelabelType(inner)
+        | QueryExpr::Cast { arg: inner, .. }
+        | QueryExpr::UnaryOp { arg: inner, .. }
+        | QueryExpr::NullTest { arg: inner, .. }
+        | QueryExpr::BooleanTest { arg: inner, .. } => collect_expr_rtindexes(inner, rtindexes),
+        QueryExpr::FunctionCall { args, .. }
+        | QueryExpr::Array { elements: args, .. }
+        | QueryExpr::Coalesce { args, .. }
+        | QueryExpr::Bool { args, .. } => {
+            for arg in args {
+                collect_expr_rtindexes(arg, rtindexes);
+            }
+        }
+        QueryExpr::ArraySubscript { array, index, .. } => {
+            collect_expr_rtindexes(array, rtindexes);
+            collect_expr_rtindexes(index, rtindexes);
+        }
+        QueryExpr::BinaryOp { left, right, .. } => {
+            collect_expr_rtindexes(left, rtindexes);
+            collect_expr_rtindexes(right, rtindexes);
+        }
+        QueryExpr::AggregateCall { args, filter, .. }
+        | QueryExpr::WindowCall { args, filter, .. } => {
+            for arg in args {
+                collect_expr_rtindexes(arg, rtindexes);
+            }
+            if let Some(filter) = filter {
+                collect_expr_rtindexes(filter, rtindexes);
+            }
+        }
+        QueryExpr::Case {
+            operand,
+            when_then,
+            else_expr,
+            ..
+        } => {
+            if let Some(operand) = operand {
+                collect_expr_rtindexes(operand, rtindexes);
+            }
+            for (when, then) in when_then {
+                collect_expr_rtindexes(when, rtindexes);
+                collect_expr_rtindexes(then, rtindexes);
+            }
+            if let Some(else_expr) = else_expr {
+                collect_expr_rtindexes(else_expr, rtindexes);
+            }
+        }
+        QueryExpr::InSubquery { expr, .. } => collect_expr_rtindexes(expr, rtindexes),
+        QueryExpr::Const(_)
+        | QueryExpr::Param(_)
+        | QueryExpr::OuterVar(_)
+        | QueryExpr::ScalarSubquery(_)
+        | QueryExpr::ExistsSubquery { .. } => {}
+    }
+}
+
+pub(super) fn reject_pg_sensitive_residual_filter(expr: &QueryExpr) -> Result<(), PgFrontendError> {
+    if residual_filter_needs_pg_text_semantics(expr) {
+        Err(PgFrontendError::unsupported(
+            "pg_frontend cannot execute residual text-like WHERE filters above joins with DataFusion semantics",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn residual_filter_needs_pg_text_semantics(expr: &QueryExpr) -> bool {
+    match expr {
+        QueryExpr::Cast { arg, pg_type } => {
+            pg_text_cast_needs_pg_semantics(*pg_type)
+                || residual_filter_needs_pg_text_semantics(arg)
+        }
+        QueryExpr::RelabelType(inner)
+        | QueryExpr::UnaryOp { arg: inner, .. }
+        | QueryExpr::NullTest { arg: inner, .. }
+        | QueryExpr::BooleanTest { arg: inner, .. } => {
+            residual_filter_needs_pg_text_semantics(inner)
+        }
+        QueryExpr::BinaryOp {
+            op, left, right, ..
+        } => {
+            binary_op_needs_pg_text_semantics(*op, left, right)
+                || residual_filter_needs_pg_text_semantics(left)
+                || residual_filter_needs_pg_text_semantics(right)
+        }
+        QueryExpr::FunctionCall { args, .. }
+        | QueryExpr::Array { elements: args, .. }
+        | QueryExpr::Coalesce { args, .. }
+        | QueryExpr::Bool { args, .. } => args.iter().any(residual_filter_needs_pg_text_semantics),
+        QueryExpr::ArraySubscript { array, index, .. } => {
+            residual_filter_needs_pg_text_semantics(array)
+                || residual_filter_needs_pg_text_semantics(index)
+        }
+        QueryExpr::AggregateCall { args, filter, .. }
+        | QueryExpr::WindowCall { args, filter, .. } => {
+            args.iter().any(residual_filter_needs_pg_text_semantics)
+                || filter
+                    .as_deref()
+                    .is_some_and(residual_filter_needs_pg_text_semantics)
+        }
+        QueryExpr::Case {
+            operand,
+            when_then,
+            else_expr,
+            ..
+        } => {
+            operand
+                .as_deref()
+                .is_some_and(residual_filter_needs_pg_text_semantics)
+                || when_then.iter().any(|(when, then)| {
+                    residual_filter_needs_pg_text_semantics(when)
+                        || residual_filter_needs_pg_text_semantics(then)
+                })
+                || else_expr
+                    .as_deref()
+                    .is_some_and(residual_filter_needs_pg_text_semantics)
+        }
+        QueryExpr::InSubquery { expr, .. } => residual_filter_needs_pg_text_semantics(expr),
+        QueryExpr::Const(_)
+        | QueryExpr::Param(_)
+        | QueryExpr::Var(_)
+        | QueryExpr::OuterVar(_)
+        | QueryExpr::ScalarSubquery(_)
+        | QueryExpr::ExistsSubquery { .. } => false,
+    }
+}
+
+pub(super) fn binary_op_needs_pg_text_semantics(
+    op: QueryOperator,
+    left: &QueryExpr,
+    right: &QueryExpr,
+) -> bool {
+    let left_type = expr_pg_type(left);
+    let right_type = expr_pg_type(right);
+    if matches!(
+        op,
+        QueryOperator::RegexMatch | QueryOperator::RegexNotMatch | QueryOperator::StringConcat
+    ) && (left_type.is_some_and(is_pg_text_like) || right_type.is_some_and(is_pg_text_like))
+    {
+        return true;
+    }
+    if !matches!(
+        op,
+        QueryOperator::Eq
+            | QueryOperator::NotEq
+            | QueryOperator::IsDistinctFrom
+            | QueryOperator::IsNotDistinctFrom
+            | QueryOperator::Lt
+            | QueryOperator::LtEq
+            | QueryOperator::Gt
+            | QueryOperator::GtEq
+    ) {
+        return false;
+    }
+    let text_comparison =
+        left_type.is_some_and(is_pg_text_like) || right_type.is_some_and(is_pg_text_like);
+    if !text_comparison {
+        return false;
+    }
+    if matches!(
+        op,
+        QueryOperator::Lt | QueryOperator::LtEq | QueryOperator::Gt | QueryOperator::GtEq
+    ) {
+        return true;
+    }
+    left_type.is_some_and(pg_text_type_needs_pg_equality_semantics)
+        || right_type.is_some_and(pg_text_type_needs_pg_equality_semantics)
+}
+
+pub(super) fn pg_text_cast_needs_pg_semantics(pg_type: pg_type::PgTypeRef) -> bool {
+    pg_text_type_has_unsupported_collation(pg_type)
+}
+
+pub(super) fn pg_text_type_needs_pg_equality_semantics(pg_type: pg_type::PgTypeRef) -> bool {
+    pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID)
+        || pg_text_type_has_unsupported_collation(pg_type)
+}
+
+pub(super) fn is_pg_text_like(pg_type: pg_type::PgTypeRef) -> bool {
+    is_text_like_type(pg_type.oid)
+}
+
+pub(super) fn pg_text_type_has_unsupported_collation(pg_type: pg_type::PgTypeRef) -> bool {
+    is_text_like_type(pg_type.oid)
+        && pg_type.collation != 0
+        && pg_type.collation != u32::from(pgrx::pg_sys::DEFAULT_COLLATION_OID)
+        && !(pg_type.oid == u32::from(pgrx::pg_sys::NAMEOID)
+            && pg_type.collation == u32::from(pgrx::pg_sys::C_COLLATION_OID))
 }
 
 pub(super) fn first_set_operation_rtindex(
@@ -141,11 +449,11 @@ pub(super) fn build_from_item(
     query: &TypedQuery,
     item: &FromItem,
     ctx: &CompileContext,
-    scan_filter: Option<&QueryExpr>,
+    scan_filters: &HashMap<usize, Vec<QueryExpr>>,
 ) -> Result<LogicalPlan, PgFrontendError> {
     match item {
         FromItem::Empty => empty_plan(query, ctx),
-        FromItem::Relation { rtindex } => build_relation_scan(query, *rtindex, ctx, scan_filter),
+        FromItem::Relation { rtindex } => build_relation_scan(query, *rtindex, ctx, scan_filters),
         FromItem::Values { rtindex } => build_values_scan(query, *rtindex, ctx),
         FromItem::Cte { rtindex } => build_cte_scan(query, *rtindex, ctx),
         FromItem::Subquery { rtindex } => build_subquery_scan(*rtindex, ctx),
@@ -154,7 +462,7 @@ pub(super) fn build_from_item(
             left,
             right,
             quals,
-        } => build_join(query, *kind, left, right, quals.as_ref(), ctx),
+        } => build_join(query, *kind, left, right, quals.as_ref(), ctx, scan_filters),
     }
 }
 
@@ -401,15 +709,17 @@ pub(super) fn build_relation_scan(
     query: &TypedQuery,
     rtindex: usize,
     ctx: &CompileContext,
-    scan_filter: Option<&QueryExpr>,
+    scan_filters: &HashMap<usize, Vec<QueryExpr>>,
 ) -> Result<LogicalPlan, PgFrontendError> {
     let relation = relation_by_rtindex(query, rtindex)?;
     let resolved = ctx.table(rtindex)?;
     let table_ref = table_reference_for_query_relation(relation, resolved);
-    let filter = scan_filter
+    let filters = scan_filters
+        .get(&rtindex)
+        .into_iter()
+        .flat_map(|filters| filters.iter())
         .map(|expr| compile_expr(expr, query, ctx))
-        .transpose()?;
-    let filters = filter.into_iter().collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, PgFrontendError>>()?;
     let scan_projection = if query.has_aggregates {
         None
     } else {
@@ -435,9 +745,10 @@ pub(super) fn build_join(
     right: &FromItem,
     quals: Option<&QueryExpr>,
     ctx: &CompileContext,
+    scan_filters: &HashMap<usize, Vec<QueryExpr>>,
 ) -> Result<LogicalPlan, PgFrontendError> {
-    let left_plan = build_from_item(query, left, ctx, None)?;
-    let right_plan = build_from_item(query, right, ctx, None)?;
+    let left_plan = build_from_item(query, left, ctx, scan_filters)?;
+    let right_plan = build_from_item(query, right, ctx, scan_filters)?;
     let left_relations = from_rtindexes(left);
     let right_relations = from_rtindexes(right);
     let mut on = Vec::new();

@@ -357,7 +357,7 @@ pub(crate) fn checked_integer_arithmetic_smoke() {
     .expect("checked integer arithmetic should return one row");
     assert_eq!(normal, "32001,-2,6074000998");
 
-    for (sql, expected) in [
+    for (index, (sql, expected)) in [
         ("SELECT 32767::int2 + 1::int2", "smallint out of range"),
         ("SELECT 2147483647::int4 + 1::int4", "integer out of range"),
         ("SELECT 1073741824::int4 * 2::int4", "integer out of range"),
@@ -369,10 +369,20 @@ pub(crate) fn checked_integer_arithmetic_smoke() {
             "SELECT 9223372036854775807::int8 + 1::int8",
             "bigint out of range",
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let savepoint = format!("pgf_integer_overflow_error_{index}");
+        tx.batch_execute(&format!("SAVEPOINT {savepoint}"))
+            .expect("create expected integer overflow error savepoint");
         let err = tx
             .simple_query(sql)
             .expect_err("integer overflow must fail with PostgreSQL-compatible error");
+        tx.batch_execute(&format!(
+            "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint}"
+        ))
+        .expect("clear expected integer overflow error state");
         let message = error_message(&err);
         assert!(
             message.contains(expected),
@@ -453,6 +463,21 @@ pub(crate) fn strict_frontend_smoke() {
         "no-FROM SELECT should use strict pg_fusion frontend: {no_from_explain}"
     );
 
+    tx.batch_execute("SAVEPOINT pgf_length_bytea_error")
+        .expect("create expected bytea length error savepoint");
+    let length_bytea_error = tx
+        .simple_query("EXPLAIN (VERBOSE) SELECT length('\\x00'::bytea)")
+        .expect_err("unsupported bytea length overload should fail closed");
+    tx.batch_execute(
+        "ROLLBACK TO SAVEPOINT pgf_length_bytea_error; RELEASE SAVEPOINT pgf_length_bytea_error",
+    )
+    .expect("clear expected bytea length error state");
+    let message = error_message(&length_bytea_error);
+    assert!(
+        message.contains("function length") && message.contains("not supported"),
+        "bytea length overload should fail before DataFusion planning: {message}"
+    );
+
     let const_bpchar_rows = simple_query_first_column_rows_tx(
         &mut tx,
         &format!("SELECT id FROM {table_name} WHERE id = 2 AND bpchar 'a ' = bpchar 'a'"),
@@ -481,6 +506,29 @@ pub(crate) fn strict_frontend_smoke() {
         column_bpchar_rows,
         vec!["1"],
         "frontend bpchar column predicate should match PostgreSQL trailing-space semantics"
+    );
+
+    tx.batch_execute("SAVEPOINT pgf_nullable_bpchar_error")
+        .expect("create expected nullable-side bpchar error savepoint");
+    let nullable_bpchar_error = tx
+        .simple_query(&format!(
+            "\
+            EXPLAIN (VERBOSE)
+            SELECT l.id
+            FROM {table_name} l
+            LEFT JOIN {table_name}_bpchar r ON l.id = r.id
+            WHERE r.marker = 'a'
+            "
+        ))
+        .expect_err("nullable-side bpchar residual filters should fail closed");
+    tx.batch_execute(
+        "ROLLBACK TO SAVEPOINT pgf_nullable_bpchar_error; RELEASE SAVEPOINT pgf_nullable_bpchar_error",
+    )
+    .expect("clear expected nullable-side bpchar error state");
+    let message = error_message(&nullable_bpchar_error);
+    assert!(
+        message.contains("residual text-like WHERE filters"),
+        "nullable-side bpchar filter should fail before DataFusion execution: {message}"
     );
 
     tx.batch_execute("SAVEPOINT pgf_only_error")

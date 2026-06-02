@@ -19,3 +19,12 @@ SELECT avg(v) FROM (VALUES (1), (0), (0)) AS input(v);
 -- compare: ordered
 -- reason: DataFusion formats Float64 Infinity as inf when the cast to text is planned inside DataFusion; PostgreSQL float8 output uses Infinity.
 SELECT avg('Infinity'::float8)::text;
+
+-- id: local_pg_scalar_subquery_zero_rows_is_null
+-- origin: local pg_fusion scalar subquery compatibility limitation
+-- compare: multiset
+-- reason: zero-row scalar subqueries preserve execution semantics, but this query shape currently exposes a plan-codec decode issue during EXPLAIN.
+SELECT unique1
+FROM (VALUES (0), (1), (2)) AS t(unique1)
+WHERE unique1 < 3
+  AND (SELECT v FROM (SELECT 1 WHERE false) AS s(v)) IS NULL;

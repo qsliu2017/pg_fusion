@@ -1,9 +1,6 @@
 use postgres::{SimpleQueryMessage, Transaction};
 
-use crate::smoke_tests::{
-    batch_execute_pg_fusion_disabled, simple_query_first_column_rows_tx, smoke_client,
-    smoke_transaction,
-};
+use crate::smoke_tests::{batch_execute_pg_fusion_disabled, smoke_client, smoke_transaction};
 
 const FIXTURES_SQL: &str = include_str!("../pg_compat/fixtures.sql");
 const PASSED_SQL: &str = include_str!("../pg_compat/passed.sql");
@@ -134,8 +131,25 @@ fn parse_compare_mode(value: &str) -> CompareMode {
 fn assert_uses_pg_fusion(tx: &mut Transaction<'_>, case: &CompatCase) {
     tx.batch_execute("SET LOCAL pg_fusion.enable = on")
         .expect("enable pg_fusion for EXPLAIN");
-    let explain =
-        simple_query_first_column_rows_tx(tx, &format!("EXPLAIN {}", case.sql)).join("\n");
+    let explain = tx
+        .simple_query(&format!("EXPLAIN {}", case.sql))
+        .unwrap_or_else(|err| {
+            let message = err
+                .as_db_error()
+                .map(|db_error| db_error.message().to_owned())
+                .unwrap_or_else(|| err.to_string());
+            panic!(
+                "compat case {} from {} failed during EXPLAIN:\n{}\nerror: {message}",
+                case.id, case.origin, case.sql
+            )
+        })
+        .into_iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => row.get(0).map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         explain.contains("Custom Scan (PgFusionScan)"),
         "compat case {} from {} bypassed pg_fusion:\n{}\nplan:\n{}",

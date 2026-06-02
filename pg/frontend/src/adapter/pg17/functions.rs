@@ -12,34 +12,35 @@ pub(super) unsafe fn read_pg_catalog_function_name(
     unsafe { cstr_from_pg(pg_sys::get_func_name(funcid)) }
 }
 
-pub(super) fn read_scalar_function_name(name: &str) -> Result<ScalarFunction, PgFrontendError> {
-    match name {
-        "abs" => Ok(ScalarFunction::Abs),
-        "acosh" => Ok(ScalarFunction::Acosh),
-        "asinh" => Ok(ScalarFunction::Asinh),
-        "atanh" => Ok(ScalarFunction::Atanh),
-        "ceil" | "ceiling" => Ok(ScalarFunction::Ceil),
-        "concat" => Ok(ScalarFunction::Concat),
-        "concat_ws" => Ok(ScalarFunction::ConcatWs),
-        "cosh" => Ok(ScalarFunction::Cosh),
-        "exp" => Ok(ScalarFunction::Exp),
-        "floor" => Ok(ScalarFunction::Floor),
-        "format" => Ok(ScalarFunction::Format),
-        "length" => Ok(ScalarFunction::Length),
-        "ln" => Ok(ScalarFunction::Ln),
-        "power" => Ok(ScalarFunction::Power),
-        "quote_literal" => Ok(ScalarFunction::QuoteLiteral),
-        "random" => Ok(ScalarFunction::Random),
-        "reverse" => Ok(ScalarFunction::Reverse),
-        "round" => Ok(ScalarFunction::Round),
-        "sinh" => Ok(ScalarFunction::Sinh),
-        "sqrt" => Ok(ScalarFunction::Sqrt),
-        "tanh" => Ok(ScalarFunction::Tanh),
-        "trunc" => Ok(ScalarFunction::Trunc),
-        _ => Err(PgFrontendError::unsupported(format!(
-            "function {name} is not supported by pg_frontend v1"
-        ))),
-    }
+pub(super) fn read_scalar_function(
+    funcid: pg_sys::Oid,
+    name: &str,
+    args: &[QueryExpr],
+    result_pg_type: PgTypeRef,
+) -> Result<ScalarFunction, PgFrontendError> {
+    let arg_oids = args
+        .iter()
+        .map(expr_pg_type)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            PgFrontendError::unsupported(format!(
+                "function {name} oid {} has an argument with unknown PostgreSQL type",
+                u32::from(funcid)
+            ))
+        })?;
+    let signature = ScalarFunctionSignature {
+        name,
+        args: &arg_oids,
+        result: result_pg_type.oid,
+    };
+    classify_scalar_function_signature(&signature).ok_or_else(|| {
+        PgFrontendError::unsupported(format!(
+            "function {name} oid {} with argument type OIDs {:?} and result type OID {} is not supported by pg_frontend v1",
+            u32::from(funcid),
+            arg_oids,
+            result_pg_type.oid
+        ))
+    })
 }
 
 pub(super) fn is_cast_function_name(name: &str) -> bool {
@@ -56,6 +57,216 @@ pub(super) fn is_cast_function_name(name: &str) -> bool {
             | "varchar"
             | "bpchar"
     )
+}
+
+#[derive(Debug)]
+struct ScalarFunctionSignature<'a> {
+    name: &'a str,
+    args: &'a [u32],
+    result: u32,
+}
+
+fn classify_scalar_function_signature(
+    signature: &ScalarFunctionSignature<'_>,
+) -> Option<ScalarFunction> {
+    let args = signature.args;
+    let result = signature.result;
+    match signature.name {
+        "abs" if unary_numeric(args, result) => Some(ScalarFunction::Abs),
+        "acosh" if unary_float(args, result) => Some(ScalarFunction::Acosh),
+        "asinh" if unary_float(args, result) => Some(ScalarFunction::Asinh),
+        "atanh" if unary_float(args, result) => Some(ScalarFunction::Atanh),
+        "ceil" | "ceiling" if unary_numeric(args, result) => Some(ScalarFunction::Ceil),
+        "concat" if !args.is_empty() && text_result(result) && supported_args(args) => {
+            Some(ScalarFunction::Concat)
+        }
+        "concat_ws"
+            if args.len() >= 2
+                && text_arg(args[0])
+                && text_result(result)
+                && supported_args(args) =>
+        {
+            Some(ScalarFunction::ConcatWs)
+        }
+        "cosh" if unary_float(args, result) => Some(ScalarFunction::Cosh),
+        "exp" if unary_float(args, result) => Some(ScalarFunction::Exp),
+        "floor" if unary_numeric(args, result) => Some(ScalarFunction::Floor),
+        "format" if !args.is_empty() && text_arg(args[0]) && text_result(result) => {
+            Some(ScalarFunction::Format)
+        }
+        "length"
+            if args.len() == 1 && text_arg(args[0]) && result == u32::from(pg_sys::INT4OID) =>
+        {
+            Some(ScalarFunction::Length)
+        }
+        "ln" if unary_float(args, result) => Some(ScalarFunction::Ln),
+        "power"
+            if args.len() == 2
+                && args.iter().all(|oid| float_arg(*oid))
+                && float_result(result) =>
+        {
+            Some(ScalarFunction::Power)
+        }
+        "quote_literal" if args.len() == 1 && text_arg(args[0]) && text_result(result) => {
+            Some(ScalarFunction::QuoteLiteral)
+        }
+        "random" if args.is_empty() && result == u32::from(pg_sys::FLOAT8OID) => {
+            Some(ScalarFunction::Random)
+        }
+        "reverse" if args.len() == 1 && text_arg(args[0]) && text_result(result) => {
+            Some(ScalarFunction::Reverse)
+        }
+        "round" if unary_numeric(args, result) => Some(ScalarFunction::Round),
+        "sinh" if unary_float(args, result) => Some(ScalarFunction::Sinh),
+        "sqrt" if unary_float(args, result) => Some(ScalarFunction::Sqrt),
+        "tanh" if unary_float(args, result) => Some(ScalarFunction::Tanh),
+        "trunc" if unary_numeric(args, result) => Some(ScalarFunction::Trunc),
+        _ => None,
+    }
+}
+
+fn unary_numeric(args: &[u32], result: u32) -> bool {
+    args.len() == 1 && numeric_arg(args[0]) && numeric_result(result)
+}
+
+fn unary_float(args: &[u32], result: u32) -> bool {
+    args.len() == 1 && float_arg(args[0]) && float_result(result)
+}
+
+fn supported_args(args: &[u32]) -> bool {
+    args.iter()
+        .all(|oid| pg_type::is_supported_scalar_type(*oid))
+}
+
+fn numeric_arg(oid: u32) -> bool {
+    oid == u32::from(pg_sys::INT2OID)
+        || oid == u32::from(pg_sys::INT4OID)
+        || oid == u32::from(pg_sys::INT8OID)
+        || oid == u32::from(pg_sys::FLOAT4OID)
+        || oid == u32::from(pg_sys::FLOAT8OID)
+        || oid == u32::from(pg_sys::NUMERICOID)
+}
+
+fn numeric_result(oid: u32) -> bool {
+    numeric_arg(oid)
+}
+
+fn float_arg(oid: u32) -> bool {
+    oid == u32::from(pg_sys::FLOAT4OID) || oid == u32::from(pg_sys::FLOAT8OID)
+}
+
+fn float_result(oid: u32) -> bool {
+    oid == u32::from(pg_sys::FLOAT4OID) || oid == u32::from(pg_sys::FLOAT8OID)
+}
+
+fn text_arg(oid: u32) -> bool {
+    pg_type::is_text_like_type(oid)
+}
+
+fn text_result(oid: u32) -> bool {
+    pg_type::is_text_like_type(oid)
+}
+
+fn expr_pg_type(expr: &QueryExpr) -> Option<u32> {
+    match expr {
+        QueryExpr::Var(var) => Some(var.pg_type.oid),
+        QueryExpr::OuterVar(var) => Some(var.pg_type.oid),
+        QueryExpr::Const(constant) => Some(constant.pg_type.oid),
+        QueryExpr::Param(param) => Some(param.pg_type.oid),
+        QueryExpr::RelabelType(inner) => expr_pg_type(inner),
+        QueryExpr::Cast { pg_type, .. }
+        | QueryExpr::Array { pg_type, .. }
+        | QueryExpr::ArraySubscript { pg_type, .. }
+        | QueryExpr::FunctionCall { pg_type, .. }
+        | QueryExpr::BinaryOp { pg_type, .. }
+        | QueryExpr::UnaryOp { pg_type, .. }
+        | QueryExpr::AggregateCall { pg_type, .. }
+        | QueryExpr::WindowCall { pg_type, .. }
+        | QueryExpr::Coalesce { pg_type, .. }
+        | QueryExpr::Case { pg_type, .. }
+        | QueryExpr::ExistsSubquery { pg_type, .. }
+        | QueryExpr::InSubquery { pg_type, .. } => Some(pg_type.oid),
+        QueryExpr::Bool { .. }
+        | QueryExpr::NullTest { .. }
+        | QueryExpr::BooleanTest { .. }
+        | QueryExpr::ScalarSubquery(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_function_classifier_accepts_text_length_only() {
+        let text_args = [oid(pg_sys::TEXTOID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature("length", &text_args, pg_sys::INT4OID)),
+            Some(ScalarFunction::Length)
+        );
+
+        let bytea_args = [oid(pg_sys::BYTEAOID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature("length", &bytea_args, pg_sys::INT4OID)),
+            None,
+            "bytea length overload must not lower to character_length"
+        );
+    }
+
+    #[test]
+    fn scalar_function_classifier_keeps_supported_variadic_text_functions() {
+        let concat_args = [oid(pg_sys::TEXTOID), oid(pg_sys::INT4OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature(
+                "concat_ws",
+                &concat_args,
+                pg_sys::TEXTOID
+            )),
+            Some(ScalarFunction::ConcatWs)
+        );
+
+        let format_args = [oid(pg_sys::TEXTOID), oid(pg_sys::INT4OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature("format", &format_args, pg_sys::TEXTOID)),
+            Some(ScalarFunction::Format)
+        );
+    }
+
+    #[test]
+    fn scalar_function_classifier_rejects_wrong_named_overloads() {
+        let quote_literal_args = [oid(pg_sys::INT4OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature(
+                "quote_literal",
+                &quote_literal_args,
+                pg_sys::TEXTOID
+            )),
+            None
+        );
+
+        let power_args = [oid(pg_sys::INT4OID), oid(pg_sys::INT4OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature("power", &power_args, pg_sys::FLOAT8OID)),
+            None,
+            "integer overloads must not be accepted for float power lowering"
+        );
+    }
+
+    fn signature<'a>(
+        name: &'a str,
+        args: &'a [u32],
+        result: pg_sys::Oid,
+    ) -> ScalarFunctionSignature<'a> {
+        ScalarFunctionSignature {
+            name,
+            args,
+            result: oid(result),
+        }
+    }
+
+    fn oid(oid: pg_sys::Oid) -> u32 {
+        u32::from(oid)
+    }
 }
 
 pub(super) unsafe fn read_aggregate_function(

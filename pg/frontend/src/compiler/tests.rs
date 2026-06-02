@@ -277,6 +277,87 @@ mod tests {
     }
 
     #[test]
+    fn compile_query_lowers_text_typmod_casts_to_pg_udfs() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![
+            Target {
+                expr: eq_expr(
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("abc")),
+                        pg_type: varchar_type(2),
+                    },
+                    text_const("ab"),
+                ),
+                name: Some("varchar_matches".into()),
+                pg_type: bool_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::Cast {
+                    arg: Box::new(text_const("a")),
+                    pg_type: bpchar_type(3),
+                },
+                name: Some("bpchar_value".into()),
+                pg_type: bpchar_type(3),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("text typmod casts should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(
+            rendered.contains("pg_fusion_varchar_typmod"),
+            "varchar typmod cast must use PostgreSQL-compatible UDF: {rendered}"
+        );
+        assert!(
+            rendered.contains("pg_fusion_bpchar_typmod"),
+            "bpchar typmod cast must use PostgreSQL-compatible UDF: {rendered}"
+        );
+
+        let decoded = roundtrip_plan(output.logical_plan);
+        let decoded_rendered = decoded.display_indent().to_string();
+        assert!(
+            decoded_rendered.contains("pg_fusion_varchar_typmod"),
+            "encoded plan must decode with varchar typmod UDF: {decoded_rendered}"
+        );
+        assert!(
+            decoded_rendered.contains("pg_fusion_bpchar_typmod"),
+            "encoded plan must decode with bpchar typmod UDF: {decoded_rendered}"
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(decoded).await?;
+            dataframe.collect().await
+        })
+        .expect("text typmod cast plan should execute in DataFusion");
+        let bools = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .expect("varchar equality should produce BooleanArray");
+        assert!(bools.value(0));
+        let bpchar = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringViewArray>()
+            .expect("bpchar typmod cast should produce StringViewArray");
+        assert_eq!(bpchar.value(0), "a  ");
+    }
+
+    #[test]
     fn relation_projection_keeps_join_and_post_join_filter_columns() {
         let resolved = resolved_table();
         let mut query = query_for_resolved_table();
@@ -328,6 +409,97 @@ mod tests {
 
         assert_eq!(left_projection, vec![1, 0]);
         assert_eq!(right_projection, vec![1, 0]);
+    }
+
+    #[test]
+    fn inner_join_where_pushdown_splits_single_relation_filters() {
+        let mut query = join_query(JoinKind::Inner);
+        query.selection = Some(QueryExpr::Bool {
+            op: BoolOp::And,
+            args: vec![
+                eq_expr(var_attnum(1, 2, int4_type()), int4_const(1)),
+                eq_expr(var_attnum(2, 2, int4_type()), int4_const(2)),
+                eq_expr(var_attnum(1, 1, int4_type()), var_attnum(2, 1, int4_type())),
+            ],
+        });
+
+        let pushdown = split_selection_for_scan_pushdown(&query)
+            .expect("inner join WHERE filters should be split");
+
+        assert_eq!(pushdown.scan_filters.get(&1).map(Vec::len), Some(1));
+        assert_eq!(pushdown.scan_filters.get(&2).map(Vec::len), Some(1));
+        let residual = pushdown
+            .residual
+            .as_ref()
+            .expect("join-spanning predicate must remain residual");
+        assert_eq!(single_predicate_rtindex(residual), None);
+    }
+
+    #[test]
+    fn left_join_where_pushdown_keeps_nullable_side_residual() {
+        let mut query = join_query(JoinKind::Left);
+        query.selection = Some(QueryExpr::Bool {
+            op: BoolOp::And,
+            args: vec![
+                eq_expr(var_attnum(1, 2, int4_type()), int4_const(1)),
+                eq_expr(var_attnum(2, 2, int4_type()), int4_const(2)),
+            ],
+        });
+
+        let pushdown = split_selection_for_scan_pushdown(&query)
+            .expect("left join preserved-side filter should be pushable");
+
+        assert_eq!(pushdown.scan_filters.get(&1).map(Vec::len), Some(1));
+        assert!(!pushdown.scan_filters.contains_key(&2));
+        assert_eq!(
+            pushdown
+                .residual
+                .as_ref()
+                .and_then(single_predicate_rtindex),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn full_join_where_pushdown_keeps_single_relation_filters_residual() {
+        let mut query = join_query(JoinKind::Full);
+        query.selection = Some(eq_expr(var_attnum(1, 2, int4_type()), int4_const(1)));
+
+        let pushdown = split_selection_for_scan_pushdown(&query)
+            .expect("full join integer residual filter can stay in DataFusion");
+
+        assert!(pushdown.scan_filters.is_empty());
+        assert_eq!(
+            pushdown
+                .residual
+                .as_ref()
+                .and_then(single_predicate_rtindex),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn nullable_side_bpchar_residual_filter_fails_closed() {
+        let mut query = join_query(JoinKind::Left);
+        let bpchar = PgTypeRef {
+            oid: oid_u32(pgrx::pg_sys::BPCHAROID),
+            typmod: pgrx::pg_sys::VARHDRSZ as i32 + 3,
+            collation: 0,
+        };
+        query.selection = Some(eq_expr(
+            var_attnum(2, 2, bpchar),
+            QueryExpr::Const(Const {
+                pg_type: bpchar,
+                value: Some(PgConstValue::Text("a".into())),
+            }),
+        ));
+
+        let err = split_selection_for_scan_pushdown(&query)
+            .expect_err("nullable-side bpchar residual cannot run with DataFusion semantics");
+        assert!(
+            err.to_string().contains("residual text-like WHERE"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1140,11 +1312,56 @@ mod tests {
     }
 
     fn target_var_attnum(attnum: i16) -> QueryExpr {
+        var_attnum(1, attnum, int4_type())
+    }
+
+    fn var_attnum(rtindex: usize, attnum: i16, pg_type: PgTypeRef) -> QueryExpr {
         QueryExpr::Var(Var {
-            rtindex: 1,
+            rtindex,
             attnum,
-            pg_type: int4_type(),
+            pg_type,
         })
+    }
+
+    fn eq_expr(left: QueryExpr, right: QueryExpr) -> QueryExpr {
+        QueryExpr::BinaryOp {
+            op: QueryOperator::Eq,
+            left: Box::new(left),
+            right: Box::new(right),
+            pg_type: type_ref(pgrx::pg_sys::BOOLOID),
+        }
+    }
+
+    fn single_predicate_rtindex(expr: &QueryExpr) -> Option<usize> {
+        let rtindexes = predicate_rtindexes(expr);
+        if rtindexes.len() == 1 {
+            rtindexes.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    fn join_query(kind: JoinKind) -> TypedQuery {
+        let mut query = query_for_resolved_table();
+        query.relations.push(RelationRef {
+            rtindex: 2,
+            relid: 43,
+            schema: "public".into(),
+            name: "u".into(),
+            alias: Some("u".into()),
+            columns: Vec::new(),
+            catalog_resolved: false,
+        });
+        query.from = FromItem::Join {
+            kind,
+            left: Box::new(FromItem::Relation { rtindex: 1 }),
+            right: Box::new(FromItem::Relation { rtindex: 2 }),
+            quals: Some(eq_expr(
+                var_attnum(1, 1, int4_type()),
+                var_attnum(2, 1, int4_type()),
+            )),
+        };
+        query
     }
 
     fn target(name: &str, expr: QueryExpr) -> Target {
@@ -1176,6 +1393,13 @@ mod tests {
         QueryExpr::Const(Const {
             pg_type: int4_type(),
             value: Some(PgConstValue::Int32(value)),
+        })
+    }
+
+    fn text_const(value: &str) -> QueryExpr {
+        QueryExpr::Const(Const {
+            pg_type: text_type(),
+            value: Some(PgConstValue::Text(value.into())),
         })
     }
 
@@ -1305,8 +1529,28 @@ mod tests {
         type_ref(pgrx::pg_sys::INT8OID)
     }
 
+    fn bool_type() -> PgTypeRef {
+        type_ref(pgrx::pg_sys::BOOLOID)
+    }
+
     fn text_type() -> PgTypeRef {
         type_ref(pgrx::pg_sys::TEXTOID)
+    }
+
+    fn varchar_type(length: i32) -> PgTypeRef {
+        text_typmod_type(pgrx::pg_sys::VARCHAROID, length)
+    }
+
+    fn bpchar_type(length: i32) -> PgTypeRef {
+        text_typmod_type(pgrx::pg_sys::BPCHAROID, length)
+    }
+
+    fn text_typmod_type(oid: pgrx::pg_sys::Oid, length: i32) -> PgTypeRef {
+        PgTypeRef {
+            oid: oid_u32(oid),
+            typmod: pgrx::pg_sys::VARHDRSZ as i32 + length,
+            collation: 0,
+        }
     }
 
     fn type_ref(oid: pgrx::pg_sys::Oid) -> PgTypeRef {
