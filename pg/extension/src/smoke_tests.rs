@@ -508,27 +508,62 @@ pub(crate) fn strict_frontend_smoke() {
         "frontend bpchar column predicate should match PostgreSQL trailing-space semantics"
     );
 
-    tx.batch_execute("SAVEPOINT pgf_nullable_bpchar_error")
-        .expect("create expected nullable-side bpchar error savepoint");
-    let nullable_bpchar_error = tx
+    let nullable_bpchar_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT l.id
+            FROM {table_name} l
+            LEFT JOIN {table_name}_bpchar r ON l.id = r.id
+            WHERE r.marker = 'a'
+            "
+        ),
+    );
+    assert_eq!(
+        nullable_bpchar_rows,
+        vec!["1"],
+        "nullable-side bpchar equality should match PostgreSQL trailing-space semantics"
+    );
+
+    let nullable_bpchar_length_rows = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT l.id
+            FROM {table_name} l
+            LEFT JOIN {table_name}_bpchar r ON l.id = r.id
+            WHERE length(r.marker) = 1
+            ORDER BY l.id
+            "
+        ),
+    );
+    assert_eq!(
+        nullable_bpchar_length_rows,
+        vec!["1", "2"],
+        "nullable-side length(bpchar) should ignore PostgreSQL trailing padding"
+    );
+
+    tx.batch_execute("SAVEPOINT pgf_nullable_bpchar_order_error")
+        .expect("create expected nullable-side bpchar ordering error savepoint");
+    let nullable_bpchar_order_error = tx
         .simple_query(&format!(
             "\
             EXPLAIN (VERBOSE)
             SELECT l.id
             FROM {table_name} l
             LEFT JOIN {table_name}_bpchar r ON l.id = r.id
-            WHERE r.marker = 'a'
+            WHERE r.marker < 'b'
             "
         ))
-        .expect_err("nullable-side bpchar residual filters should fail closed");
+        .expect_err("nullable-side bpchar ordering residual filters should fail closed");
     tx.batch_execute(
-        "ROLLBACK TO SAVEPOINT pgf_nullable_bpchar_error; RELEASE SAVEPOINT pgf_nullable_bpchar_error",
+        "ROLLBACK TO SAVEPOINT pgf_nullable_bpchar_order_error; RELEASE SAVEPOINT pgf_nullable_bpchar_order_error",
     )
-    .expect("clear expected nullable-side bpchar error state");
-    let message = error_message(&nullable_bpchar_error);
+    .expect("clear expected nullable-side bpchar ordering error state");
+    let message = error_message(&nullable_bpchar_order_error);
     assert!(
         message.contains("residual text-like WHERE filters"),
-        "nullable-side bpchar filter should fail before DataFusion execution: {message}"
+        "nullable-side bpchar ordering filter should fail before DataFusion execution: {message}"
     );
 
     tx.batch_execute("SAVEPOINT pgf_only_error")

@@ -116,17 +116,28 @@ fn classify_scalar_function_signature(
         "reverse" if args.len() == 1 && text_arg(args[0]) && text_result(result) => {
             Some(ScalarFunction::Reverse)
         }
-        "round" if unary_numeric(args, result) => Some(ScalarFunction::Round),
+        "round" if unary_numeric(args, result) || numeric_scale(args, result) => {
+            Some(ScalarFunction::Round)
+        }
         "sinh" if unary_float(args, result) => Some(ScalarFunction::Sinh),
         "sqrt" if unary_float(args, result) => Some(ScalarFunction::Sqrt),
         "tanh" if unary_float(args, result) => Some(ScalarFunction::Tanh),
-        "trunc" if unary_numeric(args, result) => Some(ScalarFunction::Trunc),
+        "trunc" if unary_numeric(args, result) || numeric_scale(args, result) => {
+            Some(ScalarFunction::Trunc)
+        }
         _ => None,
     }
 }
 
 fn unary_numeric(args: &[u32], result: u32) -> bool {
     args.len() == 1 && numeric_arg(args[0]) && numeric_result(result)
+}
+
+fn numeric_scale(args: &[u32], result: u32) -> bool {
+    args.len() == 2
+        && args[0] == u32::from(pg_sys::NUMERICOID)
+        && args[1] == u32::from(pg_sys::INT4OID)
+        && result == u32::from(pg_sys::NUMERICOID)
 }
 
 fn unary_float(args: &[u32], result: u32) -> bool {
@@ -229,6 +240,30 @@ mod tests {
         assert_eq!(
             classify_scalar_function_signature(&signature("format", &format_args, pg_sys::TEXTOID)),
             Some(ScalarFunction::Format)
+        );
+    }
+
+    #[test]
+    fn scalar_function_classifier_accepts_numeric_round_trunc_scale_overloads() {
+        let args = [oid(pg_sys::NUMERICOID), oid(pg_sys::INT4OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature("round", &args, pg_sys::NUMERICOID)),
+            Some(ScalarFunction::Round)
+        );
+        assert_eq!(
+            classify_scalar_function_signature(&signature("trunc", &args, pg_sys::NUMERICOID)),
+            Some(ScalarFunction::Trunc)
+        );
+
+        let wrong_scale_args = [oid(pg_sys::NUMERICOID), oid(pg_sys::INT8OID)];
+        assert_eq!(
+            classify_scalar_function_signature(&signature(
+                "round",
+                &wrong_scale_args,
+                pg_sys::NUMERICOID
+            )),
+            None,
+            "only PostgreSQL's numeric,int4 scale overload is accepted"
         );
     }
 

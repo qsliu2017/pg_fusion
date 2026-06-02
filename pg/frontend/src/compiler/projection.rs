@@ -214,12 +214,28 @@ pub(super) fn target_numeric_trim_metadata(
     if target.pg_type.oid != u32::from(pgrx::pg_sys::NUMERICOID) || target.pg_type.typmod >= 0 {
         return None;
     }
-    expr_is_bare_numeric_source(&target.expr, query).then(|| {
-        FieldMetadata::new(BTreeMap::from([(
-            PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY.to_owned(),
-            "true".to_owned(),
-        )]))
-    })
+    (expr_is_bare_numeric_source(&target.expr, query) || expr_is_numeric_round_trunc(&target.expr))
+        .then(numeric_trim_metadata)
+}
+
+pub(super) fn expr_is_numeric_round_trunc(expr: &QueryExpr) -> bool {
+    match expr {
+        QueryExpr::FunctionCall { func, pg_type, .. } => {
+            pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID)
+                && matches!(func, ScalarFunction::Round | ScalarFunction::Trunc)
+        }
+        QueryExpr::RelabelType(inner) | QueryExpr::Cast { arg: inner, .. } => {
+            expr_is_numeric_round_trunc(inner)
+        }
+        _ => false,
+    }
+}
+
+fn numeric_trim_metadata() -> FieldMetadata {
+    FieldMetadata::new(BTreeMap::from([(
+        PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY.to_owned(),
+        "true".to_owned(),
+    )]))
 }
 
 pub(super) fn expr_is_bare_numeric_source(expr: &QueryExpr, query: &TypedQuery) -> bool {

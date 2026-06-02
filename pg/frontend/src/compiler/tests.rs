@@ -24,7 +24,7 @@ mod tests {
     use crate::typed_query::{
         AggregateFunction, ColumnRef, Const, CteDef, CteRangeRef, DistinctSpec, FromItem,
         GroupingSetSpec, JoinKind, Param, ParamKind, PgConstValue, QueryCommand, QueryOperator,
-        QueryUnaryOperator, SortKey, SubqueryRef, Var,
+        QueryUnaryOperator, ScalarFunction, SortKey, SubqueryRef, Var,
     };
     use arrow_schema::{DataType, IntervalUnit};
     use datafusion::arrow::array::Array;
@@ -296,13 +296,30 @@ mod tests {
                 resjunk: false,
             },
             Target {
+                expr: eq_expr(
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(3),
+                    },
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(1),
+                    },
+                ),
+                name: Some("bpchar_matches".into()),
+                pg_type: bool_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
                 expr: QueryExpr::Cast {
                     arg: Box::new(text_const("a")),
                     pg_type: bpchar_type(3),
                 },
                 name: Some("bpchar_value".into()),
                 pg_type: bpchar_type(3),
-                resno: 2,
+                resno: 3,
                 ressortgroupref: 0,
                 resjunk: false,
             },
@@ -325,6 +342,10 @@ mod tests {
             rendered.contains("pg_fusion_bpchar_typmod"),
             "bpchar typmod cast must use PostgreSQL-compatible UDF: {rendered}"
         );
+        assert!(
+            rendered.contains("pg_fusion_bpchar_cmp_key"),
+            "bpchar equality must normalize trailing-space semantics: {rendered}"
+        );
 
         let decoded = roundtrip_plan(output.logical_plan);
         let decoded_rendered = decoded.display_indent().to_string();
@@ -335,6 +356,10 @@ mod tests {
         assert!(
             decoded_rendered.contains("pg_fusion_bpchar_typmod"),
             "encoded plan must decode with bpchar typmod UDF: {decoded_rendered}"
+        );
+        assert!(
+            decoded_rendered.contains("pg_fusion_bpchar_cmp_key"),
+            "encoded plan must decode with bpchar comparison UDF: {decoded_rendered}"
         );
 
         let ctx = datafusion::prelude::SessionContext::new();
@@ -349,12 +374,233 @@ mod tests {
             .downcast_ref::<datafusion::arrow::array::BooleanArray>()
             .expect("varchar equality should produce BooleanArray");
         assert!(bools.value(0));
-        let bpchar = batches[0]
+        let bpchar_bools = batches[0]
             .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .expect("bpchar equality should produce BooleanArray");
+        assert!(bpchar_bools.value(0));
+        let bpchar = batches[0]
+            .column(2)
             .as_any()
             .downcast_ref::<datafusion::arrow::array::StringViewArray>()
             .expect("bpchar typmod cast should produce StringViewArray");
         assert_eq!(bpchar.value(0), "a  ");
+    }
+
+    #[test]
+    fn compile_query_lowers_bpchar_distinct_comparisons_to_pg_udf() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![
+            Target {
+                expr: binary_op_expr(
+                    QueryOperator::NotEq,
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(3),
+                    },
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(1),
+                    },
+                ),
+                name: Some("bpchar_not_eq".into()),
+                pg_type: bool_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: binary_op_expr(
+                    QueryOperator::IsDistinctFrom,
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(3),
+                    },
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(1),
+                    },
+                ),
+                name: Some("bpchar_is_distinct".into()),
+                pg_type: bool_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: binary_op_expr(
+                    QueryOperator::IsNotDistinctFrom,
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(3),
+                    },
+                    QueryExpr::Cast {
+                        arg: Box::new(text_const("a")),
+                        pg_type: bpchar_type(1),
+                    },
+                ),
+                name: Some("bpchar_is_not_distinct".into()),
+                pg_type: bool_type(),
+                resno: 3,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("bpchar distinct comparisons should lower into a typed logical plan");
+
+        let decoded = roundtrip_plan(output.logical_plan);
+        let rendered = decoded.display_indent().to_string();
+        assert!(
+            rendered.contains("pg_fusion_bpchar_cmp_key"),
+            "bpchar distinct comparisons must normalize trailing spaces: {rendered}"
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(decoded).await?;
+            dataframe.collect().await
+        })
+        .expect("bpchar distinct comparison plan should execute in DataFusion");
+        let bools = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .expect("bpchar not-eq target should produce BooleanArray");
+        assert!(!bools.value(0));
+        let bools = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .expect("bpchar is-distinct target should produce BooleanArray");
+        assert!(!bools.value(0));
+        let bools = batches[0]
+            .column(2)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .expect("bpchar is-not-distinct target should produce BooleanArray");
+        assert!(bools.value(0));
+    }
+
+    #[test]
+    fn compile_query_lowers_bpchar_length_to_pg_udf() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![Target {
+            expr: QueryExpr::FunctionCall {
+                func: ScalarFunction::Length,
+                args: vec![QueryExpr::Cast {
+                    arg: Box::new(text_const("a")),
+                    pg_type: bpchar_type(3),
+                }],
+                pg_type: int4_type(),
+            },
+            name: Some("bpchar_len".into()),
+            pg_type: int4_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("bpchar length should lower into a typed logical plan");
+
+        let decoded = roundtrip_plan(output.logical_plan);
+        let rendered = decoded.display_indent().to_string();
+        assert!(
+            rendered.contains("pg_fusion_bpchar_length"),
+            "length(bpchar) must use PostgreSQL-compatible UDF: {rendered}"
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(decoded).await?;
+            dataframe.collect().await
+        })
+        .expect("bpchar length plan should execute in DataFusion");
+        let lengths = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int32Array>()
+            .expect("bpchar length should produce Int32Array");
+        assert_eq!(lengths.value(0), 1);
+    }
+
+    #[test]
+    fn compile_query_lowers_numeric_round_trunc_to_decimal_results() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![
+            Target {
+                expr: QueryExpr::FunctionCall {
+                    func: ScalarFunction::Round,
+                    args: vec![numeric_const("1.234"), int4_const(2)],
+                    pg_type: numeric_type(),
+                },
+                name: Some("rounded".into()),
+                pg_type: numeric_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::FunctionCall {
+                    func: ScalarFunction::Trunc,
+                    args: vec![numeric_const("1.234"), int4_const(2)],
+                    pg_type: numeric_type(),
+                },
+                name: Some("truncated".into()),
+                pg_type: numeric_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("numeric round/trunc should lower into a typed logical plan");
+
+        let decoded = roundtrip_plan(output.logical_plan);
+        let schema = decoded.schema();
+        assert_eq!(schema.field(0).data_type(), &DataType::Decimal128(38, 2));
+        assert_eq!(schema.field(1).data_type(), &DataType::Decimal128(38, 2));
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(decoded).await?;
+            dataframe.collect().await
+        })
+        .expect("numeric round/trunc plan should execute in DataFusion");
+        let rounded = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("round(numeric, int4) should produce Decimal128Array");
+        let truncated = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("trunc(numeric, int4) should produce Decimal128Array");
+        assert_eq!(rounded.value(0), 123);
+        assert_eq!(truncated.value(0), 123);
     }
 
     #[test]
@@ -479,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn nullable_side_bpchar_residual_filter_fails_closed() {
+    fn nullable_side_bpchar_residual_equality_is_allowed() {
         let mut query = join_query(JoinKind::Left);
         let bpchar = PgTypeRef {
             oid: oid_u32(pgrx::pg_sys::BPCHAROID),
@@ -494,8 +740,67 @@ mod tests {
             }),
         ));
 
+        let pushdown = split_selection_for_scan_pushdown(&query)
+            .expect("nullable-side bpchar equality can run through pg_fusion UDF semantics");
+        assert!(pushdown.scan_filters.is_empty());
+        assert_eq!(
+            pushdown
+                .residual
+                .as_ref()
+                .and_then(single_predicate_rtindex),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn nullable_side_bpchar_length_residual_filter_is_allowed() {
+        let mut query = join_query(JoinKind::Left);
+        let bpchar = PgTypeRef {
+            oid: oid_u32(pgrx::pg_sys::BPCHAROID),
+            typmod: pgrx::pg_sys::VARHDRSZ as i32 + 3,
+            collation: 0,
+        };
+        query.selection = Some(eq_expr(
+            QueryExpr::FunctionCall {
+                func: ScalarFunction::Length,
+                args: vec![var_attnum(2, 2, bpchar)],
+                pg_type: int4_type(),
+            },
+            int4_const(1),
+        ));
+
+        let pushdown = split_selection_for_scan_pushdown(&query).expect(
+            "nullable-side length(bpchar) residual can run through pg_fusion UDF semantics",
+        );
+        assert!(pushdown.scan_filters.is_empty());
+        assert_eq!(
+            pushdown
+                .residual
+                .as_ref()
+                .and_then(single_predicate_rtindex),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn nullable_side_bpchar_ordering_residual_filter_fails_closed() {
+        let mut query = join_query(JoinKind::Left);
+        let bpchar = PgTypeRef {
+            oid: oid_u32(pgrx::pg_sys::BPCHAROID),
+            typmod: pgrx::pg_sys::VARHDRSZ as i32 + 3,
+            collation: 0,
+        };
+        query.selection = Some(binary_op_expr(
+            QueryOperator::Lt,
+            var_attnum(2, 2, bpchar),
+            QueryExpr::Const(Const {
+                pg_type: bpchar,
+                value: Some(PgConstValue::Text("b".into())),
+            }),
+        ));
+
         let err = split_selection_for_scan_pushdown(&query)
-            .expect_err("nullable-side bpchar residual cannot run with DataFusion semantics");
+            .expect_err("nullable-side bpchar ordering cannot run with DataFusion semantics");
         assert!(
             err.to_string().contains("residual text-like WHERE"),
             "unexpected error: {err}"
@@ -1324,8 +1629,12 @@ mod tests {
     }
 
     fn eq_expr(left: QueryExpr, right: QueryExpr) -> QueryExpr {
+        binary_op_expr(QueryOperator::Eq, left, right)
+    }
+
+    fn binary_op_expr(op: QueryOperator, left: QueryExpr, right: QueryExpr) -> QueryExpr {
         QueryExpr::BinaryOp {
-            op: QueryOperator::Eq,
+            op,
             left: Box::new(left),
             right: Box::new(right),
             pg_type: type_ref(pgrx::pg_sys::BOOLOID),
@@ -1400,6 +1709,13 @@ mod tests {
         QueryExpr::Const(Const {
             pg_type: text_type(),
             value: Some(PgConstValue::Text(value.into())),
+        })
+    }
+
+    fn numeric_const(value: &str) -> QueryExpr {
+        QueryExpr::Const(Const {
+            pg_type: numeric_type(),
+            value: Some(PgConstValue::Numeric(value.into())),
         })
     }
 
@@ -1535,6 +1851,10 @@ mod tests {
 
     fn text_type() -> PgTypeRef {
         type_ref(pgrx::pg_sys::TEXTOID)
+    }
+
+    fn numeric_type() -> PgTypeRef {
+        type_ref(pgrx::pg_sys::NUMERICOID)
     }
 
     fn varchar_type(length: i32) -> PgTypeRef {

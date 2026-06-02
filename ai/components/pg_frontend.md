@@ -120,10 +120,18 @@ DataFusion compares, filters, sorts, or projects the value. The pg17 adapter
 must preserve `exprTypmod` for cast nodes; `TypedQuery` is the authority for
 the target PostgreSQL OID/typmod/collation, while Arrow `Utf8View` is only the
 transport type.
+`bpchar` equality/distinct comparisons lower their operands through an internal
+comparison-key UDF that trims PostgreSQL padding spaces before DataFusion
+evaluates boolean/null semantics. `length(bpchar)` lowers to an internal UDF
+that ignores trailing padding spaces instead of using DataFusion
+`character_length` directly.
 Scalar function lowering validates PostgreSQL's resolved `FuncExpr.funcid`,
 argument OIDs, and result OID before recording a neutral `ScalarFunction`; a
 supported spelling with an unsupported overload, such as `length(bytea)`, must
 fail closed instead of lowering to a same-named DataFusion function.
+`round(numeric, int4)` and `trunc(numeric, int4)` lower to internal Decimal128
+UDFs so frontend execution preserves PostgreSQL rounding/truncation direction;
+scan pushdown renders the same calls back to PostgreSQL SQL.
 Frontend `WHERE` filters are split by top-level `AND` before logical planning.
 Relation-local filters are pushed into PostgreSQL scans whenever the current
 join tree preserves that relation (`INNER` preserves both sides; `LEFT`/`RIGHT`
@@ -131,9 +139,9 @@ only the preserved side; `FULL` neither). Filters that reach `scan_sql` must
 fully compile into PostgreSQL scan SQL; scan residuals are rejected before
 execution. Residual filters above joins may execute in DataFusion only when
 their typed expression is known not to depend on PostgreSQL-specific text-like
-semantics; `bpchar` equality/order, text ordering, regex, and unsupported
-collation residuals fail closed until pg_fusion has PG-aware UDFs for those
-semantics.
+semantics; `bpchar` equality/distinct and `length(bpchar)` use PG-aware UDFs,
+while `bpchar` ordering, text ordering, regex, unsupported collation residuals,
+and uncovered text-sensitive function shapes fail closed.
 Target expressions compile in the DataFusion logical plan after PostgreSQL
 query-tree analysis has supplied function/operator OIDs and PostgreSQL type
 metadata.

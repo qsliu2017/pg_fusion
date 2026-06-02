@@ -4,6 +4,7 @@ mod pg_avg;
 mod pg_checked_int_arithmetic;
 mod pg_format;
 mod pg_interval_out;
+mod pg_numeric_round_trunc;
 mod pg_quote_literal;
 mod pg_scalar_subquery_value;
 mod pg_text_typmod;
@@ -14,6 +15,12 @@ pub use pg_checked_int_arithmetic::{
 };
 pub use pg_format::{pg_format_udf, PgFormat};
 pub use pg_interval_out::{pg_interval_out_udf, PgIntervalOut};
+pub use pg_numeric_round_trunc::{
+    pg_numeric_round_scale_udf, pg_numeric_trunc_scale_udf, PgNumericRoundTrunc,
+};
 pub use pg_quote_literal::{pg_quote_literal_udf, PgQuoteLiteral};
 pub use pg_scalar_subquery_value::{pg_scalar_subquery_value_udaf, PgScalarSubqueryValue};
-pub use pg_text_typmod::{pg_bpchar_typmod_udf, pg_varchar_typmod_udf, PgTextTypmod};
+pub use pg_text_typmod::{
+    pg_bpchar_cmp_key_udf, pg_bpchar_length_udf, pg_bpchar_typmod_udf, pg_varchar_typmod_udf,
+    PgBpcharCmpKey, PgBpcharLength, PgTextTypmod,
+};

@@ -352,6 +352,8 @@ fn render_scalar_function(
         ("rtrim", [value]) => format!("rtrim({value})"),
         ("btrim", [value]) => format!("btrim({value})"),
         ("length", [value]) | ("char_length", [value]) => format!("char_length({value})"),
+        ("pg_fusion_bpchar_cmp_key", [value]) => value.to_string(),
+        ("pg_fusion_bpchar_length", [value]) => format!("length({value})"),
         ("strpos", [haystack, needle]) => format!("strpos({haystack}, {needle})"),
         ("contains", [haystack, needle]) => format!("(strpos({haystack}, {needle}) > 0)"),
         ("concat", args) if !args.is_empty() => format!("concat({})", args.join(", ")),
@@ -359,11 +361,17 @@ fn render_scalar_function(
         ("power", [left, right]) => format!("power({left}, {right})"),
         ("round", [value]) => format!("round({value})"),
         ("round", [value, precision]) => format!("round({value}, {precision})"),
+        ("pg_fusion_numeric_round_scale", [value, precision]) => {
+            format!("round({value}, {precision})")
+        }
         ("sinh", [value]) => format!("sinh({value})"),
         ("sqrt", [value]) => format!("sqrt({value})"),
         ("tanh", [value]) => format!("tanh({value})"),
         ("trunc", [value]) => format!("trunc({value})"),
         ("trunc", [value, precision]) => format!("trunc({value}, {precision})"),
+        ("pg_fusion_numeric_trunc_scale", [value, precision]) => {
+            format!("trunc({value}, {precision})")
+        }
         _ => return Ok(None),
     };
 

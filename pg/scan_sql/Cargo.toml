@@ -15,3 +15,6 @@ datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
 pg_type = { path = "../type", version = "25.0", features = ["datafusion"] }
 thiserror = "2.0"
+
+[dev-dependencies]
+df_functions = { path = "../df_functions", version = "25.0" }

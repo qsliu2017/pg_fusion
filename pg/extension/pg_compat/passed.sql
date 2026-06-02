@@ -3673,3 +3673,35 @@ WHERE CAST(marker AS varchar(2)) = 'ab';
 -- origin: local pg_fusion text typmod cast coverage
 -- compare: multiset
 SELECT CAST('a' AS char(3));
+
+-- id: local_pg_text_typmod_bpchar_equality
+-- origin: local pg_fusion bpchar UDF coverage
+-- compare: multiset
+SELECT CAST('a' AS char(3)) = CAST('a' AS char(1));
+
+-- id: local_pg_text_typmod_bpchar_distinct
+-- origin: local pg_fusion bpchar UDF coverage
+-- compare: multiset
+SELECT
+    CAST('a' AS char(3)) <> CAST('a' AS char(1)),
+    CAST('a' AS char(3)) IS DISTINCT FROM CAST('a' AS char(1)),
+    CAST('a' AS char(3)) IS NOT DISTINCT FROM CAST('a' AS char(1));
+
+-- id: local_pg_text_typmod_bpchar_length
+-- origin: local pg_fusion bpchar UDF coverage
+-- compare: multiset
+SELECT length(CAST('a' AS char(3)));
+
+-- id: local_pg_text_typmod_bpchar_left_join_residual
+-- origin: local pg_fusion bpchar UDF coverage
+-- compare: multiset
+SELECT l.f1
+FROM int4_tbl l
+LEFT JOIN (VALUES (0, CAST('a' AS char(3))), (1, CAST('b' AS char(3)))) AS r(id, marker)
+    ON l.f1 = r.id
+WHERE length(r.marker) = 1;
+
+-- id: local_pg_numeric_round_trunc_scale
+-- origin: local pg_fusion scalar function overload coverage
+-- compare: multiset
+SELECT round(1.234::numeric, 2), trunc(1.234::numeric, 2);

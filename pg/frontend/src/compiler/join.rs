@@ -39,6 +39,13 @@ pub(super) fn collect_join_quals(
             &left_source,
             &right_source,
         );
+        let (left_expr, right_expr) = compile_bpchar_equality_operands(
+            QueryOperator::Eq,
+            left_expr,
+            right_expr,
+            &left_source,
+            &right_source,
+        );
         on.push((left_expr, right_expr));
     } else {
         filters.push(compile_expr(expr, query, ctx)?);
@@ -147,7 +154,41 @@ pub(super) fn compile_binary_expr(
     if let Some(udf) = checked_integer_arithmetic_udf(op, result_pg_type) {
         udf.call(vec![left_expr, right_expr])
     } else {
+        let (left_expr, right_expr) =
+            compile_bpchar_equality_operands(op, left_expr, right_expr, left_source, right_source);
         binary_expr(left_expr, operator(op), right_expr)
+    }
+}
+
+fn compile_bpchar_equality_operands(
+    op: QueryOperator,
+    left_expr: Expr,
+    right_expr: Expr,
+    left_source: &QueryExpr,
+    right_source: &QueryExpr,
+) -> (Expr, Expr) {
+    if !matches!(
+        op,
+        QueryOperator::Eq
+            | QueryOperator::NotEq
+            | QueryOperator::IsDistinctFrom
+            | QueryOperator::IsNotDistinctFrom
+    ) {
+        return (left_expr, right_expr);
+    }
+
+    (
+        compile_bpchar_equality_operand(left_expr, left_source),
+        compile_bpchar_equality_operand(right_expr, right_source),
+    )
+}
+
+fn compile_bpchar_equality_operand(expr: Expr, source: &QueryExpr) -> Expr {
+    if expr_pg_type(source).is_some_and(|pg_type| pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID))
+    {
+        df_functions::pg_bpchar_cmp_key_udf().call(vec![expr])
+    } else {
+        expr
     }
 }
 

@@ -300,8 +300,11 @@ pub(super) fn residual_filter_needs_pg_text_semantics(expr: &QueryExpr) -> bool 
                 || residual_filter_needs_pg_text_semantics(left)
                 || residual_filter_needs_pg_text_semantics(right)
         }
-        QueryExpr::FunctionCall { args, .. }
-        | QueryExpr::Array { elements: args, .. }
+        QueryExpr::FunctionCall { func, args, .. } => {
+            function_call_needs_pg_text_semantics(*func, args)
+                || args.iter().any(residual_filter_needs_pg_text_semantics)
+        }
+        QueryExpr::Array { elements: args, .. }
         | QueryExpr::Coalesce { args, .. }
         | QueryExpr::Bool { args, .. } => args.iter().any(residual_filter_needs_pg_text_semantics),
         QueryExpr::ArraySubscript { array, index, .. } => {
@@ -384,13 +387,30 @@ pub(super) fn binary_op_needs_pg_text_semantics(
         || right_type.is_some_and(pg_text_type_needs_pg_equality_semantics)
 }
 
+pub(super) fn function_call_needs_pg_text_semantics(
+    func: ScalarFunction,
+    args: &[QueryExpr],
+) -> bool {
+    let has_bpchar_arg = args
+        .iter()
+        .filter_map(expr_pg_type)
+        .any(|pg_type| pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID));
+    if !has_bpchar_arg {
+        return false;
+    }
+
+    match func {
+        ScalarFunction::Length => false,
+        _ => true,
+    }
+}
+
 pub(super) fn pg_text_cast_needs_pg_semantics(pg_type: pg_type::PgTypeRef) -> bool {
     pg_text_type_has_unsupported_collation(pg_type)
 }
 
 pub(super) fn pg_text_type_needs_pg_equality_semantics(pg_type: pg_type::PgTypeRef) -> bool {
-    pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID)
-        || pg_text_type_has_unsupported_collation(pg_type)
+    pg_text_type_has_unsupported_collation(pg_type)
 }
 
 pub(super) fn is_pg_text_like(pg_type: pg_type::PgTypeRef) -> bool {

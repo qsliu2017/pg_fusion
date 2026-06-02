@@ -95,9 +95,14 @@ pub(super) fn compile_expr_with_windows(
             scalar_bindings,
             aggregate_bindings,
         ),
-        QueryExpr::FunctionCall { func, args, .. } => compile_scalar_function(
+        QueryExpr::FunctionCall {
+            func,
+            args,
+            pg_type,
+        } => compile_scalar_function(
             *func,
             args,
+            *pg_type,
             query,
             ctx,
             window_bindings,
@@ -637,13 +642,15 @@ pub(super) fn compile_array_subscript(
 pub(super) fn compile_scalar_function(
     func: ScalarFunction,
     args: &[QueryExpr],
+    result_pg_type: pg_type::PgTypeRef,
     query: &TypedQuery,
     ctx: &CompileContext,
     window_bindings: &[WindowBinding],
     scalar_bindings: &[ScalarSubqueryBinding],
     aggregate_bindings: &[AggregateBinding],
 ) -> Result<Expr, PgFrontendError> {
-    let args = args
+    let source_args = args;
+    let args = source_args
         .iter()
         .map(|arg| {
             compile_expr_with_windows(
@@ -682,11 +689,7 @@ pub(super) fn compile_scalar_function(
             call_unary_scalar_function("floor", datafusion::functions::math::floor(), args)?
         }
         ScalarFunction::Format => df_functions::pg_format_udf().call(cast_args_to_utf8(args)),
-        ScalarFunction::Length => call_unary_scalar_function(
-            "length",
-            datafusion::functions::unicode::character_length(),
-            args,
-        )?,
+        ScalarFunction::Length => compile_length_function(source_args, args)?,
         ScalarFunction::Cosh => {
             call_unary_scalar_function("cosh", datafusion::functions::math::cosh(), args)?
         }
@@ -731,14 +734,13 @@ pub(super) fn compile_scalar_function(
         ScalarFunction::Reverse => {
             call_unary_scalar_function("reverse", datafusion::functions::unicode::reverse(), args)?
         }
-        ScalarFunction::Round => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(PgFrontendError::unsupported(
-                    "round() requires one or two arguments",
-                ));
-            }
-            datafusion::functions::math::round().call(args)
-        }
+        ScalarFunction::Round => compile_round_trunc_function(
+            "round",
+            datafusion::functions::math::round(),
+            args,
+            result_pg_type,
+            source_args,
+        )?,
         ScalarFunction::Sinh => {
             call_unary_scalar_function("sinh", datafusion::functions::math::sinh(), args)?
         }
@@ -748,15 +750,105 @@ pub(super) fn compile_scalar_function(
         ScalarFunction::Tanh => {
             call_unary_scalar_function("tanh", datafusion::functions::math::tanh(), args)?
         }
-        ScalarFunction::Trunc => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(PgFrontendError::unsupported(
-                    "trunc() requires one or two arguments",
-                ));
-            }
-            datafusion::functions::math::trunc().call(args)
-        }
+        ScalarFunction::Trunc => compile_round_trunc_function(
+            "trunc",
+            datafusion::functions::math::trunc(),
+            args,
+            result_pg_type,
+            source_args,
+        )?,
     })
+}
+
+pub(super) fn compile_round_trunc_function(
+    name: &'static str,
+    udf: Arc<ScalarUDF>,
+    mut args: Vec<Expr>,
+    result_pg_type: pg_type::PgTypeRef,
+    source_args: &[QueryExpr],
+) -> Result<Expr, PgFrontendError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(PgFrontendError::unsupported(format!(
+            "{name}() requires one or two arguments"
+        )));
+    }
+    if let Some(precision) = args.get_mut(1) {
+        *precision = Expr::Cast(Cast::new(Box::new(precision.clone()), DataType::Int64));
+    }
+    if result_pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID) && args.len() == 2 {
+        let udf = match name {
+            "round" => df_functions::pg_numeric_round_scale_udf(),
+            "trunc" => df_functions::pg_numeric_trunc_scale_udf(),
+            _ => unreachable!("round/trunc helper called with unexpected function"),
+        };
+        let expr = udf.call(args);
+        return Ok(match numeric_scale_result_type(source_args) {
+            Some(data_type) => Expr::Cast(Cast::new(Box::new(expr), data_type)),
+            None => expr,
+        });
+    }
+    Ok(cast_numeric_function_result(udf.call(args), result_pg_type))
+}
+
+pub(super) fn numeric_scale_result_type(source_args: &[QueryExpr]) -> Option<DataType> {
+    let scale = numeric_scale_const(source_args.get(1)?)?;
+    let scale = scale.clamp(0, i64::from(pg_type::NUMERIC_FALLBACK_SCALE));
+    Some(DataType::Decimal128(
+        pg_type::NUMERIC_FALLBACK_PRECISION,
+        i8::try_from(scale).ok()?,
+    ))
+}
+
+pub(super) fn numeric_scale_const(expr: &QueryExpr) -> Option<i64> {
+    match expr {
+        QueryExpr::Const(Const {
+            value: Some(pg_type::PgConstValue::Int16(value)),
+            ..
+        }) => Some(i64::from(*value)),
+        QueryExpr::Const(Const {
+            value: Some(pg_type::PgConstValue::Int32(value)),
+            ..
+        }) => Some(i64::from(*value)),
+        QueryExpr::Const(Const {
+            value: Some(pg_type::PgConstValue::Int64(value)),
+            ..
+        }) => Some(*value),
+        QueryExpr::RelabelType(inner) | QueryExpr::Cast { arg: inner, .. } => {
+            numeric_scale_const(inner)
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn cast_numeric_function_result(expr: Expr, result_pg_type: pg_type::PgTypeRef) -> Expr {
+    if result_pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID) {
+        if let Some(data_type) = arrow_type_for_pg_type(result_pg_type) {
+            return Expr::Cast(Cast::new(Box::new(expr), data_type));
+        }
+    }
+    expr
+}
+
+pub(super) fn compile_length_function(
+    source_args: &[QueryExpr],
+    args: Vec<Expr>,
+) -> Result<Expr, PgFrontendError> {
+    if args.len() != 1 || source_args.len() != 1 {
+        return Err(PgFrontendError::unsupported(
+            "length() requires exactly one argument",
+        ));
+    }
+    if expr_pg_type(&source_args[0])
+        .is_some_and(|pg_type| pg_type.oid == u32::from(pgrx::pg_sys::BPCHAROID))
+    {
+        Ok(df_functions::pg_bpchar_length_udf().call(args))
+    } else {
+        call_unary_scalar_function(
+            "length",
+            datafusion::functions::unicode::character_length(),
+            args,
+        )
+    }
 }
 
 pub(super) fn cast_args_to_utf8(args: Vec<Expr>) -> Vec<Expr> {

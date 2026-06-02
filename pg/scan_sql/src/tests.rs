@@ -161,6 +161,36 @@ fn computes_filter_only_columns() {
 }
 
 #[test]
+fn compiles_pg_bpchar_internal_udfs_for_scan_filters() {
+    let schema = test_schema();
+    let cmp_filter = df_functions::pg_bpchar_cmp_key_udf()
+        .call(vec![Expr::Column(Column::from_name("name"))])
+        .eq(df_functions::pg_bpchar_cmp_key_udf().call(vec![lit("a  ")]));
+    let length_filter = df_functions::pg_bpchar_length_udf()
+        .call(vec![Expr::Column(Column::from_name("name"))])
+        .eq(lit(1_i32));
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &test_relation(),
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[0]),
+        filters: &[cmp_filter, length_filter],
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(compiled.all_filters_compiled);
+    assert_eq!(compiled.residual_filters, Vec::<Expr>::new());
+    assert_eq!(compiled.filter_only_columns, vec![1]);
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (\"name\" = 'a  ') AND (length(\"name\") = 1)"
+    );
+}
+
+#[test]
 fn leaves_unsupported_filters_as_residual() {
     let schema = test_schema();
     let supported = Expr::Column(Column::from_name("id")).eq(lit(1_i64));
