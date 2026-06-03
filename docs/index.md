@@ -24,6 +24,7 @@ Start with the pages that answer operational questions first.
 | [Memory and pages](memory-and-pages.md) | Understand shared blocks, zero-copy imports, materialization, and page reuse |
 | [Execution model](execution-model.md) | Follow one eligible query from planning to result slots |
 | [Query support](query-support.md) | Check which query shapes and types are currently eligible |
+| [Compatibility matrix](compatibility-matrix.md) | Inspect PostgreSQL to DataFusion type, expression, function, aggregate, and window mappings |
 | [Workloads](workloads.md) | Evaluate good and poor workload candidates |
 | [Limitations](limitations.md) | Understand overhead cases, semantic boundaries, and unsupported features |
 

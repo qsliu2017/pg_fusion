@@ -13,6 +13,8 @@ page lifetime rules are described in [Execution Model](execution-model.md) and
 
 This page is about eligibility and supported shapes. For performance fit,
 including good and poor workload candidates, see [Workloads](workloads.md).
+For detailed PostgreSQL to DataFusion type, expression, function, aggregate,
+and window mappings, see [Compatibility Matrix](compatibility-matrix.md).
 
 ## Current Entry Point
 
@@ -130,6 +132,9 @@ Known unsupported or restricted cases include:
 - PostgreSQL `numeric` `NaN` and `Infinity`;
 - finite `numeric` values outside the selected Decimal128 shape;
 - interval infinities.
+
+The detailed compatibility matrix is maintained in
+[Compatibility Matrix](compatibility-matrix.md).
 
 ## Validate With PostgreSQL
 

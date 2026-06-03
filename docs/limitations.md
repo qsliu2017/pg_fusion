@@ -43,7 +43,9 @@ Some PostgreSQL values do not have a lossless Arrow/DataFusion representation in
 the current transport.
 
 The current supported and restricted type list lives in
-[Query Support](query-support.md#type-support).
+[Query Support](query-support.md#type-support). Detailed type, cast, operator,
+function, aggregate, and window mappings are listed in
+[Compatibility Matrix](compatibility-matrix.md).
 
 ## Spill
 
@@ -57,7 +59,8 @@ The current runtime path uses PostgreSQL analyzed query-tree planning. There is
 no SQL-text planner fallback for user SELECTs while `pg_fusion.enable` is on.
 
 See the [Roadmap](roadmap.md) for why that matters for PostgreSQL types, casts,
-collations, operators, and parameters.
+collations, operators, and parameters. The current compatibility matrix is
+documented in [Compatibility Matrix](compatibility-matrix.md).
 
 ## Validation
 
