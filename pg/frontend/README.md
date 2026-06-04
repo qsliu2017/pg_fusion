@@ -27,13 +27,16 @@ containing the already built logical plan and PostgreSQL scan specs.
 
 ## Scope
 
-The v1 frontend is intentionally fail-closed. It currently covers no-FROM
-SELECTs, one base relation with projection/filter expressions, ORDER BY/LIMIT,
-and simple `count`/`sum`/`avg`/`min`/`max` aggregate calls without GROUP BY.
-PostgreSQL type metadata is preserved for scan SQL compilation. Unsupported
-query shapes return structured frontend errors; pg_fusion no longer has a
-SQL-text or native PostgreSQL planner fallback for user SELECTs when
-`pg_fusion.enable` is on.
+The v1 frontend is intentionally fail-closed and is the production planning path
+whenever `pg_fusion.enable` is on. The supported and unsupported PostgreSQL
+compatibility surface is tracked in the
+[compatibility matrix](../../docs/compatibility-matrix.md); this README avoids
+duplicating feature lists so the matrix stays the single source of truth.
+
+PostgreSQL type metadata remains the source of truth for DataFusion lowering,
+scan SQL compilation, and final tuple-slot projection. Unsupported query shapes
+return structured frontend errors; there is no SQL-text or native PostgreSQL
+planner fallback for user SELECTs when `pg_fusion.enable` is on.
 
 PostgreSQL major-version layout details must stop at `adapter/`. The stable
 typed model, catalog resolution, and compiler code should stay independent of
