@@ -22,9 +22,9 @@ fn oid_u32(oid: pgrx::pg_sys::Oid) -> u32 {
 mod tests {
     use super::*;
     use crate::typed_query::{
-        AggregateFunction, ColumnRef, Const, CteDef, CteRangeRef, DistinctSpec, FromItem,
-        GroupingSetSpec, JoinKind, Param, ParamKind, PgConstValue, QueryCommand, QueryOperator,
-        QueryUnaryOperator, ScalarFunction, SortKey, SubqueryRef, Var,
+        AggregateFunction, BoolOp, BooleanTestKind, ColumnRef, Const, CteDef, CteRangeRef,
+        DistinctSpec, FromItem, GroupingSetSpec, JoinKind, Param, ParamKind, PgConstValue,
+        QueryCommand, QueryOperator, QueryUnaryOperator, ScalarFunction, SortKey, SubqueryRef, Var,
     };
     use arrow_schema::{DataType, IntervalUnit};
     use datafusion::arrow::array::Array;
@@ -537,6 +537,89 @@ mod tests {
             .downcast_ref::<datafusion::arrow::array::Int32Array>()
             .expect("bpchar length should produce Int32Array");
         assert_eq!(lengths.value(0), 1);
+    }
+
+    #[test]
+    fn compile_query_lowers_boolean_concat_args_to_pg_boolout_udf() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![
+            Target {
+                expr: QueryExpr::FunctionCall {
+                    func: ScalarFunction::Concat,
+                    args: vec![QueryExpr::Bool {
+                        op: BoolOp::And,
+                        args: vec![bool_const(true), bool_const(false)],
+                    }],
+                    pg_type: text_type(),
+                },
+                name: Some("concat_bool".into()),
+                pg_type: text_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::FunctionCall {
+                    func: ScalarFunction::ConcatWs,
+                    args: vec![
+                        text_const("|"),
+                        QueryExpr::BooleanTest {
+                            arg: Box::new(bool_const(true)),
+                            kind: BooleanTestKind::IsTrue,
+                        },
+                        QueryExpr::NullTest {
+                            arg: Box::new(int4_null()),
+                            is_null: true,
+                        },
+                    ],
+                    pg_type: text_type(),
+                },
+                name: Some("concat_ws_bool".into()),
+                pg_type: text_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("boolean concat arguments should lower into a typed logical plan");
+
+        let decoded = roundtrip_plan(output.logical_plan);
+        let rendered = decoded.display_indent().to_string();
+        assert!(
+            rendered.contains("pg_fusion_boolout"),
+            "boolean concat arguments must use single-evaluation PostgreSQL boolout UDF: {rendered}"
+        );
+        assert!(
+            !rendered.contains("CASE"),
+            "boolean concat arguments must not duplicate input evaluation through CASE: {rendered}"
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(decoded).await?;
+            dataframe.collect().await
+        })
+        .expect("boolean concat plan should execute in DataFusion");
+        let concat = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .expect("concat bool should produce StringArray");
+        assert_eq!(concat.value(0), "f");
+        let concat_ws = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .expect("concat_ws bool should produce StringArray");
+        assert_eq!(concat_ws.value(0), "t|t");
     }
 
     #[test]
@@ -1702,6 +1785,13 @@ mod tests {
         QueryExpr::Const(Const {
             pg_type: int4_type(),
             value: Some(PgConstValue::Int32(value)),
+        })
+    }
+
+    fn bool_const(value: bool) -> QueryExpr {
+        QueryExpr::Const(Const {
+            pg_type: bool_type(),
+            value: Some(PgConstValue::Bool(value)),
         })
     }
 

@@ -3669,6 +3669,13 @@ SELECT marker
 FROM (VALUES ('abc'), ('ab'), ('ac')) AS v(marker)
 WHERE CAST(marker AS varchar(2)) = 'ab';
 
+-- id: local_pg_text_typmod_varchar_scan_filter
+-- origin: local pg_fusion text typmod scan pushdown coverage
+-- compare: multiset
+SELECT f1
+FROM VARCHAR_TBL
+WHERE CAST(f1 AS varchar(2)) = 'ab';
+
 -- id: local_pg_text_typmod_bpchar_projection
 -- origin: local pg_fusion text typmod cast coverage
 -- compare: multiset
@@ -3692,6 +3699,13 @@ SELECT
 -- compare: multiset
 SELECT length(CAST('a' AS char(3)));
 
+-- id: local_pg_text_typmod_bpchar_scan_filter
+-- origin: local pg_fusion text typmod scan pushdown coverage
+-- compare: multiset
+SELECT f1
+FROM VARCHAR_TBL
+WHERE CAST(f1 AS char(2)) = CAST('a' AS char(2));
+
 -- id: local_pg_text_typmod_bpchar_left_join_residual
 -- origin: local pg_fusion bpchar UDF coverage
 -- compare: multiset
@@ -3705,3 +3719,36 @@ WHERE length(r.marker) = 1;
 -- origin: local pg_fusion scalar function overload coverage
 -- compare: multiset
 SELECT round(1.234::numeric, 2), trunc(1.234::numeric, 2);
+
+-- id: local_pg_numeric_round_trunc_scale_scan_filter
+-- origin: local pg_fusion scalar function scan pushdown coverage
+-- compare: multiset
+SELECT f1
+FROM INT4_TBL
+WHERE round(f1::numeric, 2) = f1::numeric
+  AND trunc(f1::numeric, 2) = f1::numeric;
+
+-- id: local_pg_function_boolean_wrapper_arguments
+-- origin: local pg_fusion scalar function argument type inference coverage
+-- compare: multiset
+SELECT
+    format('%s', TRUE AND FALSE),
+    format('%s', NULL IS NULL),
+    format('%s', TRUE IS NOT FALSE),
+    concat(TRUE AND FALSE),
+    concat_ws('|', NULL IS NULL, TRUE IS NOT FALSE);
+
+-- id: local_pg_function_boolean_wrapper_vector_arguments
+-- origin: local pg_fusion scalar function argument type inference coverage
+-- compare: multiset
+SELECT
+    f1,
+    format('%s', f1 > 0),
+    concat(f1 > 0),
+    concat(CASE WHEN f1 > 0 THEN NULL::boolean ELSE TRUE END)
+FROM INT4_TBL;
+
+-- id: local_pg_function_scalar_subquery_argument
+-- origin: local pg_fusion scalar function argument type inference coverage
+-- compare: multiset
+SELECT length((SELECT 'abc'::text));

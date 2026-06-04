@@ -56,8 +56,8 @@ resolved PostgreSQL signature.
 | Numeric and integer casts among supported scalar types | Supported | Lowered to DataFusion casts when result semantics match the accepted PostgreSQL type. | Rendered as PostgreSQL casts when pushed into scan SQL. |
 | Cast from integer-like value to `boolean` | Supported | Lowered to `value <> 0` for PostgreSQL-style truth conversion. | Pushdown requires scan SQL renderability of the lowered predicate. |
 | Cast from `interval` to text-like output | Supported via pg_fusion UDF | Uses PostgreSQL-style interval text formatting before DataFusion projection. | Not a general scan-pushdown expression. |
-| `varchar(n)` | Known gap (not supported) in pushed scan predicates | DataFusion execution uses a pg_fusion UDF for PostgreSQL truncation. | A base-table `WHERE CAST(col AS varchar(n)) ...` can produce an internal UDF that scan SQL cannot render yet. |
-| `bpchar(n)` | Known gap (not supported) in pushed scan predicates | DataFusion execution uses a pg_fusion UDF for PostgreSQL truncation and padding. | A base-table `WHERE CAST(col AS bpchar(n)) ...` can produce an internal UDF that scan SQL cannot render yet. |
+| `varchar(n)` | Supported via pg_fusion UDF | DataFusion execution uses a pg_fusion UDF for PostgreSQL truncation. | Base-table predicates render the internal typmod UDF back to `CAST(value AS VARCHAR(n))` when the typmod is the frontend-generated literal. |
+| `bpchar(n)` | Supported via pg_fusion UDF | DataFusion execution uses a pg_fusion UDF for PostgreSQL truncation and padding. | Base-table predicates render the internal typmod UDF back to `CAST(value AS CHARACTER(n))` when the typmod is the frontend-generated literal. |
 | Text-like casts with unsupported collation | Unsupported / fail closed | Rejected before DataFusion runs with incompatible collation semantics. | Rejected or kept out of pushdown depending on plan position. |
 | Temporal constants and casts with lossy representation | Restricted | Fail closed where pg_fusion cannot preserve PostgreSQL value identity. | Fail closed where scan SQL would normalize differently. |
 
@@ -82,19 +82,19 @@ resolved PostgreSQL signature.
 | `acosh`, `asinh`, `atanh`, `cosh`, `sinh`, `tanh`, `exp`, `ln`, `sqrt` over accepted float signatures | Supported | Lowered to DataFusion math functions for accepted resolved overloads. | Rendered into PostgreSQL scan SQL when supported by the scan renderer. |
 | `power(float, float)` returning a supported float type | Supported | Lowered to DataFusion `power`. | Rendered as PostgreSQL `power(left, right)` when pushed. |
 | `round(numeric)` and `trunc(numeric)` | Supported | Lowered to Decimal128-compatible execution. | Rendered as PostgreSQL `round(value)` and `trunc(value)` when pushed. |
-| `round(numeric, int4)` and `trunc(numeric, int4)` | Known gap (not supported) in pushed scan predicates | DataFusion execution uses pg_fusion Decimal128 UDFs. | Pushed predicates may render the scale as `BIGINT`; PostgreSQL only defines the scale overload with `integer`. |
+| `round(numeric, int4)` and `trunc(numeric, int4)` | Supported via pg_fusion UDF | DataFusion execution uses pg_fusion Decimal128 UDFs. | Pushed predicates render the scale argument as PostgreSQL `integer`, preserving the resolved `numeric, int4` overload. |
 | `length(text)`, `length(varchar)` | Supported | Lowered to DataFusion character length for accepted text signatures. | Rendered as PostgreSQL `char_length` or `length`. |
 | `length(bpchar)` | Supported via pg_fusion UDF | Ignores trailing padding spaces like PostgreSQL. | Rendered as PostgreSQL `length(value)` when pushed. |
 | `length(bytea)` | Unsupported / fail closed | Rejected even though PostgreSQL supports a byte-length overload. | Prevents byte-length overloads from using text semantics. |
-| `concat`, `concat_ws` over supported argument types | Supported | Lowered to DataFusion string concatenation after UTF-8 argument casting. | Pushdown requires full scan SQL rendering. |
-| `format` | Supported via pg_fusion UDF | Uses pg_fusion formatting semantics for accepted argument shapes. | Pushdown requires full scan SQL rendering; otherwise it stays above scan or fails by position. |
+| `concat`, `concat_ws` over supported argument types | Supported | Lowered to DataFusion string concatenation after PostgreSQL-compatible textification; boolean arguments use the internal `pg_fusion_boolout` UDF for `boolout` text (`t`/`f`). | Pushdown requires full scan SQL rendering. |
+| `format` | Supported via pg_fusion UDF | Uses pg_fusion formatting semantics for accepted argument shapes; boolean arguments use PostgreSQL `boolout` text (`t`/`f`). | Pushdown requires full scan SQL rendering; otherwise it stays above scan or fails by position. |
 | `quote_literal(text-like)` | Supported via pg_fusion UDF | Uses pg_fusion PostgreSQL-style literal quoting. | Pushdown requires full scan SQL rendering. |
 | `reverse(text-like)` | Supported | Lowered to DataFusion unicode reverse for accepted text signatures. | Rendered into PostgreSQL scan SQL when supported by the scan renderer. |
 | `nullif(left, right)` | Supported | Lowered to DataFusion `nullif` for accepted resolved expression types. | Rendered as PostgreSQL `nullif(left, right)` when pushed. |
 | `random()` | Supported | Lowered to DataFusion `random`. | Not a scan pushdown predicate. |
 | Supported function name with unsupported overload | Unsupported / fail closed | Rejected by resolved PostgreSQL signature, for example non-text `length` overloads. | Prevents overloads from using the wrong DataFusion semantics. |
 | User-defined functions with supported names | Unsupported / fail closed | Resolved function namespace and signature must match supported PostgreSQL catalog overloads. | Prevents lowering a user function to a DataFusion builtin by name only. |
-| Supported function receiving boolean wrappers, NULL tests, or scalar subqueries as arguments | Known gap (not supported) | PostgreSQL knows the argument type, but some classifier paths currently infer `unknown`. | Affected shapes can fail planning until the classifier infers those result types. |
+| Supported function receiving boolean wrappers, NULL tests, or scalar subqueries as arguments | Supported | The adapter infers boolean wrapper result types as `boolean` and scalar subquery arguments from their single visible target type. | Scalar subqueries with anything other than one visible target remain fail-closed. |
 | DataFusion functions not listed here | Unsupported / fail closed | Not accepted just because DataFusion has a builtin implementation. | pg_fusion must first add a PostgreSQL signature mapping and semantic tests. |
 
 ## Aggregate Functions
@@ -137,8 +137,8 @@ resolved PostgreSQL signature.
 | Array constructors | Restricted | Lowered to DataFusion nested array construction for supported element types and expression shapes. |
 | Array subscripts | Restricted | Lowered to DataFusion array element extraction for supported array/index expression shapes. |
 | Boolean expressions, NULL tests, and boolean tests in predicates | Supported | Produce PostgreSQL boolean semantics for ordinary predicates. |
-| Boolean expressions, NULL tests, and boolean tests as scalar function arguments | Known gap (not supported) | Some classifier paths currently infer `unknown` instead of `boolean`. |
+| Boolean expressions, NULL tests, and boolean tests as scalar function arguments | Supported | Classifier paths infer these wrapper results as `boolean`. |
 | Scalar subqueries in supported predicate/projected shapes | Restricted | Supported only where pg_fusion can enforce PostgreSQL scalar-subquery cardinality. |
-| Scalar subqueries as scalar function arguments | Known gap (not supported) | The visible target type should be inferred but currently can be reported as unknown. |
+| Scalar subqueries as scalar function arguments | Restricted | The classifier infers the type from the single visible target; other target shapes fail closed. |
 | Parameters | Unsupported / fail closed | Bound and prepared-statement parameters are not part of the current public support surface. |
 | Unsupported residual filters above joins | Unsupported / fail closed | Expressions that require PostgreSQL-specific text, collation, or uncovered function semantics fail closed instead of running in DataFusion. Regex scan residuals are a separate known gap listed in the operator table. |

@@ -191,6 +191,77 @@ fn compiles_pg_bpchar_internal_udfs_for_scan_filters() {
 }
 
 #[test]
+fn compiles_pg_text_typmod_internal_udfs_for_scan_filters() {
+    let schema = test_schema();
+    let varchar_filter = df_functions::pg_varchar_typmod_udf()
+        .call(vec![
+            Expr::Column(Column::from_name("name")),
+            lit(pg_type::VARHDRSZ + 2),
+        ])
+        .eq(lit("ab"));
+    let bpchar_filter = df_functions::pg_bpchar_typmod_udf()
+        .call(vec![
+            Expr::Column(Column::from_name("name")),
+            lit(pg_type::VARHDRSZ + 3),
+        ])
+        .eq(lit("a  "));
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &test_relation(),
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[0]),
+        filters: &[varchar_filter, bpchar_filter],
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(compiled.all_filters_compiled);
+    assert_eq!(compiled.residual_filters, Vec::<Expr>::new());
+    assert_eq!(compiled.filter_only_columns, vec![1]);
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (CAST(\"name\" AS VARCHAR(2)) = 'ab') AND (CAST(\"name\" AS CHARACTER(3)) = 'a  ')"
+    );
+}
+
+#[test]
+fn renders_pg_numeric_round_trunc_scale_as_int4_scan_sql() {
+    let schema = test_schema();
+    let scale = Expr::Cast(Cast::new(Box::new(lit(2_i32)), DataType::Int64));
+    let round_filter = df_functions::pg_numeric_round_scale_udf()
+        .call(vec![
+            Expr::Column(Column::from_name("score")),
+            scale.clone(),
+        ])
+        .eq(Expr::Column(Column::from_name("score")));
+    let trunc_filter = df_functions::pg_numeric_trunc_scale_udf()
+        .call(vec![Expr::Column(Column::from_name("score")), scale])
+        .eq(Expr::Column(Column::from_name("score")));
+
+    let compiled = compile_scan(CompileScanInput {
+        relation: &test_relation(),
+        schema: &schema,
+        identifier_max_bytes: TEST_IDENTIFIER_MAX_BYTES,
+        projection: Some(&[0]),
+        filters: &[round_filter, trunc_filter],
+        requested_limit: None,
+        limit_lowering: LimitLowering::ExternalHint,
+    })
+    .unwrap();
+
+    assert!(compiled.all_filters_compiled);
+    assert_eq!(compiled.residual_filters, Vec::<Expr>::new());
+    assert_eq!(compiled.filter_only_columns, vec![2]);
+    assert!(!compiled.sql.contains("BIGINT"));
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"public\".\"users\" WHERE (round(\"score\", CAST(2 AS INTEGER)) = \"score\") AND (trunc(\"score\", CAST(2 AS INTEGER)) = \"score\")"
+    );
+}
+
+#[test]
 fn leaves_unsupported_filters_as_residual() {
     let schema = test_schema();
     let supported = Expr::Column(Column::from_name("id")).eq(lit(1_i64));

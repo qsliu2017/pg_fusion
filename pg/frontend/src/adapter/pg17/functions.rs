@@ -197,10 +197,14 @@ fn expr_pg_type(expr: &QueryExpr) -> Option<u32> {
         | QueryExpr::Case { pg_type, .. }
         | QueryExpr::ExistsSubquery { pg_type, .. }
         | QueryExpr::InSubquery { pg_type, .. } => Some(pg_type.oid),
-        QueryExpr::Bool { .. }
-        | QueryExpr::NullTest { .. }
-        | QueryExpr::BooleanTest { .. }
-        | QueryExpr::ScalarSubquery(_) => None,
+        QueryExpr::Bool { .. } | QueryExpr::NullTest { .. } | QueryExpr::BooleanTest { .. } => {
+            Some(u32::from(pg_sys::BOOLOID))
+        }
+        QueryExpr::ScalarSubquery(query) => {
+            let mut visible_targets = query.targets.iter().filter(|target| !target.resjunk);
+            let pg_type = visible_targets.next()?.pg_type;
+            visible_targets.next().is_none().then_some(pg_type.oid)
+        }
     }
 }
 
@@ -268,6 +272,83 @@ mod tests {
     }
 
     #[test]
+    fn expr_pg_type_infers_boolean_wrappers() {
+        assert_eq!(
+            expr_pg_type(&QueryExpr::Bool {
+                op: BoolOp::And,
+                args: Vec::new(),
+            }),
+            Some(oid(pg_sys::BOOLOID))
+        );
+        assert_eq!(
+            expr_pg_type(&QueryExpr::NullTest {
+                arg: Box::new(null_const(pg_sys::INT4OID)),
+                is_null: true,
+            }),
+            Some(oid(pg_sys::BOOLOID))
+        );
+        assert_eq!(
+            expr_pg_type(&QueryExpr::BooleanTest {
+                arg: Box::new(null_const(pg_sys::BOOLOID)),
+                kind: BooleanTestKind::IsNotFalse,
+            }),
+            Some(oid(pg_sys::BOOLOID))
+        );
+    }
+
+    #[test]
+    fn expr_pg_type_infers_scalar_subquery_visible_target() {
+        let mut query = empty_select_query();
+        query.targets.push(Target {
+            expr: null_const(pg_sys::TEXTOID),
+            name: Some("value".into()),
+            pg_type: type_ref(pg_sys::TEXTOID),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        });
+        query.targets.push(Target {
+            expr: null_const(pg_sys::INT4OID),
+            name: Some("sort".into()),
+            pg_type: type_ref(pg_sys::INT4OID),
+            resno: 2,
+            ressortgroupref: 0,
+            resjunk: true,
+        });
+
+        assert_eq!(
+            expr_pg_type(&QueryExpr::ScalarSubquery(Box::new(query))),
+            Some(oid(pg_sys::TEXTOID))
+        );
+    }
+
+    #[test]
+    fn expr_pg_type_rejects_ambiguous_scalar_subquery_targets() {
+        let mut query = empty_select_query();
+        query.targets.push(Target {
+            expr: null_const(pg_sys::TEXTOID),
+            name: Some("left".into()),
+            pg_type: type_ref(pg_sys::TEXTOID),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        });
+        query.targets.push(Target {
+            expr: null_const(pg_sys::INT4OID),
+            name: Some("right".into()),
+            pg_type: type_ref(pg_sys::INT4OID),
+            resno: 2,
+            ressortgroupref: 0,
+            resjunk: false,
+        });
+
+        assert_eq!(
+            expr_pg_type(&QueryExpr::ScalarSubquery(Box::new(query))),
+            None
+        );
+    }
+
+    #[test]
     fn scalar_function_classifier_rejects_wrong_named_overloads() {
         let quote_literal_args = [oid(pg_sys::INT4OID)];
         assert_eq!(
@@ -301,6 +382,48 @@ mod tests {
 
     fn oid(oid: pg_sys::Oid) -> u32 {
         u32::from(oid)
+    }
+
+    fn type_ref(oid: pg_sys::Oid) -> PgTypeRef {
+        PgTypeRef::new(u32::from(oid), -1, pg_type::oid::DEFAULT_COLLATION_OID)
+    }
+
+    fn null_const(oid: pg_sys::Oid) -> QueryExpr {
+        QueryExpr::Const(Const {
+            pg_type: type_ref(oid),
+            value: None,
+        })
+    }
+
+    fn empty_select_query() -> TypedQuery {
+        TypedQuery {
+            command: QueryCommand::Select,
+            relations: Vec::new(),
+            values: Vec::new(),
+            ctes: Vec::new(),
+            cte_refs: Vec::new(),
+            subqueries: Vec::new(),
+            from: FromItem::Empty,
+            selection: None,
+            having: None,
+            targets: Vec::new(),
+            group_refs: Vec::new(),
+            grouping_sets: Vec::new(),
+            windows: Vec::new(),
+            set_operation: None,
+            sort: Vec::new(),
+            limit_count: None,
+            limit_offset: None,
+            has_aggregates: false,
+            has_windows: false,
+            has_sublinks: false,
+            distinct: DistinctSpec::None,
+            has_group_by: false,
+            has_having: false,
+            has_grouping_sets: false,
+            has_set_operations: false,
+            has_row_marks: false,
+        }
     }
 }
 

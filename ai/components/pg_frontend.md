@@ -116,10 +116,12 @@ UDFs instead of DataFusion binary arithmetic so PostgreSQL integer overflow
 raises `smallint`/`integer`/`bigint out of range` instead of wrapping.
 `varchar(n)` and `bpchar(n)` casts lower to internal text-typmod DataFusion
 UDFs so intermediate expressions apply PostgreSQL truncation/padding before
-DataFusion compares, filters, sorts, or projects the value. The pg17 adapter
-must preserve `exprTypmod` for cast nodes; `TypedQuery` is the authority for
-the target PostgreSQL OID/typmod/collation, while Arrow `Utf8View` is only the
-transport type.
+DataFusion compares, filters, sorts, or projects the value. Relation-local
+scan predicates render those internal typmod UDFs back to PostgreSQL
+`varchar(n)`/`character(n)` casts when the typmod is the frontend-generated
+literal. The pg17 adapter must preserve `exprTypmod` for cast nodes;
+`TypedQuery` is the authority for the target PostgreSQL OID/typmod/collation,
+while Arrow `Utf8View` is only the transport type.
 `bpchar` equality/distinct comparisons lower their operands through an internal
 comparison-key UDF that trims PostgreSQL padding spaces before DataFusion
 evaluates boolean/null semantics. `length(bpchar)` lowers to an internal UDF
@@ -129,9 +131,17 @@ Scalar function lowering validates PostgreSQL's resolved `FuncExpr.funcid`,
 argument OIDs, and result OID before recording a neutral `ScalarFunction`; a
 supported spelling with an unsupported overload, such as `length(bytea)`, must
 fail closed instead of lowering to a same-named DataFusion function.
+Boolean arguments accepted by text-producing functions must use PostgreSQL
+`boolout` text (`t`/`f`), not DataFusion's boolean-to-string cast
+(`true`/`false`). `format` preserves boolean arguments for its UDF and
+`concat`/`concat_ws` lower boolean arguments through the internal
+`pg_fusion_boolout` UDF before DataFusion string concatenation so the boolean
+input is evaluated once.
 `round(numeric, int4)` and `trunc(numeric, int4)` lower to internal Decimal128
 UDFs so frontend execution preserves PostgreSQL rounding/truncation direction;
-scan pushdown renders the same calls back to PostgreSQL SQL.
+scan pushdown renders the same calls back to PostgreSQL SQL with the scale
+argument cast as PostgreSQL `integer`, not DataFusion's internal `Int64`
+carrier.
 Frontend `WHERE` filters are split by top-level `AND` before logical planning.
 Relation-local filters are pushed into PostgreSQL scans whenever the current
 join tree preserves that relation (`INNER` preserves both sides; `LEFT`/`RIGHT`

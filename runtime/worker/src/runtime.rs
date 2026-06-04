@@ -761,6 +761,7 @@ fn build_worker_planning_session_state() -> SessionState {
         .with_optimizer_rules(pg_fusion_optimizer_rules())
         .with_default_features()
         .build();
+    let _ = state.register_udf(df_functions::pg_boolout_udf());
     let _ = state.register_udf(df_functions::pg_format_udf());
     let _ = state.register_udf(df_functions::pg_int_add_checked_udf());
     let _ = state.register_udf(df_functions::pg_int_sub_checked_udf());

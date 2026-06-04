@@ -461,6 +461,7 @@ impl PlanDecodeSession {
     /// Create a new streaming decoder.
     pub fn new() -> Self {
         let mut ctx = SessionContext::new();
+        let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_boolout_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_format_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_add_checked_udf());
         let _ = FunctionRegistry::register_udf(&mut ctx, df_functions::pg_int_sub_checked_udf());
@@ -1035,6 +1036,9 @@ fn decode_pg_scalar_udf(name: &str) -> Option<Arc<ScalarUDF>> {
     }
     if name.eq_ignore_ascii_case("format") {
         return Some(df_functions::pg_format_udf());
+    }
+    if name.eq_ignore_ascii_case("pg_fusion_boolout") {
+        return Some(df_functions::pg_boolout_udf());
     }
     if name.eq_ignore_ascii_case("pg_fusion_int_add_checked") {
         return Some(df_functions::pg_int_add_checked_udf());

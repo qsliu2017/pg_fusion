@@ -1,5 +1,5 @@
-use arrow_schema::Schema;
-use datafusion_common::Column;
+use arrow_schema::{DataType, Schema};
+use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::expr::{BinaryExpr, Case, Cast, InList, Like, ScalarFunction};
 use datafusion_expr::{Expr, Operator};
 
@@ -361,21 +361,81 @@ fn render_scalar_function(
         ("power", [left, right]) => format!("power({left}, {right})"),
         ("round", [value]) => format!("round({value})"),
         ("round", [value, precision]) => format!("round({value}, {precision})"),
-        ("pg_fusion_numeric_round_scale", [value, precision]) => {
-            format!("round({value}, {precision})")
+        ("pg_fusion_numeric_round_scale", [value, _]) => {
+            let Some(precision) = render_numeric_scale_as_int4(
+                &function.args[1],
+                schema,
+                relation,
+                identifier_max_bytes,
+            )?
+            else {
+                return Ok(None);
+            };
+            format!("round({value}, {})", precision.sql)
+        }
+        ("pg_fusion_varchar_typmod", [value, _]) => {
+            let Some(length) = text_typmod_length_arg(&function.args[1]) else {
+                return Ok(None);
+            };
+            format!("CAST({value} AS VARCHAR({length}))")
+        }
+        ("pg_fusion_bpchar_typmod", [value, _]) => {
+            let Some(length) = text_typmod_length_arg(&function.args[1]) else {
+                return Ok(None);
+            };
+            format!("CAST({value} AS CHARACTER({length}))")
         }
         ("sinh", [value]) => format!("sinh({value})"),
         ("sqrt", [value]) => format!("sqrt({value})"),
         ("tanh", [value]) => format!("tanh({value})"),
         ("trunc", [value]) => format!("trunc({value})"),
         ("trunc", [value, precision]) => format!("trunc({value}, {precision})"),
-        ("pg_fusion_numeric_trunc_scale", [value, precision]) => {
-            format!("trunc({value}, {precision})")
+        ("pg_fusion_numeric_trunc_scale", [value, _]) => {
+            let Some(precision) = render_numeric_scale_as_int4(
+                &function.args[1],
+                schema,
+                relation,
+                identifier_max_bytes,
+            )?
+            else {
+                return Ok(None);
+            };
+            format!("trunc({value}, {})", precision.sql)
         }
         _ => return Ok(None),
     };
 
     Ok(Some(RenderedExpr::merge(sql, rendered_args)))
+}
+
+fn render_numeric_scale_as_int4(
+    expr: &Expr,
+    schema: &Schema,
+    relation: &PgRelation,
+    identifier_max_bytes: usize,
+) -> Result<Option<RenderedExpr>, CompileError> {
+    let expr = match expr {
+        Expr::Cast(cast) if cast.data_type == DataType::Int64 => cast.expr.as_ref(),
+        _ => expr,
+    };
+    let Some(inner) = render_expr(expr, schema, relation, identifier_max_bytes)? else {
+        return Ok(None);
+    };
+    Ok(Some(RenderedExpr::merge(
+        format!("CAST({} AS INTEGER)", inner.sql),
+        [inner],
+    )))
+}
+
+fn text_typmod_length_arg(expr: &Expr) -> Option<i32> {
+    let typmod = match expr {
+        Expr::Literal(ScalarValue::Int32(Some(typmod)), _) => *typmod,
+        Expr::Cast(cast) if cast.data_type == DataType::Int32 => {
+            text_typmod_length_arg(&cast.expr)?
+        }
+        _ => return None,
+    };
+    pg_type::text_typmod_length(typmod)
 }
 
 fn render_in_list(

@@ -680,15 +680,17 @@ pub(super) fn compile_scalar_function(
             call_unary_scalar_function("ceil", datafusion::functions::math::ceil(), args)?
         }
         ScalarFunction::Concat => {
-            datafusion::functions::string::concat().call(cast_args_to_utf8(args))
+            datafusion::functions::string::concat().call(cast_args_to_pg_text(source_args, args))
         }
         ScalarFunction::ConcatWs => {
-            datafusion::functions::string::concat_ws().call(cast_args_to_utf8(args))
+            datafusion::functions::string::concat_ws().call(cast_args_to_pg_text(source_args, args))
         }
         ScalarFunction::Floor => {
             call_unary_scalar_function("floor", datafusion::functions::math::floor(), args)?
         }
-        ScalarFunction::Format => df_functions::pg_format_udf().call(cast_args_to_utf8(args)),
+        ScalarFunction::Format => {
+            df_functions::pg_format_udf().call(cast_format_args(source_args, args))
+        }
         ScalarFunction::Length => compile_length_function(source_args, args)?,
         ScalarFunction::Cosh => {
             call_unary_scalar_function("cosh", datafusion::functions::math::cosh(), args)?
@@ -854,6 +856,41 @@ pub(super) fn compile_length_function(
 pub(super) fn cast_args_to_utf8(args: Vec<Expr>) -> Vec<Expr> {
     args.into_iter()
         .map(|arg| Expr::Cast(Cast::new(Box::new(arg), DataType::Utf8)))
+        .collect()
+}
+
+fn cast_args_to_pg_text(source_args: &[QueryExpr], args: Vec<Expr>) -> Vec<Expr> {
+    args.into_iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if source_args
+                .get(index)
+                .and_then(expr_pg_type)
+                .is_some_and(|pg_type| pg_type.oid == u32::from(pgrx::pg_sys::BOOLOID))
+            {
+                df_functions::pg_boolout_udf().call(vec![arg])
+            } else {
+                Expr::Cast(Cast::new(Box::new(arg), DataType::Utf8))
+            }
+        })
+        .collect()
+}
+
+fn cast_format_args(source_args: &[QueryExpr], args: Vec<Expr>) -> Vec<Expr> {
+    args.into_iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if index > 0
+                && source_args
+                    .get(index)
+                    .and_then(expr_pg_type)
+                    .is_some_and(|pg_type| pg_type.oid == u32::from(pgrx::pg_sys::BOOLOID))
+            {
+                arg
+            } else {
+                Expr::Cast(Cast::new(Box::new(arg), DataType::Utf8))
+            }
+        })
         .collect()
 }
 

@@ -2,7 +2,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use arrow_array::builder::StringBuilder;
-use arrow_array::{Array, ArrayRef, LargeStringArray, StringArray, StringViewArray};
+use arrow_array::{Array, ArrayRef, BooleanArray, LargeStringArray, StringArray, StringViewArray};
 use arrow_schema::DataType;
 use datafusion_common::{exec_err, plan_err, Result, ScalarValue};
 use datafusion_expr::{
@@ -58,7 +58,13 @@ impl ScalarUDFImpl for PgFormat {
         if arg_types.is_empty() {
             return plan_err!("format requires at least one argument");
         }
-        Ok(vec![DataType::Utf8; arg_types.len()])
+        let mut coerced = Vec::with_capacity(arg_types.len());
+        coerced.push(DataType::Utf8);
+        coerced.extend(arg_types.iter().skip(1).map(|arg_type| match arg_type {
+            DataType::Boolean => DataType::Boolean,
+            _ => DataType::Utf8,
+        }));
+        Ok(coerced)
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -140,6 +146,9 @@ fn scalar_value_text(value: &ScalarValue) -> Result<Option<String>> {
         ScalarValue::Utf8(value) | ScalarValue::LargeUtf8(value) | ScalarValue::Utf8View(value) => {
             Ok(value.clone())
         }
+        ScalarValue::Boolean(Some(true)) => Ok(Some("t".to_owned())),
+        ScalarValue::Boolean(Some(false)) => Ok(Some("f".to_owned())),
+        ScalarValue::Boolean(None) => Ok(None),
         ScalarValue::Null => Ok(None),
         other => exec_err!("format expected text argument after coercion, got {other:?}"),
     }
@@ -150,6 +159,17 @@ fn array_text(array: &ArrayRef, row: usize) -> Result<Option<String>> {
         return Ok(None);
     }
     match array.data_type() {
+        DataType::Boolean => {
+            let array = array
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| {
+                    datafusion_common::DataFusionError::Execution(
+                        "format expected Boolean array".into(),
+                    )
+                })?;
+            Ok(Some(if array.value(row) { "t" } else { "f" }.to_owned()))
+        }
         DataType::Utf8 => {
             let array = array
                 .as_any()
@@ -497,6 +517,34 @@ mod tests {
             format_scalar(Some("%s%s%s"), &[Some("Hello"), None, Some("World")]).unwrap(),
             Some("HelloWorld".into())
         );
+    }
+
+    #[test]
+    fn formats_boolean_values_with_postgresql_boolout_text() {
+        let args = ScalarTextArgs(vec![
+            Some("%s %L".to_owned()),
+            scalar_value_text(&ScalarValue::Boolean(Some(false))).unwrap(),
+            scalar_value_text(&ScalarValue::Boolean(Some(true))).unwrap(),
+        ]);
+        assert_eq!(format_row(&args, 0).unwrap(), Some("f 't'".into()));
+        assert_eq!(
+            PgFormat::new()
+                .coerce_types(&[DataType::Utf8, DataType::Boolean])
+                .unwrap(),
+            vec![DataType::Utf8, DataType::Boolean]
+        );
+    }
+
+    #[test]
+    fn formats_boolean_arrays_with_postgresql_boolout_text() {
+        let args = ArrayTextArgs(vec![
+            Arc::new(StringArray::from(vec![Some("%s"), Some("%L"), Some("%s")])) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![Some(true), Some(false), None])) as ArrayRef,
+        ]);
+
+        assert_eq!(format_row(&args, 0).unwrap(), Some("t".into()));
+        assert_eq!(format_row(&args, 1).unwrap(), Some("'f'".into()));
+        assert_eq!(format_row(&args, 2).unwrap(), Some(String::new()));
     }
 
     #[test]
