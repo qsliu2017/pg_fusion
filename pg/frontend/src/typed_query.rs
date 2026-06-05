@@ -427,6 +427,10 @@ pub enum QueryOperator {
     BitwiseShiftLeft,
     BitwiseShiftRight,
     StringConcat,
+    LikeMatch,
+    NotLikeMatch,
+    ILikeMatch,
+    NotILikeMatch,
     RegexMatch,
     RegexNotMatch,
 }

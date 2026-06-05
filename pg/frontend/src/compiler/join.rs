@@ -262,6 +262,10 @@ pub(super) fn operator(op: QueryOperator) -> Operator {
         QueryOperator::BitwiseShiftLeft => Operator::BitwiseShiftLeft,
         QueryOperator::BitwiseShiftRight => Operator::BitwiseShiftRight,
         QueryOperator::StringConcat => Operator::StringConcat,
+        QueryOperator::LikeMatch => Operator::LikeMatch,
+        QueryOperator::NotLikeMatch => Operator::NotLikeMatch,
+        QueryOperator::ILikeMatch => Operator::ILikeMatch,
+        QueryOperator::NotILikeMatch => Operator::NotILikeMatch,
         QueryOperator::RegexMatch => Operator::RegexMatch,
         QueryOperator::RegexNotMatch => Operator::RegexNotMatch,
     }

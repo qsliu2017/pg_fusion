@@ -765,6 +765,50 @@ mod tests {
     }
 
     #[test]
+    fn inner_join_where_pushdown_keeps_sibling_not_in_subquery_residual() {
+        let mut query = join_query(JoinKind::Inner);
+        query.selection = Some(QueryExpr::Bool {
+            op: BoolOp::And,
+            args: vec![
+                binary_op_expr(
+                    QueryOperator::NotLikeMatch,
+                    var_attnum(2, 2, text_type()),
+                    text_const("MEDIUM POLISHED%"),
+                ),
+                QueryExpr::Bool {
+                    op: BoolOp::Not,
+                    args: vec![QueryExpr::InSubquery {
+                        expr: Box::new(var_attnum(1, 1, int4_type())),
+                        subquery: Box::new(query_for_resolved_table()),
+                        pg_type: bool_type(),
+                    }],
+                },
+            ],
+        });
+
+        let pushdown = split_selection_for_scan_pushdown(&query)
+            .expect("relation-local NOT LIKE should push beside NOT IN subquery residual");
+
+        let scan_filters = pushdown
+            .scan_filters
+            .get(&2)
+            .expect("NOT LIKE predicate should be pushed into the right relation scan");
+        assert_eq!(scan_filters.len(), 1);
+        assert!(matches!(
+            scan_filters[0],
+            QueryExpr::BinaryOp {
+                op: QueryOperator::NotLikeMatch,
+                ..
+            }
+        ));
+        let residual = pushdown
+            .residual
+            .as_ref()
+            .expect("NOT IN subquery must remain residual");
+        assert!(contains_predicate_subquery(residual));
+    }
+
+    #[test]
     fn left_join_where_pushdown_keeps_nullable_side_residual() {
         let mut query = join_query(JoinKind::Left);
         query.selection = Some(QueryExpr::Bool {
@@ -804,6 +848,23 @@ mod tests {
                 .as_ref()
                 .and_then(single_predicate_rtindex),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn nullable_side_like_residual_filter_fails_closed() {
+        let mut query = join_query(JoinKind::Left);
+        query.selection = Some(binary_op_expr(
+            QueryOperator::LikeMatch,
+            var_attnum(2, 2, text_type()),
+            text_const("a%"),
+        ));
+
+        let err = split_selection_for_scan_pushdown(&query)
+            .expect_err("nullable-side LIKE cannot run with DataFusion semantics");
+        assert!(
+            err.to_string().contains("residual text-like WHERE"),
+            "unexpected error: {err}"
         );
     }
 

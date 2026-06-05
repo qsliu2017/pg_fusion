@@ -108,17 +108,6 @@ pub(super) fn split_selection_for_scan_pushdown(
         return Ok(SelectionPushdown::default());
     };
 
-    if contains_scalar_subquery(selection)
-        || contains_predicate_subquery(selection)
-        || expr_contains_outer_var(selection)
-    {
-        reject_pg_sensitive_residual_filter(selection)?;
-        return Ok(SelectionPushdown {
-            scan_filters: HashMap::new(),
-            residual: Some(selection.clone()),
-        });
-    }
-
     let pushable_rtindexes = top_level_where_pushdown_rtindexes(&query.from);
     let mut scan_filters: HashMap<usize, Vec<QueryExpr>> = HashMap::new();
     let mut residual = Vec::new();
@@ -354,7 +343,13 @@ pub(super) fn binary_op_needs_pg_text_semantics(
     let right_type = expr_pg_type(right);
     if matches!(
         op,
-        QueryOperator::RegexMatch | QueryOperator::RegexNotMatch | QueryOperator::StringConcat
+        QueryOperator::RegexMatch
+            | QueryOperator::RegexNotMatch
+            | QueryOperator::StringConcat
+            | QueryOperator::LikeMatch
+            | QueryOperator::NotLikeMatch
+            | QueryOperator::ILikeMatch
+            | QueryOperator::NotILikeMatch
     ) && (left_type.is_some_and(is_pg_text_like) || right_type.is_some_and(is_pg_text_like))
     {
         return true;
@@ -694,6 +689,10 @@ pub(super) fn numeric_expr_scale(expr: &QueryExpr) -> Option<i8> {
                 | QueryOperator::BitwiseShiftLeft
                 | QueryOperator::BitwiseShiftRight
                 | QueryOperator::StringConcat
+                | QueryOperator::LikeMatch
+                | QueryOperator::NotLikeMatch
+                | QueryOperator::ILikeMatch
+                | QueryOperator::NotILikeMatch
                 | QueryOperator::RegexMatch
                 | QueryOperator::RegexNotMatch,
             ..

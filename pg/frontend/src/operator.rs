@@ -128,6 +128,18 @@ fn classify_operator(metadata: &OperatorMetadata) -> Option<QueryOperator> {
             QueryOperator::RegexNotMatch
         });
     }
+    if matches!(metadata.name.as_str(), "~~" | "!~~" | "~~*" | "!~~*") {
+        return (is_text_like_type(metadata.left)
+            && is_text_like_type(metadata.right)
+            && metadata.result == u32::from(pg_sys::BOOLOID))
+        .then_some(match metadata.name.as_str() {
+            "~~" => QueryOperator::LikeMatch,
+            "!~~" => QueryOperator::NotLikeMatch,
+            "~~*" => QueryOperator::ILikeMatch,
+            "!~~*" => QueryOperator::NotILikeMatch,
+            _ => unreachable!("LIKE operator name was matched above"),
+        });
+    }
     if !is_supported_binary_operands(metadata.left, metadata.right) {
         return None;
     }
@@ -347,6 +359,68 @@ mod tests {
                 pg_sys::TEXTOID,
             )),
             Some(QueryOperator::StringConcat)
+        );
+    }
+
+    #[test]
+    fn accepts_catalog_like_operators_over_text_like_types() {
+        assert_eq!(
+            classify_operator(&operator(
+                "~~",
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(QueryOperator::LikeMatch)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "!~~",
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(QueryOperator::NotLikeMatch)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "~~*",
+                pg_sys::VARCHAROID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(QueryOperator::ILikeMatch)
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "!~~*",
+                pg_sys::BPCHAROID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            Some(QueryOperator::NotILikeMatch)
+        );
+    }
+
+    #[test]
+    fn rejects_like_operators_over_non_text_like_types() {
+        assert_eq!(
+            classify_operator(&operator(
+                "~~",
+                pg_sys::INT4OID,
+                pg_sys::TEXTOID,
+                pg_sys::BOOLOID,
+            )),
+            None
+        );
+        assert_eq!(
+            classify_operator(&operator(
+                "~~",
+                pg_sys::TEXTOID,
+                pg_sys::TEXTOID,
+                pg_sys::INT4OID,
+            )),
+            None
         );
     }
 

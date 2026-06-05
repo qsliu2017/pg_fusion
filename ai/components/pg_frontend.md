@@ -3,7 +3,7 @@ id: component-pg-frontend-0001
 type: fact
 scope: component
 tags: ["postgres", "datafusion", "planning", "query-tree"]
-updated_at: "2026-05-31"
+updated_at: "2026-06-05"
 importance: 0.7
 ---
 
@@ -111,6 +111,11 @@ and accepts binary `pg_catalog` comparison, arithmetic, and text-concatenation
 operators over supported scalar operand/result types. This keeps user-defined
 operators with builtin spellings, mixed-type operators, and PostgreSQL-specific
 operator semantics fail-closed until scan SQL can preserve them explicitly.
+`LIKE`/`NOT LIKE`/`ILIKE`/`NOT ILIKE` are accepted for resolved `pg_catalog`
+operators over text-like operands and are treated as PostgreSQL-sensitive scan
+predicates: relation-local cases render back into PostgreSQL scan SQL, while
+residual join filters fail closed instead of relying on DataFusion LIKE
+semantics.
 `int2`/`int4`/`int8` `+`, `-`, and `*` lower to internal checked DataFusion
 UDFs instead of DataFusion binary arithmetic so PostgreSQL integer overflow
 raises `smallint`/`integer`/`bigint out of range` instead of wrapping.

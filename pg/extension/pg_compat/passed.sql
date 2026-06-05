@@ -3752,3 +3752,40 @@ FROM INT4_TBL;
 -- origin: local pg_fusion scalar function argument type inference coverage
 -- compare: multiset
 SELECT length((SELECT 'abc'::text));
+
+-- id: local_pg_like_scan_filter
+-- origin: local pg_fusion LIKE operator scan pushdown coverage
+-- compare: ordered
+SELECT f1
+FROM TEXT_TBL
+WHERE f1 LIKE 'hi%'
+ORDER BY f1;
+
+-- id: local_pg_not_like_scan_filter
+-- origin: local pg_fusion LIKE operator scan pushdown coverage
+-- compare: ordered
+SELECT f1
+FROM TEXT_TBL
+WHERE f1 NOT LIKE 'hi%'
+ORDER BY f1;
+
+-- id: local_pg_tpch_q16_like_not_in_shape
+-- origin: local pg_fusion TPC-H q16-shaped LIKE/NOT IN coverage
+-- compare: ordered
+SELECT
+    j1.t,
+    count(DISTINCT j2.k) AS supplier_count
+FROM j1_tbl j1
+JOIN j2_tbl j2 ON j1.i = j2.i
+WHERE j1.t <> 'four'
+  AND j1.t NOT LIKE 't%'
+  AND j2.k IN (-1, 2, 4, -5)
+  AND j2.k NOT IN (
+      SELECT s.i
+      FROM j1_tbl s
+      WHERE s.t LIKE '%e%'
+        AND s.i IS NOT NULL
+  )
+GROUP BY j1.t
+ORDER BY supplier_count DESC, j1.t
+LIMIT 100;
