@@ -32,6 +32,62 @@ cargo pgrx init --pg17 $(which pg_config)
 If multiple PostgreSQL versions are installed, pass the full path to the
 PostgreSQL 17 `pg_config`.
 
+### Build PostgreSQL 17 From Source
+
+When working from a local PostgreSQL checkout, keep the upstream checkout and
+the PostgreSQL 17 worktree separate. The examples below use `WORK_ROOT` as the
+parent directory for both PostgreSQL and `pg_fusion` checkouts:
+
+- `postgres`: upstream PostgreSQL repository;
+- `postgres-17`: PostgreSQL 17 worktree;
+- `pg_fusion`: this repository;
+- `postgres-17/build`: out-of-tree build directory and install prefix.
+
+Create or refresh the PostgreSQL 17 worktree:
+
+```sh
+WORK_ROOT=/path/to/workspace
+
+cd "$WORK_ROOT/postgres"
+git fetch origin REL_17_STABLE
+git worktree add "$WORK_ROOT/postgres-17" origin/REL_17_STABLE
+```
+
+If `postgres-17` already exists, update it instead:
+
+```sh
+WORK_ROOT=/path/to/workspace
+
+cd "$WORK_ROOT/postgres-17"
+git fetch origin REL_17_STABLE
+git checkout REL_17_STABLE
+git pull --ff-only origin REL_17_STABLE
+```
+
+Build and install PostgreSQL from inside `postgres-17/build`:
+
+```sh
+WORK_ROOT=/path/to/workspace
+
+cd "$WORK_ROOT/postgres-17"
+mkdir -p build
+cd build
+../configure --with-llvm --prefix "$(pwd)"
+make -j
+make -j install
+```
+
+Then initialize pgrx against that exact PostgreSQL 17 installation and build
+`pg_fusion` in release mode:
+
+```sh
+WORK_ROOT=/path/to/workspace
+
+cd "$WORK_ROOT/pg_fusion"
+cargo pgrx init --pg17 "$WORK_ROOT/postgres-17/build/bin/pg_config"
+cargo build --release -p pg_fusion
+```
+
 ## Common Commands
 
 Check formatting:
