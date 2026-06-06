@@ -536,10 +536,8 @@ pub(super) fn attach_scalar_subqueries(
         }
 
         let subquery_plan = compile_typed_query(subquery, ctx.config)?.logical_plan;
-        let subquery_plan = scalar_subquery_value_plan(
-            subquery_plan,
-            format!("__pgfusion_scalar_subquery_{}", bindings.len() + 1),
-        )?;
+        let subquery_plan =
+            scalar_subquery_value_plan(subquery_plan, scalar_subquery_value_alias(bindings.len()))?;
         let alias = TableReference::bare(format!("scalar_subquery_{}", bindings.len() + 1));
         let aliased =
             LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(Arc::new(subquery_plan), alias)?);
@@ -582,6 +580,14 @@ pub(super) fn scalar_subquery_value_plan(
         Vec::new(),
         vec![aggregate],
     )?))
+}
+
+pub(super) fn scalar_subquery_value_alias(index: usize) -> String {
+    if index == 0 {
+        "scalar_subquery_value".into()
+    } else {
+        format!("scalar_subquery_value_{}", index + 1)
+    }
 }
 
 pub(super) fn collect_scalar_subqueries<'a>(expr: &'a QueryExpr, out: &mut Vec<&'a TypedQuery>) {

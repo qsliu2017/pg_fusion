@@ -314,6 +314,35 @@ pub(crate) fn explain_smoke() {
         verbose_heap_explain.contains("PgFusion Producer 0: leader"),
         "verbose heap EXPLAIN should keep producer diagnostics: {verbose_heap_explain}"
     );
+
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        "\
+        CREATE TEMP TABLE pgf_explain_alias_names AS
+        SELECT (g % 3)::bigint AS b
+        FROM generate_series(1, 12) AS g
+        ",
+    );
+    let aggregate_alias_explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        "\
+        EXPLAIN
+        SELECT i.b, count(*)
+        FROM pgf_explain_alias_names i
+        JOIN pgf_explain_alias_names o ON i.b = o.b
+        GROUP BY i.b
+        ",
+    )
+    .join("\n");
+    assert!(
+        aggregate_alias_explain.contains("AggregateExec")
+            && aggregate_alias_explain.contains("aggr=[count]"),
+        "EXPLAIN should render readable aggregate names: {aggregate_alias_explain}"
+    );
+    assert!(
+        !aggregate_alias_explain.contains("__pgfusion_aggregate"),
+        "EXPLAIN should not expose internal aggregate aliases: {aggregate_alias_explain}"
+    );
 }
 
 pub(crate) fn planner_catalog_strict_smoke() {

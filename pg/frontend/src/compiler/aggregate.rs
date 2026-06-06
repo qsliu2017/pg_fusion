@@ -29,15 +29,26 @@ pub(super) fn aggregate_plan(
             "pg_frontend v1 aggregate queries must contain GROUP BY expressions or aggregate calls",
         ));
     }
+    let mut alias_counts = HashMap::<&'static str, usize>::new();
+    let mut used_aliases = group_exprs
+        .iter()
+        .map(|expr| expr.schema_name().to_string())
+        .collect::<HashSet<_>>();
     let aggregate_exprs = aggregate_calls
         .iter()
-        .enumerate()
-        .map(|(index, call)| {
+        .map(|call| {
             compile_aggregate_expr(call, query, ctx).map(|expr| {
                 if is_grouping_call(call) {
                     expr
                 } else {
-                    expr.alias(format!("__pgfusion_aggregate_{index}"))
+                    let QueryExpr::AggregateCall { func, .. } = call else {
+                        unreachable!("aggregate_calls contains only aggregate expressions");
+                    };
+                    expr.alias(readable_internal_alias(
+                        &mut alias_counts,
+                        &mut used_aliases,
+                        aggregate_alias_base(*func),
+                    ))
                 }
             })
         })

@@ -18,10 +18,25 @@ pub(super) fn window_plan(
 
     let mut plan = input;
     let mut bindings = Vec::with_capacity(calls.len());
-    for (index, expr) in calls.into_iter().enumerate() {
+    let mut alias_counts = HashMap::<&'static str, usize>::new();
+    let mut used_aliases = plan
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().to_owned())
+        .collect::<HashSet<_>>();
+    for expr in calls {
         let input_len = plan.schema().fields().len();
-        let window_expr = compile_window_call(&expr, query, ctx, aggregate_bindings)?
-            .alias(format!("__pgfusion_window_{index}"));
+        let QueryExpr::WindowCall { func, .. } = &expr else {
+            unreachable!("window calls contains only window expressions");
+        };
+        let window_expr = compile_window_call(&expr, query, ctx, aggregate_bindings)?.alias(
+            readable_internal_alias(
+                &mut alias_counts,
+                &mut used_aliases,
+                window_alias_base(*func),
+            ),
+        );
         plan = LogicalPlan::Window(Window::try_new(vec![window_expr], Arc::new(plan))?);
         let (qualifier, field) = plan.schema().qualified_field(input_len);
         let column =

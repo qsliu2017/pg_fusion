@@ -1024,7 +1024,7 @@ pub(super) fn compile_scalar_subquery(
         return Ok(datafusion_expr::expr_fn::scalar_subquery(plan));
     }
     let plan = compile_typed_query(subquery, ctx.config)?.logical_plan;
-    let plan = scalar_subquery_value_plan(plan, "__pgfusion_scalar_subquery_value".into())?;
+    let plan = scalar_subquery_value_plan(plan, scalar_subquery_value_alias(0))?;
     let plan = Arc::new(plan);
     Ok(datafusion_expr::expr_fn::scalar_subquery(plan))
 }

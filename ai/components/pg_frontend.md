@@ -62,6 +62,10 @@ Scalar subqueries are wrapped in the internal
 values or joined bindings, preserving PostgreSQL cardinality semantics:
 zero rows become NULL, one row becomes the value, and more than one row raises
 the PostgreSQL scalar-subquery error during execution.
+Frontend-generated aggregate, window, and scalar-subquery binding aliases are
+visible in backend-local `EXPLAIN`; keep them readable and function-derived
+with deterministic numeric suffixes instead of opaque pg_fusion-private
+prefixes.
 Row marks are accepted as read-only query-tree markers; pg_fusion does not
 implement PostgreSQL row-lock semantics in custom scans. `ONLY` scans and
 parameters still return structured unsupported errors instead of bypassing

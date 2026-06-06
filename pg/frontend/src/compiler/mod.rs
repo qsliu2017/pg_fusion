@@ -336,6 +336,70 @@ fn deduplicate_projection_names(exprs: Vec<Expr>) -> Vec<Expr> {
         .collect()
 }
 
+fn readable_internal_alias(
+    counts: &mut HashMap<&'static str, usize>,
+    used: &mut HashSet<String>,
+    base: &'static str,
+) -> String {
+    loop {
+        let count = counts.entry(base).or_default();
+        *count += 1;
+        let alias = if *count == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}_{count}")
+        };
+        if used.insert(alias.clone()) {
+            return alias;
+        }
+    }
+}
+
+fn aggregate_alias_base(func: AggregateFunction) -> &'static str {
+    match func {
+        AggregateFunction::Count => "count",
+        AggregateFunction::Sum => "sum",
+        AggregateFunction::Avg => "avg",
+        AggregateFunction::Min => "min",
+        AggregateFunction::Max => "max",
+        AggregateFunction::StddevPop => "stddev_pop",
+        AggregateFunction::StddevSamp => "stddev_samp",
+        AggregateFunction::VarPop => "var_pop",
+        AggregateFunction::VarSamp => "var_samp",
+        AggregateFunction::RegrCount => "regr_count",
+        AggregateFunction::RegrSxx => "regr_sxx",
+        AggregateFunction::RegrSyy => "regr_syy",
+        AggregateFunction::RegrSxy => "regr_sxy",
+        AggregateFunction::RegrAvgX => "regr_avgx",
+        AggregateFunction::RegrAvgY => "regr_avgy",
+        AggregateFunction::RegrR2 => "regr_r2",
+        AggregateFunction::RegrSlope => "regr_slope",
+        AggregateFunction::RegrIntercept => "regr_intercept",
+        AggregateFunction::CovarPop => "covar_pop",
+        AggregateFunction::CovarSamp => "covar_samp",
+        AggregateFunction::Corr => "corr",
+        AggregateFunction::StringAgg => "string_agg",
+        AggregateFunction::Grouping => "grouping",
+    }
+}
+
+fn window_alias_base(func: WindowFunctionKind) -> &'static str {
+    match func {
+        WindowFunctionKind::Aggregate(func) => aggregate_alias_base(func),
+        WindowFunctionKind::CumeDist => "cume_dist",
+        WindowFunctionKind::DenseRank => "dense_rank",
+        WindowFunctionKind::FirstValue => "first_value",
+        WindowFunctionKind::Lag => "lag",
+        WindowFunctionKind::LastValue => "last_value",
+        WindowFunctionKind::Lead => "lead",
+        WindowFunctionKind::Ntile => "ntile",
+        WindowFunctionKind::NthValue => "nth_value",
+        WindowFunctionKind::PercentRank => "percent_rank",
+        WindowFunctionKind::Rank => "rank",
+        WindowFunctionKind::RowNumber => "row_number",
+    }
+}
+
 fn distinct_is_redundant_after_global_aggregate(query: &TypedQuery) -> bool {
     query.has_aggregates && !query.has_group_by
 }

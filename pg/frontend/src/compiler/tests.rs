@@ -25,6 +25,7 @@ mod tests {
         AggregateFunction, BoolOp, BooleanTestKind, ColumnRef, Const, CteDef, CteRangeRef,
         DistinctSpec, FromItem, GroupingSetSpec, JoinKind, Param, ParamKind, PgConstValue,
         QueryCommand, QueryOperator, QueryUnaryOperator, ScalarFunction, SortKey, SubqueryRef, Var,
+        WindowFrameBound, WindowFrameSpec, WindowFrameUnits, WindowFunctionKind, WindowSpec,
     };
     use arrow_schema::{DataType, IntervalUnit};
     use datafusion::arrow::array::Array;
@@ -1059,6 +1060,98 @@ mod tests {
         let rendered = output.logical_plan.display_indent().to_string();
         assert!(rendered.contains("Aggregate"), "{rendered}");
         assert!(rendered.contains("Projection"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_aggregate"),
+            "aggregate aliases should be readable in plan output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn compile_query_uses_readable_aggregate_aliases_in_join_group_plan() {
+        let mut query = join_query(JoinKind::Inner);
+        query.has_aggregates = true;
+        query.has_group_by = true;
+        query.targets = vec![
+            target_with_ref("b", var_attnum(1, 2, int4_type()), 1, 1, false),
+            Target {
+                resno: 2,
+                ..count_target("count", 0, false)
+            },
+        ];
+        query.group_refs = vec![1];
+
+        let resolved = query
+            .resolve_catalog(&FakeResolver)
+            .expect("frontend join aggregate query should resolve against catalog");
+        let output = compile_query(
+            resolved,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("join aggregate query should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(rendered.contains("Aggregate"), "{rendered}");
+        assert!(rendered.contains("count"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_aggregate"),
+            "join aggregate aliases should be readable in plan output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn compile_query_deduplicates_readable_aggregate_aliases() {
+        let mut query = query_for_resolved_table();
+        query.has_aggregates = true;
+        query.targets = vec![
+            Target {
+                expr: QueryExpr::AggregateCall {
+                    func: AggregateFunction::Min,
+                    args: vec![target_var_attnum(1)],
+                    distinct: false,
+                    filter: None,
+                    pg_type: int4_type(),
+                },
+                name: Some("min_first".into()),
+                pg_type: int4_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::AggregateCall {
+                    func: AggregateFunction::Min,
+                    args: vec![target_var_attnum(2)],
+                    distinct: false,
+                    filter: None,
+                    pg_type: int4_type(),
+                },
+                name: Some("min_second".into()),
+                pg_type: int4_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let resolved = query
+            .resolve_catalog(&FakeResolver)
+            .expect("frontend aggregate query should resolve against catalog");
+        let output = compile_query(
+            resolved,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("duplicate aggregate names should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(rendered.contains("min_2"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_aggregate"),
+            "duplicate aggregate aliases should keep readable suffixes: {rendered}"
+        );
     }
 
     #[test]
@@ -1131,6 +1224,163 @@ mod tests {
         let rendered = output.logical_plan.display_indent().to_string();
         assert!(rendered.contains("Aggregate"), "{rendered}");
         assert!(rendered.contains("groupBy"), "{rendered}");
+    }
+
+    #[test]
+    fn compile_query_uses_readable_window_aliases() {
+        let mut query = query_for_resolved_table();
+        query.has_windows = true;
+        query.windows = vec![WindowSpec {
+            ref_id: 1,
+            partition_refs: Vec::new(),
+            order: Vec::new(),
+            frame: WindowFrameSpec {
+                units: WindowFrameUnits::Range,
+                start: WindowFrameBound::UnboundedPreceding,
+                end: WindowFrameBound::UnboundedFollowing,
+            },
+        }];
+        query.targets = vec![
+            Target {
+                expr: QueryExpr::WindowCall {
+                    func: WindowFunctionKind::RowNumber,
+                    args: Vec::new(),
+                    winref: 1,
+                    filter: None,
+                    distinct: false,
+                    pg_type: int8_type(),
+                },
+                name: Some("rn".into()),
+                pg_type: int8_type(),
+                resno: 1,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::WindowCall {
+                    func: WindowFunctionKind::Aggregate(AggregateFunction::Avg),
+                    args: vec![target_var_attnum(1)],
+                    winref: 1,
+                    filter: None,
+                    distinct: false,
+                    pg_type: int4_type(),
+                },
+                name: Some("avg_first".into()),
+                pg_type: int4_type(),
+                resno: 2,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::WindowCall {
+                    func: WindowFunctionKind::Aggregate(AggregateFunction::Avg),
+                    args: vec![target_var_attnum(2)],
+                    winref: 1,
+                    filter: None,
+                    distinct: false,
+                    pg_type: int4_type(),
+                },
+                name: Some("avg_second".into()),
+                pg_type: int4_type(),
+                resno: 3,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let resolved = query
+            .resolve_catalog(&FakeResolver)
+            .expect("frontend window query should resolve against catalog");
+        let output = compile_query(
+            resolved,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("window query should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(rendered.contains("row_number"), "{rendered}");
+        assert!(rendered.contains("avg_2"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_window"),
+            "window aliases should be readable in plan output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn compile_query_window_aliases_avoid_existing_aggregate_names() {
+        let mut query = query_for_resolved_table();
+        query.has_aggregates = true;
+        query.has_group_by = true;
+        query.has_windows = true;
+        query.group_refs = vec![1, 2];
+        query.windows = vec![WindowSpec {
+            ref_id: 1,
+            partition_refs: vec![2],
+            order: vec![SortKey {
+                target_ref: 1,
+                asc: true,
+                nulls_first: false,
+            }],
+            frame: WindowFrameSpec {
+                units: WindowFrameUnits::Range,
+                start: WindowFrameBound::UnboundedPreceding,
+                end: WindowFrameBound::CurrentRow,
+            },
+        }];
+        let sum_call = QueryExpr::AggregateCall {
+            func: AggregateFunction::Sum,
+            args: vec![target_var_attnum(3)],
+            distinct: false,
+            filter: None,
+            pg_type: int8_type(),
+        };
+        query.targets = vec![
+            target_with_ref("ten", target_var_attnum(1), 1, 1, false),
+            target_with_ref("two", target_var_attnum(2), 2, 2, false),
+            Target {
+                expr: sum_call.clone(),
+                name: Some("gsum".into()),
+                pg_type: int8_type(),
+                resno: 3,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+            Target {
+                expr: QueryExpr::WindowCall {
+                    func: WindowFunctionKind::Aggregate(AggregateFunction::Sum),
+                    args: vec![sum_call],
+                    winref: 1,
+                    filter: None,
+                    distinct: false,
+                    pg_type: int8_type(),
+                },
+                name: Some("wsum".into()),
+                pg_type: int8_type(),
+                resno: 4,
+                ressortgroupref: 0,
+                resjunk: false,
+            },
+        ];
+
+        let resolved = query
+            .resolve_catalog(&FakeResolver)
+            .expect("frontend aggregate window query should resolve against catalog");
+        let output = compile_query(
+            resolved,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("aggregate window query should lower into a typed logical plan");
+
+        let rendered = output.logical_plan.display_indent().to_string();
+        assert!(rendered.contains("sum_2"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_aggregate") && !rendered.contains("__pgfusion_window"),
+            "aggregate and window aliases should be readable and unique: {rendered}"
+        );
     }
 
     #[test]
@@ -1331,9 +1581,14 @@ mod tests {
         assert!(rendered.contains("Cross Join"), "{rendered}");
         assert!(rendered.contains("Aggregate"), "{rendered}");
         assert!(rendered.contains("pg_scalar_subquery_value"), "{rendered}");
+        assert!(rendered.contains("scalar_subquery_value"), "{rendered}");
         assert!(
             !rendered.contains("scalar_subquery_1\n  Values"),
             "scalar subquery binding must join the aggregate result, not raw subquery rows: {rendered}"
+        );
+        assert!(
+            !rendered.contains("__pgfusion_scalar_subquery"),
+            "scalar subquery aliases should be readable in plan output: {rendered}"
         );
 
         let decoded = roundtrip_plan(output.logical_plan);
@@ -1341,6 +1596,10 @@ mod tests {
         assert!(
             decoded_rendered.contains("pg_scalar_subquery_value"),
             "encoded scalar subquery plan must decode with the cardinality aggregate: {decoded_rendered}"
+        );
+        assert!(
+            !decoded_rendered.contains("__pgfusion_scalar_subquery"),
+            "encoded scalar subquery aliases should stay readable: {decoded_rendered}"
         );
     }
 
@@ -1379,11 +1638,20 @@ mod tests {
         let rendered = output.logical_plan.display_indent().to_string();
         assert!(rendered.contains("Cross Join"), "{rendered}");
         assert!(rendered.contains("pg_scalar_subquery_value"), "{rendered}");
+        assert!(rendered.contains("scalar_subquery_value"), "{rendered}");
+        assert!(
+            !rendered.contains("__pgfusion_scalar_subquery"),
+            "projected scalar subquery aliases should be readable: {rendered}"
+        );
         let decoded = roundtrip_plan(output.logical_plan);
         let decoded_rendered = decoded.display_indent().to_string();
         assert!(
             decoded_rendered.contains("pg_scalar_subquery_value"),
             "encoded projected scalar subquery plan must decode with the cardinality aggregate: {decoded_rendered}"
+        );
+        assert!(
+            !decoded_rendered.contains("__pgfusion_scalar_subquery"),
+            "encoded projected scalar subquery aliases should stay readable: {decoded_rendered}"
         );
     }
 
