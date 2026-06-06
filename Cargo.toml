@@ -46,9 +46,9 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-pgrx-pg-sys = "0.16"
-pgrx = "0.16"
-pgrx-tests = "0.16"
+pgrx-pg-sys = "0.18"
+pgrx = "0.18"
+pgrx-tests = "0.18"
 arrow-array = "58.3"
 arrow-arith = "58.3"
 arrow-buffer = "58.3"

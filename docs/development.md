@@ -22,10 +22,20 @@ Install Rust with `rustup`, then add formatting and linting components:
 rustup component add rustfmt clippy
 ```
 
-Install and initialize pgrx:
+Install a matching `cargo-pgrx` binary and initialize pgrx. The `cargo-pgrx`
+binary must match the exact patch version Cargo selects for the `pgrx` crate.
+Check the selected version with:
 
 ```sh
-cargo install cargo-pgrx
+cargo tree -p pgrx --depth 0
+```
+
+Then install the same `cargo-pgrx` version:
+
+```sh
+PGRX_VERSION=$(cargo tree -p pgrx --depth 0 | sed -n 's/^pgrx v//p')
+cargo install cargo-pgrx --version "$PGRX_VERSION" --locked --force
+cargo pgrx --version
 cargo pgrx init --pg17 $(which pg_config)
 ```
 
@@ -78,7 +88,7 @@ make -j install
 ```
 
 Then initialize pgrx against that exact PostgreSQL 17 installation and build
-`pg_fusion` in release mode:
+or run `pg_fusion` in release mode:
 
 ```sh
 WORK_ROOT=/path/to/workspace
@@ -86,6 +96,7 @@ WORK_ROOT=/path/to/workspace
 cd "$WORK_ROOT/pg_fusion"
 cargo pgrx init --pg17 "$WORK_ROOT/postgres-17/build/bin/pg_config"
 cargo build --release -p pg_fusion
+cargo pgrx run pg17 -p pg_fusion --release
 ```
 
 ## Common Commands

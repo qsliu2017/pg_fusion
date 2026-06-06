@@ -15,8 +15,19 @@ For contributor setup, see [Development](development.md).
 
 ## Install pgrx
 
+`cargo-pgrx` and the `pgrx` crates must use the same exact patch version.
+Check the selected `pgrx` version:
+
 ```sh
-cargo install cargo-pgrx
+cargo tree -p pgrx --depth 0
+```
+
+Then install the matching `cargo-pgrx` binary:
+
+```sh
+PGRX_VERSION=$(cargo tree -p pgrx --depth 0 | sed -n 's/^pgrx v//p')
+cargo install cargo-pgrx --version "$PGRX_VERSION" --locked --force
+cargo pgrx --version
 cargo pgrx init --pg17 $(which pg_config)
 ```
 

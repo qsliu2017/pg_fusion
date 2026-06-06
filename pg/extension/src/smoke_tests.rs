@@ -1,5 +1,6 @@
 use control_transport::{AcquireError, BackendSlotLease};
 use postgres::{Client, SimpleQueryMessage, Transaction};
+use std::ffi::CStr;
 use std::io::Read;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -44,8 +45,46 @@ fn wait_for_worker() {
 
 pub(crate) fn smoke_client() -> Client {
     wait_for_worker();
-    let (client, _session_id) = pgrx_tests::client().expect("connect to pgrx test cluster");
-    client
+    let (port, dbname, user) = current_backend_connection();
+    postgres::Config::new()
+        .host("127.0.0.1")
+        .port(port)
+        .user(&user)
+        .dbname(&dbname)
+        .connect(postgres::NoTls)
+        .expect("connect to pgrx test cluster")
+}
+
+fn current_backend_connection() -> (u16, String, String) {
+    unsafe {
+        let raw_port = pgrx::pg_sys::PostPortNumber;
+        let port = u16::try_from(raw_port).expect("PostPortNumber must fit in u16");
+        let proc_port = pgrx::pg_sys::libpq::be::MyProcPort;
+        assert!(
+            !proc_port.is_null(),
+            "MyProcPort must be set in a client backend"
+        );
+        let dbname = current_database_name();
+        let user = current_user_name();
+        (port, dbname, user)
+    }
+}
+
+unsafe fn current_database_name() -> String {
+    let dbname = unsafe { pgrx::pg_sys::get_database_name(pgrx::pg_sys::MyDatabaseId) };
+    cstr_to_string(dbname, "current database")
+}
+
+unsafe fn current_user_name() -> String {
+    let user = unsafe { pgrx::pg_sys::GetUserNameFromId(pgrx::pg_sys::GetUserId(), false) };
+    cstr_to_string(user, "current user")
+}
+
+unsafe fn cstr_to_string(ptr: *const std::os::raw::c_char, name: &str) -> String {
+    assert!(!ptr.is_null(), "{name} must be set");
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(crate) fn smoke_transaction(client: &mut Client) -> Transaction<'_> {
