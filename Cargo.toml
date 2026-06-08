@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "benches/tpch/runner",
   "join_order",
   "lockfree",
   "runtime/control_transport",

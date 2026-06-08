@@ -1,156 +1,217 @@
-# TPC-H Diagnostic Benchmark
+# Native TPC-H Diagnostic Benchmark
 
-This directory contains a small TPC-H-compatible harness for comparing vanilla
-PostgreSQL with `pg_fusion`. It is intended for local engineering diagnosis, not
-for audited TPC-H publication.
+This directory contains the native TPC-H harness for comparing vanilla
+PostgreSQL with `pg_fusion`. It is intended for local engineering diagnosis,
+not for audited TPC-H publication.
 
-The checked-in query set follows TPC-H table names and operator patterns, but it
-is adapted to the current `pg_fusion` data path:
+The supported runner is the Rust binary crate `pg_fusion_tpch`. It embeds the
+Apache-2.0 `tpchgen` crate, streams generated rows directly into PostgreSQL with
+`COPY FROM STDIN`, and loads a native schema:
 
-- money/decimal fields are loaded as `double precision`;
-- date fields are loaded as ISO `text` values, so range predicates still work
-  lexicographically;
-- some queries intentionally contain subqueries/CTEs to show which shapes still
-  fail under the strict query-tree frontend.
+- TPC-H decimal fields use `numeric(15,2)`;
+- TPC-H date fields use PostgreSQL `date`;
+- query outputs are compared between `pg_fusion.enable = off` and
+  `pg_fusion.enable = on`.
 
-Those choices keep this historical diagnostic focused on scan and DataFusion
-operator behavior. They do not exercise the newer finite `numeric` or `date`
-scan transport paths.
+## Build And Install pg_fusion
 
-## Prerequisites
+Use release builds for benchmark runs; debug builds are too slow for meaningful
+timings. No external TPC-H generator is required.
 
-Install the generator:
+For a local pgrx-managed PostgreSQL 17 cluster:
 
 ```sh
-cargo install tpchgen-cli
+cargo pgrx init --pg17 $(which pg_config)
+cargo build --release -p pg_fusion
 ```
 
-Build and run a PostgreSQL instance that preloads `pg_fusion`:
+For an external PostgreSQL 17 installation, build and install against that
+server's `pg_config`:
 
 ```sh
-cargo build -p pg_fusion
+cargo pgrx install --release -p pg_fusion --pg-config /path/to/pg_config
+```
+
+`pg_fusion` must be preloaded before PostgreSQL starts:
+
+```conf
+shared_preload_libraries = 'pg_fusion'
+```
+
+## Runtime Settings For Benchmarks
+
+`shared_preload_libraries` is only the required loading hook. For stable TPC-H
+runs, configure the worker, shared-memory transport, page pool, scan streaming,
+and runtime filter pool before starting PostgreSQL. A practical profile for a
+16 GiB development machine is:
+
+```conf
+shared_preload_libraries = 'pg_fusion'
+
+pg_fusion.worker_threads = 0
+pg_fusion.worker_memory_limit_mb = 2048
+pg_fusion.worker_spill_directory = '/tmp/pg_fusion_spill'
+
+pg_fusion.control_slot_count = 128
+pg_fusion.control_backend_to_worker_capacity = 65536
+pg_fusion.control_worker_to_backend_capacity = 65536
+
+pg_fusion.scan_slot_count = 256
+pg_fusion.scan_backend_to_worker_capacity = 4096
+pg_fusion.scan_worker_to_backend_capacity = 4096
+
+pg_fusion.page_size = 262144
+pg_fusion.page_count = 1024
+
+pg_fusion.scan_fetch_batch_rows = 4096
+pg_fusion.scan_batch_channel_capacity = 128
+pg_fusion.scan_idle_poll_interval_us = 50
+
+pg_fusion.runtime_filter_enable = on
+pg_fusion.runtime_filter_count = 128
+pg_fusion.runtime_filter_bits = 4194304
+pg_fusion.runtime_filter_hashes = 4
+```
+
+Most of these settings are postmaster-level and require a PostgreSQL restart.
+`pg_fusion.page_size * pg_fusion.page_count` is the fixed shared page pool; the
+profile above reserves about 256 MiB for pages. Runtime filters reserve roughly
+`pg_fusion.runtime_filter_count * pg_fusion.runtime_filter_bits / 8`, about
+64 MiB in this profile, plus overhead. `pg_fusion.worker_memory_limit_mb` caps
+the DataFusion worker memory pool; it is separate from PostgreSQL
+`shared_buffers`.
+
+For smaller machines, reduce `pg_fusion.page_count` first, then
+`pg_fusion.runtime_filter_count` or `pg_fusion.runtime_filter_bits`, then
+`pg_fusion.worker_memory_limit_mb`. Defaults may be enough for SF0.01 smoke
+runs, but use this profile or
+[Quick Start](../../docs/quickstart.md#configure-postgresql) for SF1 and larger
+comparisons. The full GUC reference is in
+[Configuration](../../docs/configuration.md).
+
+Restart PostgreSQL after changing preload or postmaster-level `pg_fusion`
+settings. For a pgrx-managed cluster, start PostgreSQL and open `psql` with:
+
+```sh
 cargo pgrx start pg17
+cargo pgrx run --release pg17 -p pg_fusion
 ```
 
-If the extension is not already installed in the pgrx cluster, run:
+Then install the extension in the benchmark database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_fusion;
+
+SHOW shared_preload_libraries;
+SELECT extversion FROM pg_extension WHERE extname = 'pg_fusion';
+```
+
+The runner toggles `pg_fusion.enable` for vanilla and Fusion measurements. It
+also sets `max_parallel_workers_per_gather` from `--parallel-workers` for each
+session.
+
+## PostgreSQL Connection
+
+The runner accepts standard connection options:
+
+- `--dbname` / `-d` for the database name;
+- `--host` for TCP host or Unix socket directory;
+- `--port` for PostgreSQL port;
+- `--user` / `-U` for the PostgreSQL user.
+
+If these flags are omitted, it reads `PGDATABASE`, `PGHOST`, `PGPORT`,
+`PGUSER`, and `PGPASSWORD`. Passwords should be passed through `PGPASSWORD`;
+there is no `--password` flag.
+
+For a TCP connection:
 
 ```sh
-cargo pgrx run pg17 -p pg_fusion
+PGPASSWORD=secret cargo run --release -p pg_fusion_tpch -- \
+  --host localhost \
+  --port 5432 \
+  --user postgres \
+  --dbname pg_fusion \
+  --scale-factor 0.01
 ```
 
-The benchmark script auto-detects `psql` from `$PSQL`, `PATH`, and common pgrx
-install directories such as `~/.pgrx/17.7/pgrx-install/bin/psql`.
-If a single pgrx Unix socket exists under `~/.pgrx`, the script also
-auto-detects its socket directory and port.
+For a Unix socket connection:
+
+```sh
+cargo run --release -p pg_fusion_tpch -- \
+  --host /tmp \
+  --port 5432 \
+  --user postgres \
+  --dbname pg_fusion
+```
+
+When `--host`, `--port`, `PGHOST`, and `PGPORT` are absent, the runner tries to
+auto-detect a single pgrx Unix socket under `~/.pgrx`.
 
 ## Quick Run
 
 From the repository root:
 
 ```sh
-python3 benches/tpch/scripts/tpch_bench.py \
+cargo run --release -p pg_fusion_tpch -- \
   --dbname pg_fusion \
   --scale-factor 0.01 \
   --runs 3 \
   --warmup 1
 ```
 
-By default the script:
+By default the runner:
 
-1. generates CSV data under `benches/tpch/data/sf_0_01/`;
-2. recreates schema `tpch`;
-3. loads all TPC-H tables with `\copy`;
-4. runs each query with `pg_fusion.enable = off`;
-5. runs each query with `pg_fusion.enable = on`;
-6. writes CSV and JSON summaries under `benches/tpch/results/`.
+1. recreates schema `tpch`;
+2. streams generated TPC-H rows into PostgreSQL;
+3. analyzes all benchmark tables;
+4. runs each selected query with `pg_fusion.enable = off` and `on`;
+5. alternates measured modes to reduce hot-cache ordering bias;
+6. prints a console comparison report;
+7. writes CSV and JSON summaries under `benches/tpch/results/`.
 
 To reuse an existing loaded schema:
 
 ```sh
-python3 benches/tpch/scripts/tpch_bench.py \
+cargo run --release -p pg_fusion_tpch -- \
   --dbname pg_fusion \
   --no-prepare \
-  --queries q01,q03,q06
+  --queries q01,q06,q14
 ```
 
 To only generate and load data:
 
 ```sh
-python3 benches/tpch/scripts/tpch_bench.py \
+cargo run --release -p pg_fusion_tpch -- \
   --dbname pg_fusion \
+  --scale-factor 1 \
   --only-prepare
 ```
 
 ## Useful Options
 
-- `--scale-factor 0.01` controls `tpchgen-cli -s`.
+- `--scale-factor 0.01` controls embedded `tpchgen` generation.
 - `--schema tpch` selects the PostgreSQL schema to drop/recreate.
-- `--queries all` or `--queries q01,q06,q14` selects query files.
+- `--queries all` or `--queries q01,q06,q14` selects query ids.
 - `--parallel-workers 2` sets PostgreSQL `max_parallel_workers_per_gather` for
   both vanilla and `pg_fusion` runs.
-- `--timeout 120` caps each query/mode run.
-- `--float-abs-tolerance 1e-6` and `--float-rel-tolerance 1e-9` control
-  numeric output comparison. This avoids treating harmless `double precision`
-  display rounding differences as result mismatches.
-- `--psql /path/to/psql` and `--tpchgen /path/to/tpchgen-cli` override binary
-  detection.
+- `--timeout 120` sets PostgreSQL `statement_timeout` for each query/mode run.
+- `--host`, `--port`, `--user`, and `--dbname` configure the PostgreSQL
+  connection. If a single pgrx Unix socket exists under `~/.pgrx`, the runner
+  auto-detects it when host/port are not set.
+- `--no-color` disables ANSI status colors in the console report.
 
-The script emits median latency for measured runs and compares result rows.
-It also sets PostgreSQL `statement_timeout` for each query so timed-out
-benchmarks cancel the server-side backend work instead of leaving active
-queries behind.
-If a `pg_fusion` query crashes or restarts the PostgreSQL postmaster, later
-rows in the same run are not meaningful; restart the pgrx cluster and rerun a
-smaller `--queries` subset.
+## Result Comparison
+
+The runner compares vanilla PostgreSQL and `pg_fusion` output exactly. A query
+is `ok` only when both modes succeed and the `COPY ... TO STDOUT WITH (FORMAT
+csv)` bytes are identical. Numeric formatting, row order, dates, text values,
+and NULL representation must match. Any numeric drift is a correctness failure
+for this benchmark.
+
 Statuses are:
 
 - `ok`: vanilla and `pg_fusion` both succeeded and returned matching rows;
-- `mismatch`: both succeeded but output rows differed beyond numeric tolerance;
-- `fusion_fail`: vanilla succeeded but `pg_fusion` failed;
+- `mismatch`: both succeeded but byte-identical output differed;
+- `fusion_fail`: vanilla preflight succeeded, but `pg_fusion` failed or did
+  not plan through `PgFusionScan`;
 - `pg_fail`: vanilla PostgreSQL failed, so the comparison is invalid.
-
-## Interpreting Results
-
-For scan-latency experiments, start with the single-table and light-join
-queries:
-
-- `q01`, `q06`, `q14`, and `q19` stress lineitem scan/filters/aggregates.
-- `q03`, `q05`, `q10`, and `q12` add joins and grouped aggregation.
-- `q04`, `q11`, `q15`, `q17`, `q18`, `q20`, `q21`, and `q22` include
-  subqueries or CTEs and are expected to expose current planner limitations.
-
-When a query is slow, reset runtime metrics and rerun the query manually:
-
-```sql
-SELECT pg_fusion_metrics_reset();
-SET pg_fusion.enable = on;
-SELECT ...;
-SELECT *
-FROM pg_fusion_metrics()
-ORDER BY component, metric;
-```
-
-`scan_page_fill_ns` is the coarse backend scan-page timer and includes executor
-work, receiver callback work, and slot-to-Arrow conversion. Use a flamegraph for
-deformation/page-write attribution. If the benchmark ratio is poor, inspect
-`scan_b2w_wait_ns`, `scan_batch_send_ns`, `scan_batch_delivery_ns`, and
-`scan_idle_sleep_ns` to separate page handoff, DataFusion channel backpressure,
-worker-local scan delivery, and idle polling.
-
-## Q05 Encoder Microbenchmark
-
-To isolate PostgreSQL-free Rust page encoding work, run the Criterion
-benchmark:
-
-```sh
-PG_FUSION_TPCH_DIR=benches/tpch/data/sf_0_01 \
-  cargo bench -p row_encoder --bench q05_encode
-```
-
-The benchmark reads the same ignored CSV files generated by this harness and
-encodes the columns used by q05 PostgreSQL leaf scans into 64 KiB-style
-`arrow_layout` pages. It isolates the PostgreSQL-free page writer; PostgreSQL
-slot deformation, datum extraction, and detoasting still need PostgreSQL-side
-profiling. If the CSV directory is absent, it falls back to a deterministic
-q05-like synthetic fixture so the benchmark target still compiles and runs
-without PostgreSQL.

@@ -9,28 +9,62 @@ Benchmark results should be read together with query plans and metrics. A
 pg_fusion query can be slower if scan, tuple decoding, Arrow encoding, or page
 transport dominates the DataFusion-side work.
 
-## TPC-H Diagnostic Harness
+## Native TPC-H Harness
 
-The harness lives in:
+The supported TPC-H harness is the Rust binary crate:
 
 ```text
-benches/tpch/
+benches/tpch/runner
 ```
 
-It compares vanilla PostgreSQL with `pg_fusion` for selected query shapes.
+It embeds the Apache-2.0 `tpchgen` crate, streams generated rows into
+PostgreSQL with `COPY FROM STDIN`, and uses native PostgreSQL `numeric(15,2)`
+and `date` columns.
 
 ## Prerequisites
 
+Use release builds for benchmark runs; debug builds are too slow for meaningful
+timings.
+
+For a local pgrx-managed PostgreSQL 17 cluster:
+
 ```sh
-cargo install tpchgen-cli
-cargo build -p pg_fusion
-cargo pgrx start pg17
+cargo pgrx init --pg17 $(which pg_config)
+cargo build --release -p pg_fusion
 ```
 
-If needed, install the extension into the pgrx cluster:
+For an external PostgreSQL 17 installation:
 
 ```sh
-cargo pgrx run pg17 -p pg_fusion
+cargo pgrx install --release -p pg_fusion --pg-config /path/to/pg_config
+```
+
+Set `shared_preload_libraries = 'pg_fusion'` before PostgreSQL starts. For
+stable TPC-H runs, also size the page pool, scan slots, control rings,
+DataFusion worker memory, and runtime filter pool. One useful 16 GiB
+development profile is in [Quick Start](quickstart.md#configure-postgresql);
+all GUCs and sizing tradeoffs are listed in [Configuration](configuration.md).
+After changing preload or postmaster-level `pg_fusion` settings, restart
+PostgreSQL, then run `cargo pgrx start pg17` and
+`cargo pgrx run --release pg17 -p pg_fusion` for a pgrx-managed cluster. Run
+`CREATE EXTENSION IF NOT EXISTS pg_fusion;` in the benchmark database. The TPC-H
+runner toggles `pg_fusion.enable` itself and sets
+`max_parallel_workers_per_gather` from `--parallel-workers`.
+
+## PostgreSQL Connection
+
+Use `--dbname` / `-d`, `--host`, `--port`, and `--user` / `-U` for explicit
+connections. The runner also reads `PGDATABASE`, `PGHOST`, `PGPORT`, `PGUSER`,
+and `PGPASSWORD`. Passwords should use `PGPASSWORD`; there is no `--password`
+flag.
+
+```sh
+PGPASSWORD=secret cargo run --release -p pg_fusion_tpch -- \
+  --host localhost \
+  --port 5432 \
+  --user postgres \
+  --dbname pg_fusion \
+  --scale-factor 0.01
 ```
 
 ## Quick Run
@@ -38,26 +72,27 @@ cargo pgrx run pg17 -p pg_fusion
 From the repository root:
 
 ```sh
-python3 benches/tpch/scripts/tpch_bench.py \
+cargo run --release -p pg_fusion_tpch -- \
   --dbname pg_fusion \
   --scale-factor 0.01 \
   --runs 3 \
   --warmup 1
 ```
 
-By default, the script:
+By default, the runner:
 
-1. generates CSV data;
-2. recreates the benchmark schema;
-3. loads TPC-H tables;
+1. recreates the benchmark schema;
+2. streams generated TPC-H data into PostgreSQL;
+3. analyzes the tables;
 4. runs each query with `pg_fusion.enable = off`;
 5. runs each query with `pg_fusion.enable = on`;
-6. writes CSV and JSON summaries.
+6. alternates measured modes to reduce hot-cache ordering bias;
+7. writes CSV and JSON summaries.
 
 ## Reuse An Existing Schema
 
 ```sh
-python3 benches/tpch/scripts/tpch_bench.py \
+cargo run --release -p pg_fusion_tpch -- \
   --dbname pg_fusion \
   --no-prepare \
   --queries q01,q03,q06
@@ -66,61 +101,18 @@ python3 benches/tpch/scripts/tpch_bench.py \
 ## Result Statuses
 
 - `ok`: PostgreSQL and pg_fusion both succeeded and returned matching rows.
-- `mismatch`: both succeeded but output rows differed beyond tolerance.
-- `fusion_fail`: PostgreSQL succeeded but pg_fusion failed.
+- `mismatch`: both succeeded but byte-identical output differed.
+- `fusion_fail`: vanilla preflight succeeded, but pg_fusion failed or did not
+  plan through `PgFusionScan`.
 - `pg_fail`: PostgreSQL failed, so the comparison is invalid.
 
-## Latest Checked-In SF1 Snapshot
+## Report Output
 
-The latest checked-in SF1 summary is
-`benches/tpch/results/tpch_sf_1_20260518T132909Z.csv`. It contains 19 `ok`
-queries with matching PostgreSQL and pg_fusion results.
-
-The ratio column is `fusion_median_ms / pg_median_ms`, so lower is better for
-pg_fusion. This snapshot uses a +/-10% bucket for "about the same". The faster
-numbers below are speedups; the slower numbers are slowdowns.
-
-| Bucket | Queries |
-| --- | --- |
-| Faster | `q01` 1.19x, `q02` 1.78x, `q04` 1.25x, `q09` 1.85x, `q13` 3.03x, `q16` 2.28x, `q18` 2.93x |
-| About the same | `q06` 1.01x |
-| Slower | `q03` 1.23x, `q05` 1.81x, `q07` 1.42x, `q08` 1.52x, `q10` 1.23x, `q11` 1.14x, `q12` 2.68x, `q14` 1.57x, `q15` 1.53x, `q19` 1.33x, `q22` 1.44x |
-
-Recent SF1 observations also show `q20` and `q21` as orders-of-magnitude
-pg_fusion wins. They are not included in the table above because this checked-in
-SF1 summary does not contain `q20` or `q21` rows, so exact timings are omitted
-here.
-
-## Interpreting Results
-
-Do not look only at absolute timings. PostgreSQL scan timing can vary with data
-cache state and background system activity. Compare ratios across repeated runs
-and inspect plans.
-
-If pg_fusion is unexpectedly slow, rerun the query manually with metrics:
-
-```sql
-SELECT pg_fusion_metrics_reset();
-SET pg_fusion.enable = on;
-SELECT ...;
-
-SELECT component, metric, value, unit
-FROM pg_fusion_metrics()
-WHERE value <> 0
-ORDER BY component, metric;
-```
-
-Common explanations:
-
-- `scan_page_fill_ns` dominates: PostgreSQL scan and Arrow encoding are the
-  main cost.
-- `scan_rows_encoded_total` is high: filters or runtime filters did not reduce
-  enough rows before encoding.
-- `scan_bytes_sent_total` is high: projection may be too wide.
-- `scan_batch_send_ns` is high: DataFusion is applying backpressure to scan
-  streams.
-- result page metrics are high: the query returns a large result set to
-  PostgreSQL.
+The console report shows median latency for measured runs. `speedup` is
+`pg_median_ms / fusion_median_ms`, so values above `1` mean `pg_fusion` was
+faster. The JSON artifact includes raw timings, row counts, result hashes,
+PostgreSQL metadata, and pg_fusion extension version when available. For runtime
+diagnostics, use [Metrics](metrics.md).
 
 ## Useful Query Groups
 
@@ -138,15 +130,19 @@ For joins and grouped aggregation, inspect:
 - `q10`;
 - `q12`.
 
-Queries with subqueries or CTEs are useful for exposing current planner
-limitations.
+The remaining canonical-derived queries are useful for planner coverage and
+failure reporting.
 
-## Q05 Encoder Microbenchmark
+## Row Encoder Microbenchmark
 
 To isolate PostgreSQL-free Rust page encoding work, run the Criterion
 benchmark:
 
 ```sh
-PG_FUSION_TPCH_DIR=benches/tpch/data/sf_0_01 \
-  cargo bench -p row_encoder --bench q05_encode
+cargo bench -p row_encoder --bench q05_encode
 ```
+
+This is not a vanilla-vs-Fusion TPC-H run. The benchmark name reflects its
+q05-shaped input fixture. If `PG_FUSION_TPCH_DIR` points to compatible CSV
+files, the benchmark uses them; otherwise it falls back to a deterministic
+synthetic fixture.

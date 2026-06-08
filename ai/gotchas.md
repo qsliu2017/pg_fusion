@@ -100,10 +100,24 @@ importance: 0.7
   schema aligned with page-backed shared-memory batches and avoids copying
   string payloads at the scan boundary. `scan_sql` still renders these values as
   PostgreSQL `TEXT`.
-- The `benches/tpch` harness is diagnostic rather than official TPC-H. Its
-  schema stores TPC-H decimal columns as `double precision` and date columns as
-  ISO `text` to keep historical benchmark comparisons stable; this schema does
-  not exercise the newer finite Decimal128/date scan transport paths.
+- The supported `benches/tpch` harness is diagnostic rather than official
+  TPC-H. Its Rust runner streams embedded `tpchgen` rows into a native
+  PostgreSQL schema with `numeric(15,2)` decimal columns and `date` columns, so
+  it intentionally exercises the finite Decimal128/date scan transport paths.
+  Vanilla and pg_fusion outputs are compared as byte-identical CSV; numeric
+  drift is a benchmark failure, not tolerated by the runner.
+  Query selection is validated before schema preparation so invalid ids must
+  fail before database mutation. pgrx socket autodetection is only a fallback
+  when host and port are absent from both CLI args and environment.
+  Connection resolution intentionally uses only CLI args and standard
+  `PGDATABASE`/`PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` variables to reduce
+  destructive-prepare ambiguity. Row counts are derived from COPY CSV record
+  terminators so one-column NULL rows emitted as a bare newline still count as
+  rows. Each selected query runs a vanilla `EXPLAIN` preflight before Fusion
+  `EXPLAIN`, so missing/stale schemas and ordinary SQL failures classify as
+  `pg_fail` rather than `fusion_fail`. Embedded TPC-H query templates should
+  stay canonical-derived, including top-N `LIMIT` clauses; do not edit query
+  semantics to fit current planner behavior.
 - PostgreSQL `max_parallel_workers_per_gather` controls the query-wide CTID
   block-range dynamic scan worker budget for eligible heap scans. `0` means
   leader-only portal streaming; positive values allow up to that many dynamic
