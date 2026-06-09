@@ -3,6 +3,7 @@ use super::{
     PageBatchEncoder, SlotFilterKeyRef, SlotFilterKeyType,
 };
 use arrow_layout::{init_block, BlockRef, ColumnSpec, LayoutPlan, TypeTag};
+use pg_type::{date32_from_pg_date, PG_DATE_NEG_INFINITY};
 use pgrx_pg_sys as pg_sys;
 use std::alloc::{alloc_zeroed, dealloc, GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -694,10 +695,32 @@ fn append_slot_encodes_temporal_values() {
     encoder.finish().expect("finish");
 
     let block = BlockRef::open(&payload).expect("block");
-    assert_eq!(i32_at(&block, 0, 0), 19_000);
+    assert_eq!(i32_at(&block, 0, 0), date32_from_pg_date(19_000).unwrap());
     assert_eq!(i64_at(&block, 1, 0), 1_000_000);
     assert_eq!(i64_at(&block, 2, 0), 1_700_000_000_000_000);
     assert_eq!(i64_at(&block, 3, 0), 1_700_000_000_000_001);
+}
+
+#[test]
+fn append_slot_rejects_postgres_date_infinity() {
+    let specs = [ColumnSpec::new(TypeTag::Date32, false)];
+    let attrs = [TestAttr {
+        oid: pg_sys::DATEOID,
+        attlen: 4,
+        attbyval: true,
+        attalign: b'i',
+    }];
+    let tuple_desc = OwnedTupleDesc::new(&attrs);
+    let mut slot = OwnedSlot::from_cells(tuple_desc.ptr, vec![MockCell::I32(PG_DATE_NEG_INFINITY)]);
+
+    let mut payload = init_payload(&specs, 2, 512);
+    let mut encoder =
+        unsafe { PageBatchEncoder::new(tuple_desc.ptr, &mut payload) }.expect("encoder");
+    let err = unsafe { encoder.append_slot(slot.as_mut_ptr()) }.unwrap_err();
+    assert!(matches!(
+        err,
+        EncodeError::UnsupportedDate { index } if index == 0
+    ));
 }
 
 #[test]
@@ -898,7 +921,32 @@ fn with_filter_key_reads_supported_runtime_filter_keys() {
         )
     }
     .expect("date key");
-    assert_eq!(date_key, Some(19_000));
+    assert_eq!(date_key, Some(date32_from_pg_date(19_000).unwrap()));
+
+    let infinity_attrs = [TestAttr {
+        oid: pg_sys::DATEOID,
+        attlen: 4,
+        attbyval: true,
+        attalign: b'i',
+    }];
+    let infinity_tuple_desc = OwnedTupleDesc::new(&infinity_attrs);
+    let mut infinity_slot = OwnedSlot::from_cells(
+        infinity_tuple_desc.ptr,
+        vec![MockCell::I32(PG_DATE_NEG_INFINITY)],
+    );
+    let err = unsafe {
+        with_filter_key::<()>(
+            infinity_slot.as_mut_ptr(),
+            0,
+            SlotFilterKeyType::Date32,
+            |_| panic!("unsupported date infinity must not reach filter-key callback"),
+        )
+    }
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        EncodeError::UnsupportedDate { index } if index == 0
+    ));
 
     let time_key = unsafe {
         with_filter_key(

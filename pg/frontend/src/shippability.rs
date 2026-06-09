@@ -94,6 +94,7 @@ mod tests {
             pgrx::pg_sys::BPCHAROID,
             pgrx::pg_sys::NAMEOID,
             pgrx::pg_sys::BYTEAOID,
+            pgrx::pg_sys::DATEOID,
             pgrx::pg_sys::TIMEOID,
         ] {
             supported_non_null_const_type(type_ref(oid))
@@ -104,7 +105,6 @@ mod tests {
     #[test]
     fn non_null_const_types_reject_value_only_types() {
         for (oid, expected) in [
-            (pgrx::pg_sys::DATEOID, "date"),
             (pgrx::pg_sys::TIMESTAMPOID, "timestamp"),
             (pgrx::pg_sys::TIMESTAMPTZOID, "timestamptz"),
             (pgrx::pg_sys::UUIDOID, "uuid"),

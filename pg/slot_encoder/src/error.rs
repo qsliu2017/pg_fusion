@@ -84,6 +84,8 @@ pub enum EncodeError {
     MalformedVarlena { index: usize },
     #[error("PostgreSQL interval infinity at column {index} cannot be encoded as Arrow")]
     UnsupportedInfiniteInterval { index: usize },
+    #[error("PostgreSQL date value at column {index} cannot be encoded as Arrow Date32")]
+    UnsupportedDate { index: usize },
     #[error("PostgreSQL interval time at column {index} overflows Arrow nanoseconds")]
     IntervalTimeOverflow { index: usize },
     #[error(

@@ -29,8 +29,8 @@ timings.
 For a local pgrx-managed PostgreSQL 17 cluster:
 
 ```sh
-cargo pgrx init --pg17 $(which pg_config)
-cargo build --release -p pg_fusion
+cargo pgrx init --pg17 /path/to/pg_config
+cargo pgrx install --release -p pg_fusion --pg-config /path/to/pg_config
 ```
 
 For an external PostgreSQL 17 installation:
@@ -45,7 +45,7 @@ DataFusion worker memory, and runtime filter pool. One useful 16 GiB
 development profile is in [Quick Start](quickstart.md#configure-postgresql);
 all GUCs and sizing tradeoffs are listed in [Configuration](configuration.md).
 After changing preload or postmaster-level `pg_fusion` settings, restart
-PostgreSQL, then run `cargo pgrx start pg17` and
+PostgreSQL, then run `cargo pgrx start pg17 -p pg_fusion` and
 `cargo pgrx run --release pg17 -p pg_fusion` for a pgrx-managed cluster. Run
 `CREATE EXTENSION IF NOT EXISTS pg_fusion;` in the benchmark database. The TPC-H
 runner toggles `pg_fusion.enable` itself and sets

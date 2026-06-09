@@ -99,10 +99,12 @@ and `name` values accept PostgreSQL's built-in C collation. Text-like constants
 carry PostgreSQL OID/typmod/collation metadata into `scan_sql` so `text`,
 `varchar`, `bpchar`, and `name` predicates are rendered with PostgreSQL type
 semantics instead of untyped string literals.
-Non-null `date`, `timestamp`, and `timestamptz` constants fail closed until
-temporal representation is lossless across scan input, DataFusion execution,
-and PostgreSQL result import. Non-finite `float4`/`float8` constants are allowed
-so PostgreSQL float aggregate semantics can be preserved through DataFusion.
+Non-null `date` constants compile to Arrow `Date32` literals using the shared
+PostgreSQL DateADT to Unix-epoch conversion in `pg/type`. Non-null `timestamp`
+and `timestamptz` constants still fail closed until their temporal
+representation is lossless across scan input, DataFusion execution, and
+PostgreSQL result import. Non-finite `float4`/`float8` constants are allowed so
+PostgreSQL float aggregate semantics can be preserved through DataFusion.
 PostgreSQL `numeric` `NaN`/`Infinity` cannot enter Arrow Decimal128 execution:
 typed numeric constants and known text/VALUES sources cast to `numeric` fail in
 frontend planning before worker execution. Finite `numeric` comparisons across

@@ -6,7 +6,7 @@ use std::slice;
 use std::str;
 
 use datafusion_common::ScalarValue;
-use pg_type::scalar_for_pg_const;
+use pg_type::{date32_from_pg_date, scalar_for_pg_const};
 use pgrx::datum::FromDatum;
 use pgrx::pg_sys;
 

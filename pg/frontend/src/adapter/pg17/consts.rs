@@ -67,7 +67,12 @@ pub(super) unsafe fn read_const(constant: &pg_sys::Const) -> Result<Const, PgFro
             .unwrap(),
         ),
         oid if oid == pg_sys::DATEOID => {
-            return Err(unsupported_temporal_const("date"));
+            let value = unsafe { i32::from_datum(constant.constvalue, false) }.unwrap();
+            PgConstValue::Date32(date32_from_pg_date(value).ok_or_else(|| {
+                PgFrontendError::unsupported(
+                    "date constant is outside the Arrow Date32 finite range",
+                )
+            })?)
         }
         oid if oid == pg_sys::TIMEOID => PgConstValue::Time64Microsecond(time_const(
             unsafe { i64::from_datum(constant.constvalue, false) }.unwrap(),

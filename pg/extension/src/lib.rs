@@ -120,6 +120,16 @@ mod tests {
     }
 
     #[pg_test]
+    fn pg_fusion_heap_date_literal_filter_smoke() {
+        super::smoke_tests::heap_date_literal_filter_smoke();
+    }
+
+    #[pg_test]
+    fn pg_fusion_heap_date_infinity_rejected_smoke() {
+        super::smoke_tests::heap_date_infinity_rejected_smoke();
+    }
+
+    #[pg_test]
     fn pg_fusion_heap_numeric_scan_smoke() {
         super::smoke_tests::heap_numeric_scan_smoke();
     }

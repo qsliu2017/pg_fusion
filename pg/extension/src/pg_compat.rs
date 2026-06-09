@@ -30,8 +30,6 @@ pub(crate) fn pg_compat_allowlist() {
         SET LOCAL statement_timeout = '10s';
         SET LOCAL max_parallel_workers_per_gather = 0;
         SET LOCAL pg_fusion.enable = off;
-        SELECT set_config('jit', 'off', true)
-        WHERE EXISTS (SELECT 1 FROM pg_settings WHERE name = 'jit');
         SET LOCAL pg_fusion.enable = on
         ",
     )

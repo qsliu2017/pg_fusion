@@ -128,9 +128,9 @@ mod tests {
     }
 
     #[test]
-    fn temporal_constants_are_rejected_until_representation_is_lossless() {
-        assert!(unsupported_temporal_const("date")
+    fn unsupported_temporal_const_mentions_type_name() {
+        assert!(unsupported_temporal_const("timestamp")
             .to_string()
-            .contains("non-null date constants"));
+            .contains("non-null timestamp constants"));
     }
 }

@@ -766,6 +766,129 @@ pub(crate) fn heap_select_filtered_row_smoke() {
     assert_eq!(id, 3);
 }
 
+pub(crate) fn heap_date_literal_filter_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_heap_date_literal_filter_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {table_name} (
+                id integer NOT NULL,
+                order_day date NOT NULL
+            );
+            INSERT INTO {table_name} VALUES
+                (1, DATE '1994-01-01'),
+                (2, DATE '1995-03-15'),
+                (3, DATE '1996-01-01')
+            "
+        ),
+    );
+
+    let explain = simple_query_first_column_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            EXPLAIN
+            SELECT id, order_day
+            FROM {table_name}
+            WHERE order_day < DATE '1995-03-15'
+            ORDER BY id
+            "
+        ),
+    )
+    .join("\n");
+    assert!(
+        explain.contains("Custom Scan (PgFusionScan)"),
+        "date literal filter should execute through pg_fusion: {explain}"
+    );
+
+    let rows = simple_query_rows_tx(
+        &mut tx,
+        &format!(
+            "\
+            SELECT id, order_day
+            FROM {table_name}
+            WHERE order_day < DATE '1995-03-15'
+            ORDER BY id
+            "
+        ),
+    );
+    assert_eq!(
+        rows,
+        vec![vec![Some("1".to_owned()), Some("1994-01-01".to_owned())]]
+    );
+}
+
+pub(crate) fn heap_date_infinity_rejected_smoke() {
+    let mut client = smoke_client();
+    let mut tx = smoke_transaction(&mut client);
+    let table_name = "pg_temp.pgf_heap_date_infinity_rejected_smoke";
+    batch_execute_pg_fusion_disabled(
+        &mut tx,
+        &format!(
+            "\
+            CREATE TEMP TABLE {table_name} (
+                id integer NOT NULL,
+                order_day date NOT NULL
+            );
+            INSERT INTO {table_name} VALUES
+                (1, DATE '-infinity'),
+                (2, DATE '1995-03-15'),
+                (3, DATE 'infinity')
+            "
+        ),
+    );
+
+    for literal in ["-infinity", "infinity"] {
+        let savepoint = format!("pgf_date_{literal}_const_error").replace('-', "neg_");
+        tx.batch_execute(&format!("SAVEPOINT {savepoint}"))
+            .expect("create expected date infinity constant error savepoint");
+        let err = tx
+            .simple_query(&format!(
+                "\
+                EXPLAIN
+                SELECT id
+                FROM {table_name}
+                WHERE order_day = DATE '{literal}'
+                "
+            ))
+            .expect_err("date infinity constants should fail closed");
+        tx.batch_execute(&format!(
+            "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint}"
+        ))
+        .expect("clear expected date infinity constant error state");
+        let message = error_message(&err);
+        assert!(
+            message.contains("date constant is outside the Arrow Date32 finite range"),
+            "date infinity constant should fail through date transport validation: {message}"
+        );
+    }
+
+    tx.batch_execute("SAVEPOINT pgf_date_infinity_scan_error")
+        .expect("create expected date infinity scan error savepoint");
+    let err = tx
+        .simple_query(&format!(
+            "\
+            SELECT order_day
+            FROM {table_name}
+            WHERE id = 1
+            "
+        ))
+        .expect_err("date infinity rows should fail closed during scan encoding");
+    tx.batch_execute(
+        "ROLLBACK TO SAVEPOINT pgf_date_infinity_scan_error; \
+         RELEASE SAVEPOINT pgf_date_infinity_scan_error",
+    )
+    .expect("clear expected date infinity scan error state");
+    let message = error_message(&err);
+    assert!(
+        message.contains("cannot be encoded as Arrow Date32"),
+        "date infinity row should fail through scan encoding: {message}"
+    );
+}
+
 pub(crate) fn heap_numeric_scan_smoke() {
     let mut client = smoke_client();
     let mut tx = smoke_transaction(&mut client);

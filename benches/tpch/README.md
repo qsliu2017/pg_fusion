@@ -21,8 +21,8 @@ timings. No external TPC-H generator is required.
 For a local pgrx-managed PostgreSQL 17 cluster:
 
 ```sh
-cargo pgrx init --pg17 $(which pg_config)
-cargo build --release -p pg_fusion
+cargo pgrx init --pg17 /path/to/pg_config
+cargo pgrx install --release -p pg_fusion --pg-config /path/to/pg_config
 ```
 
 For an external PostgreSQL 17 installation, build and install against that
@@ -93,7 +93,7 @@ Restart PostgreSQL after changing preload or postmaster-level `pg_fusion`
 settings. For a pgrx-managed cluster, start PostgreSQL and open `psql` with:
 
 ```sh
-cargo pgrx start pg17
+cargo pgrx start pg17 -p pg_fusion
 cargo pgrx run --release pg17 -p pg_fusion
 ```
 

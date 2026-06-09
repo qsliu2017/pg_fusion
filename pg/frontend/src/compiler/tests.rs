@@ -1978,6 +1978,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn date_constants_compile_to_date32_literals() {
+        let constant = Const {
+            pg_type: type_ref(pgrx::pg_sys::DATEOID),
+            value: Some(PgConstValue::Date32(9_204)),
+        };
+
+        assert!(matches!(
+            compile_const_expr(&constant).unwrap(),
+            Expr::Literal(ScalarValue::Date32(Some(9_204)), _)
+        ));
+    }
+
     fn assert_target_expr_unsupported_contains(expr: &QueryExpr, expected: &str) {
         let err = validate_target_expr(expr).expect_err("target expression must be rejected");
         assert!(

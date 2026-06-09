@@ -62,4 +62,6 @@ pub enum ProjectError {
     IntervalNanosecondsNotMicrosecond { index: usize, nanoseconds: i64 },
     #[error("projected interval at column {index} is outside finite PostgreSQL interval range")]
     IntervalOutOfRange { index: usize },
+    #[error("projected date at column {index} is outside finite PostgreSQL date range")]
+    DateOutOfRange { index: usize },
 }

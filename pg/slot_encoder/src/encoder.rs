@@ -6,7 +6,7 @@ use crate::datum::{
 };
 use crate::{ConfigError, EncodeError};
 use arrow_layout::TypeTag;
-use pg_type::pg_oid_needs_detoast;
+use pg_type::{date32_from_pg_date, pg_oid_needs_detoast};
 use pgrx_pg_sys as pg_sys;
 use row_encoder::{CellRef, FixedWidthCell, FixedWidthRowSource, PageRowEncoder, RowSource};
 use std::ptr;
@@ -489,9 +489,11 @@ pub unsafe fn with_filter_key<R>(
             }))))
         }
         SlotFilterKeyType::Date32 if attr.atttypid == pg_sys::DATEOID => {
-            Ok(f(Some(SlotFilterKeyRef::Date32(unsafe {
-                read_i32(datum, attr.attbyval)
-            }))))
+            let value = unsafe { read_i32(datum, attr.attbyval) };
+            let value = date32_from_pg_date(value).ok_or(EncodeError::UnsupportedDate {
+                index: source_index,
+            })?;
+            Ok(f(Some(SlotFilterKeyRef::Date32(value))))
         }
         SlotFilterKeyType::Time64Microsecond if attr.atttypid == pg_sys::TIMEOID => {
             Ok(f(Some(SlotFilterKeyRef::Time64Microsecond(unsafe {
@@ -600,7 +602,13 @@ impl FixedWidthRowSource for PgSlotRow {
             TypeTag::Int64 => FixedWidthCell::Int64(unsafe { read_i64(datum, attr.attbyval) }),
             TypeTag::Float32 => FixedWidthCell::Float32(unsafe { read_f32(datum, attr.attbyval) }),
             TypeTag::Float64 => FixedWidthCell::Float64(unsafe { read_f64(datum, attr.attbyval) }),
-            TypeTag::Date32 => FixedWidthCell::Date32(unsafe { read_i32(datum, attr.attbyval) }),
+            TypeTag::Date32 => {
+                let value = unsafe { read_i32(datum, attr.attbyval) };
+                FixedWidthCell::Date32(
+                    date32_from_pg_date(value)
+                        .ok_or(EncodeError::UnsupportedDate { index: source_idx })?,
+                )
+            }
             TypeTag::Time64Microsecond => {
                 FixedWidthCell::Time64Microsecond(unsafe { read_i64(datum, attr.attbyval) })
             }
@@ -660,10 +668,12 @@ impl RowSource for PgSlotRow {
                 CellRef::Float64(unsafe { read_f64(datum, attr.attbyval) }),
                 f,
             ),
-            oid if oid == pg_sys::DATEOID => self.write_cell(
-                CellRef::Date32(unsafe { read_i32(datum, attr.attbyval) }),
-                f,
-            ),
+            oid if oid == pg_sys::DATEOID => {
+                let value = unsafe { read_i32(datum, attr.attbyval) };
+                let value = date32_from_pg_date(value)
+                    .ok_or(EncodeError::UnsupportedDate { index: source_idx })?;
+                self.write_cell(CellRef::Date32(value), f)
+            }
             oid if oid == pg_sys::TIMEOID => self.write_cell(
                 CellRef::Time64Microsecond(unsafe { read_i64(datum, attr.attbyval) }),
                 f,

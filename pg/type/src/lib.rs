@@ -98,6 +98,7 @@ pub enum PgConstValue {
     Numeric(String),
     Text(String),
     Binary(Vec<u8>),
+    Date32(i32),
     Time64Microsecond(i64),
 }
 
@@ -119,6 +120,29 @@ pub enum PgTypeError {
     UnsupportedTypedNull { oid: u32 },
     #[error("PostgreSQL constant value cannot be represented as Arrow scalar for type oid {oid}")]
     UnsupportedConstValue { oid: u32 },
+}
+
+pub const POSTGRES_TO_UNIX_EPOCH_DAYS: i32 = 10_957;
+pub const PG_DATE_NEG_INFINITY: i32 = i32::MIN;
+pub const PG_DATE_POS_INFINITY: i32 = i32::MAX;
+
+pub fn date32_from_pg_date(value: i32) -> Option<i32> {
+    if is_pg_date_infinity(value) {
+        return None;
+    }
+    value.checked_add(POSTGRES_TO_UNIX_EPOCH_DAYS)
+}
+
+pub fn pg_date_from_date32(value: i32) -> Option<i32> {
+    let value = value.checked_sub(POSTGRES_TO_UNIX_EPOCH_DAYS)?;
+    if is_pg_date_infinity(value) {
+        return None;
+    }
+    Some(value)
+}
+
+pub const fn is_pg_date_infinity(value: i32) -> bool {
+    value == PG_DATE_NEG_INFINITY || value == PG_DATE_POS_INFINITY
 }
 
 pub fn validate_supported_value_type(pg_type: PgTypeRef) -> Result<(), PgTypeError> {
@@ -196,6 +220,7 @@ pub fn is_supported_non_null_const_type(oid: u32) -> bool {
             | oid::BPCHAROID
             | oid::NAMEOID
             | oid::BYTEAOID
+            | oid::DATEOID
             | oid::TIMEOID
     )
 }
@@ -501,6 +526,7 @@ pub fn scalar_for_pg_const(
         }
         Some(PgConstValue::Text(value)) => Ok(ScalarValue::Utf8View(Some(value.clone()))),
         Some(PgConstValue::Binary(value)) => Ok(ScalarValue::BinaryView(Some(value.clone()))),
+        Some(PgConstValue::Date32(value)) => Ok(ScalarValue::Date32(Some(*value))),
         Some(PgConstValue::Time64Microsecond(value)) => {
             Ok(ScalarValue::Time64Microsecond(Some(*value)))
         }
@@ -639,6 +665,21 @@ mod tests {
     }
 
     #[test]
+    fn converts_postgres_date_to_arrow_date32_epoch() {
+        assert_eq!(date32_from_pg_date(0), Some(POSTGRES_TO_UNIX_EPOCH_DAYS));
+        assert_eq!(pg_date_from_date32(POSTGRES_TO_UNIX_EPOCH_DAYS), Some(0));
+        assert_eq!(date32_from_pg_date(-1_753), Some(9_204));
+        assert_eq!(pg_date_from_date32(9_204), Some(-1_753));
+        assert_eq!(date32_from_pg_date(PG_DATE_NEG_INFINITY), None);
+        assert_eq!(date32_from_pg_date(PG_DATE_POS_INFINITY), None);
+        assert_eq!(pg_date_from_date32(i32::MIN), None);
+        assert_eq!(
+            pg_date_from_date32(PG_DATE_NEG_INFINITY + POSTGRES_TO_UNIX_EPOCH_DAYS),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_unsupported_pg_type() {
         assert_eq!(
             arrow_type_for_pg_type(PgTypeRef::new(oid::TIMETZOID, -1, 0)),
@@ -681,6 +722,17 @@ mod tests {
             PgTypeRef::new(oid::NUMERICOID, numeric_typmod(5, 2), 0),
         )
         .is_err());
+    }
+
+    #[cfg(feature = "datafusion")]
+    #[test]
+    fn maps_date_constants_to_date32() {
+        let scalar = scalar_for_pg_const(
+            Some(&PgConstValue::Date32(9_204)),
+            PgTypeRef::new(oid::DATEOID, -1, 0),
+        )
+        .unwrap();
+        assert_eq!(scalar, ScalarValue::Date32(Some(9_204)));
     }
 
     #[test]

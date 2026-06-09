@@ -9,7 +9,7 @@ use arrow_layout::TypeTag;
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use import::{ArrowPageDecoder, OwnedPage};
 use pg_type::{
-    oid as pg_oid, type_tag_for_pg_type, PgTypeRef, NUMERIC_FALLBACK_SCALE,
+    oid as pg_oid, pg_date_from_date32, type_tag_for_pg_type, PgTypeRef, NUMERIC_FALLBACK_SCALE,
     PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY,
 };
 use pgrx::fcinfo::direct_function_call_as_datum;
@@ -436,7 +436,9 @@ impl ArrowSlotProjector {
                     values[index] = interval_datum(array.value(row), index)?;
                 }
                 (ColumnProjector::Date32, PageColumnView::Date32(array)) => {
-                    values[index] = pg_sys::Datum::from(array.value(row));
+                    let value = pg_date_from_date32(array.value(row))
+                        .ok_or(ProjectError::DateOutOfRange { index })?;
+                    values[index] = pg_sys::Datum::from(value);
                 }
                 (ColumnProjector::Time64Microsecond, PageColumnView::Time64Microsecond(array)) => {
                     values[index] = pg_sys::Datum::from(array.value(row));

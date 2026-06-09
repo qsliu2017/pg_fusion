@@ -32,9 +32,6 @@ importance: 0.7
   differential pgrx test, not upstream `pg_regress`: fixtures are local,
   `passed.sql` cases must use `Custom Scan (PgFusionScan)`, and results are
   compared with `pg_fusion.enable` off versus on in the same cluster.
-  The runner disables PostgreSQL JIT when the `jit` GUC exists because local
-  source-built PostgreSQL/LLVM combinations can fail vanilla corpus queries
-  with LLVM stack-probing errors unrelated to pg_fusion behavior.
   The current PostgreSQL 17 corpus is intentionally split into executable
   `passed.sql` coverage and non-executed `failing.sql` backlog; widening it
   should preserve that split instead of making the pgrx runner execute known
