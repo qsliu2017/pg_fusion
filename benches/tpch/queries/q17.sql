@@ -9,4 +9,3 @@ WHERE p.p_brand = 'Brand#23'
       FROM lineitem l2
       WHERE l2.l_partkey = p.p_partkey
   );
-

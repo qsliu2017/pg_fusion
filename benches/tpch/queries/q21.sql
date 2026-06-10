@@ -22,6 +22,4 @@ WHERE o.o_orderstatus = 'F'
   )
   AND n.n_name = 'SAUDI ARABIA'
 GROUP BY s.s_name
-ORDER BY numwait DESC, s.s_name
-LIMIT 100;
-
+ORDER BY numwait DESC, s.s_name;

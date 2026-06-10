@@ -2,8 +2,8 @@ SELECT
     o.o_orderpriority,
     count(*) AS order_count
 FROM orders o
-WHERE o.o_orderdate >= '1993-07-01'
-  AND o.o_orderdate < '1993-10-01'
+WHERE o.o_orderdate >= DATE '1993-07-01'
+  AND o.o_orderdate < DATE '1993-07-01' + INTERVAL '3 months'
   AND EXISTS (
       SELECT 1
       FROM lineitem l
@@ -12,4 +12,3 @@ WHERE o.o_orderdate >= '1993-07-01'
   )
 GROUP BY o.o_orderpriority
 ORDER BY o.o_orderpriority;
-

@@ -112,9 +112,11 @@ importance: 0.7
   terminators so one-column NULL rows emitted as a bare newline still count as
   rows. Each selected query runs a vanilla `EXPLAIN` preflight before Fusion
   `EXPLAIN`, so missing/stale schemas and ordinary SQL failures classify as
-  `pg_fail` rather than `fusion_fail`. Embedded TPC-H query templates should
-  stay canonical-derived, including top-N `LIMIT` clauses; do not edit query
-  semantics to fit current planner behavior.
+  `pg_fail` rather than `fusion_fail`. TPC-H query templates live in
+  `benches/tpch/queries/` and are included by the runner; manual `psql`
+  diagnostics should use those same files. Keep templates canonical-derived,
+  including q2's minimum-cost supplier subquery and top-N `LIMIT` clauses; do
+  not edit query semantics to fit current planner behavior.
 - PostgreSQL `max_parallel_workers_per_gather` controls the query-wide CTID
   block-range dynamic scan worker budget for eligible heap scans. `0` means
   leader-only portal streaming; positive values allow up to that many dynamic

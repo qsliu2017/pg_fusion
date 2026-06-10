@@ -13,6 +13,10 @@ Apache-2.0 `tpchgen` crate, streams generated rows directly into PostgreSQL with
 - query outputs are compared between `pg_fusion.enable = off` and
   `pg_fusion.enable = on`.
 
+The query templates live in `benches/tpch/queries/` and are included directly
+by the runner. Use those same files for manual `psql` diagnostics so the manual
+query shape matches the benchmark binary.
+
 ## Build And Install pg_fusion
 
 Use release builds for benchmark runs; debug builds are too slow for meaningful
@@ -218,6 +222,22 @@ cargo run --release -p pg_fusion_tpch -- \
   --no-prepare \
   --queries q01,q06,q14
 ```
+
+For a single measured q2 diagnostic without reload or warmup:
+
+```sh
+cargo run --release -p pg_fusion_tpch -- \
+  --dbname pg_fusion \
+  --no-prepare \
+  --queries q02 \
+  --runs 1 \
+  --warmup 0
+```
+
+The runner still performs vanilla and Fusion `EXPLAIN` preflights, then runs
+both modes and compares `COPY ... TO STDOUT` bytes exactly. Manual `psql`
+comparisons should use `benches/tpch/queries/q02.sql`; it includes the
+canonical minimum-cost supplier subquery.
 
 To only generate and load data:
 

@@ -21,6 +21,11 @@ It embeds the Apache-2.0 `tpchgen` crate, streams generated rows into
 PostgreSQL with `COPY FROM STDIN`, and uses native PostgreSQL `numeric(15,2)`
 and `date` columns.
 
+The runner includes SQL templates from `benches/tpch/queries/`. Use those same
+files for manual `psql` checks; for example, q2 includes the canonical
+minimum-cost supplier subquery and should not be replaced with a simplified join
+shape when comparing against runner timings.
+
 ## Prerequisites
 
 Use release builds for benchmark runs; debug builds are too slow for meaningful
@@ -99,6 +104,10 @@ cargo run --release -p pg_fusion_tpch -- \
   --no-prepare \
   --queries q01,q03,q06
 ```
+
+For a focused q2 diagnostic, use `--queries q02 --runs 1 --warmup 0`. The
+runner still performs vanilla and Fusion `EXPLAIN` preflights, executes both
+modes through `COPY ... TO STDOUT`, and compares the resulting CSV bytes.
 
 ## Result Statuses
 

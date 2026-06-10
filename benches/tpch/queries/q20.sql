@@ -16,11 +16,9 @@ WHERE s.s_suppkey IN (
           FROM lineitem l
           WHERE l.l_partkey = ps.ps_partkey
             AND l.l_suppkey = ps.ps_suppkey
-            AND l.l_shipdate >= '1994-01-01'
-            AND l.l_shipdate < '1995-01-01'
+            AND l.l_shipdate >= DATE '1994-01-01'
+            AND l.l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
       )
 )
   AND n.n_name = 'CANADA'
-ORDER BY s.s_name
-LIMIT 100;
-
+ORDER BY s.s_name;

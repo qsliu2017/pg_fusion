@@ -2,7 +2,7 @@ SELECT
     p.p_brand,
     p.p_type,
     p.p_size,
-    count(DISTINCT ps.ps_suppkey) AS supplier_count
+    count(DISTINCT ps.ps_suppkey) AS supplier_cnt
 FROM partsupp ps
 JOIN part p ON p.p_partkey = ps.ps_partkey
 WHERE p.p_brand <> 'Brand#45'
@@ -14,6 +14,4 @@ WHERE p.p_brand <> 'Brand#45'
       WHERE s.s_comment LIKE '%Customer%Complaints%'
   )
 GROUP BY p.p_brand, p.p_type, p.p_size
-ORDER BY supplier_count DESC, p.p_brand, p.p_type, p.p_size
-LIMIT 100;
-
+ORDER BY supplier_cnt DESC, p.p_brand, p.p_type, p.p_size;

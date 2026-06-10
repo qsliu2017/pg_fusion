@@ -1140,540 +1140,112 @@ const QUERIES: [BenchQuery; 22] = [
     BenchQuery {
         id: "q01",
         title: "Pricing Summary Report",
-        sql: r#"
-SELECT
-    l_returnflag,
-    l_linestatus,
-    sum(l_quantity) AS sum_qty,
-    sum(l_extendedprice) AS sum_base_price,
-    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
-    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
-    avg(l_quantity) AS avg_qty,
-    avg(l_extendedprice) AS avg_price,
-    avg(l_discount) AS avg_disc,
-    count(*) AS count_order
-FROM lineitem
-WHERE l_shipdate <= DATE '1998-09-02'
-GROUP BY l_returnflag, l_linestatus
-ORDER BY l_returnflag, l_linestatus
-"#,
+        sql: include_str!("../../queries/q01.sql"),
     },
     BenchQuery {
         id: "q02",
         title: "Minimum Cost Supplier",
-        sql: r#"
-SELECT
-    s.s_acctbal,
-    s.s_name,
-    n.n_name,
-    p.p_partkey,
-    p.p_mfgr,
-    s.s_address,
-    s.s_phone,
-    s.s_comment
-FROM part p
-JOIN partsupp ps ON p.p_partkey = ps.ps_partkey
-JOIN supplier s ON s.s_suppkey = ps.ps_suppkey
-JOIN nation n ON s.s_nationkey = n.n_nationkey
-JOIN region r ON n.n_regionkey = r.r_regionkey
-WHERE p.p_size = 15
-  AND p.p_type LIKE '%BRASS'
-  AND r.r_name = 'EUROPE'
-  AND ps.ps_supplycost = (
-      SELECT min(ps2.ps_supplycost)
-      FROM partsupp ps2
-      JOIN supplier s2 ON s2.s_suppkey = ps2.ps_suppkey
-      JOIN nation n2 ON s2.s_nationkey = n2.n_nationkey
-      JOIN region r2 ON n2.n_regionkey = r2.r_regionkey
-      WHERE ps2.ps_partkey = p.p_partkey
-        AND r2.r_name = 'EUROPE'
-  )
-ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey
-LIMIT 100
-"#,
+        sql: include_str!("../../queries/q02.sql"),
     },
     BenchQuery {
         id: "q03",
         title: "Shipping Priority",
-        sql: r#"
-SELECT
-    l.l_orderkey,
-    sum(l.l_extendedprice * (1 - l.l_discount)) AS revenue,
-    o.o_orderdate,
-    o.o_shippriority
-FROM customer c
-JOIN orders o ON c.c_custkey = o.o_custkey
-JOIN lineitem l ON l.l_orderkey = o.o_orderkey
-WHERE c.c_mktsegment = 'BUILDING'
-  AND o.o_orderdate < DATE '1995-03-15'
-  AND l.l_shipdate > DATE '1995-03-15'
-GROUP BY l.l_orderkey, o.o_orderdate, o.o_shippriority
-ORDER BY revenue DESC, o.o_orderdate
-LIMIT 10
-"#,
+        sql: include_str!("../../queries/q03.sql"),
     },
     BenchQuery {
         id: "q04",
         title: "Order Priority Checking",
-        sql: r#"
-SELECT
-    o.o_orderpriority,
-    count(*) AS order_count
-FROM orders o
-WHERE o.o_orderdate >= DATE '1993-07-01'
-  AND o.o_orderdate < DATE '1993-07-01' + INTERVAL '3 months'
-  AND EXISTS (
-      SELECT 1
-      FROM lineitem l
-      WHERE l.l_orderkey = o.o_orderkey
-        AND l.l_commitdate < l.l_receiptdate
-  )
-GROUP BY o.o_orderpriority
-ORDER BY o.o_orderpriority
-"#,
+        sql: include_str!("../../queries/q04.sql"),
     },
     BenchQuery {
         id: "q05",
         title: "Local Supplier Volume",
-        sql: r#"
-SELECT
-    n.n_name,
-    sum(l.l_extendedprice * (1 - l.l_discount)) AS revenue
-FROM customer c
-JOIN orders o ON c.c_custkey = o.o_custkey
-JOIN lineitem l ON l.l_orderkey = o.o_orderkey
-JOIN supplier s ON l.l_suppkey = s.s_suppkey
-JOIN nation n ON s.s_nationkey = n.n_nationkey
-JOIN region r ON n.n_regionkey = r.r_regionkey
-WHERE c.c_nationkey = s.s_nationkey
-  AND r.r_name = 'ASIA'
-  AND o.o_orderdate >= DATE '1994-01-01'
-  AND o.o_orderdate < DATE '1994-01-01' + INTERVAL '1 year'
-GROUP BY n.n_name
-ORDER BY revenue DESC
-"#,
+        sql: include_str!("../../queries/q05.sql"),
     },
     BenchQuery {
         id: "q06",
         title: "Forecasting Revenue Change",
-        sql: r#"
-SELECT
-    sum(l_extendedprice * l_discount) AS revenue
-FROM lineitem
-WHERE l_shipdate >= DATE '1994-01-01'
-  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
-  AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01
-  AND l_quantity < 24
-"#,
+        sql: include_str!("../../queries/q06.sql"),
     },
     BenchQuery {
         id: "q07",
         title: "Volume Shipping",
-        sql: r#"
-SELECT
-    shipping.supp_nation,
-    shipping.cust_nation,
-    shipping.l_year,
-    sum(shipping.volume) AS revenue
-FROM (
-    SELECT
-        n1.n_name AS supp_nation,
-        n2.n_name AS cust_nation,
-        extract(year FROM l.l_shipdate) AS l_year,
-        l.l_extendedprice * (1 - l.l_discount) AS volume
-    FROM supplier s
-    JOIN lineitem l ON s.s_suppkey = l.l_suppkey
-    JOIN orders o ON o.o_orderkey = l.l_orderkey
-    JOIN customer c ON c.c_custkey = o.o_custkey
-    JOIN nation n1 ON s.s_nationkey = n1.n_nationkey
-    JOIN nation n2 ON c.c_nationkey = n2.n_nationkey
-    WHERE (
-          (n1.n_name = 'FRANCE' AND n2.n_name = 'GERMANY')
-       OR (n1.n_name = 'GERMANY' AND n2.n_name = 'FRANCE')
-    )
-      AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
-) shipping
-GROUP BY shipping.supp_nation, shipping.cust_nation, shipping.l_year
-ORDER BY shipping.supp_nation, shipping.cust_nation, shipping.l_year
-"#,
+        sql: include_str!("../../queries/q07.sql"),
     },
     BenchQuery {
         id: "q08",
         title: "National Market Share",
-        sql: r#"
-SELECT
-    all_nations.o_year,
-    sum(CASE WHEN all_nations.nation = 'BRAZIL' THEN all_nations.volume ELSE 0 END)
-        / sum(all_nations.volume) AS mkt_share
-FROM (
-    SELECT
-        extract(year FROM o.o_orderdate) AS o_year,
-        l.l_extendedprice * (1 - l.l_discount) AS volume,
-        n2.n_name AS nation
-    FROM part p
-    JOIN lineitem l ON p.p_partkey = l.l_partkey
-    JOIN supplier s ON s.s_suppkey = l.l_suppkey
-    JOIN orders o ON o.o_orderkey = l.l_orderkey
-    JOIN customer c ON c.c_custkey = o.o_custkey
-    JOIN nation n1 ON c.c_nationkey = n1.n_nationkey
-    JOIN region r ON n1.n_regionkey = r.r_regionkey
-    JOIN nation n2 ON s.s_nationkey = n2.n_nationkey
-    WHERE r.r_name = 'AMERICA'
-      AND o.o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
-      AND p.p_type = 'ECONOMY ANODIZED STEEL'
-) all_nations
-GROUP BY all_nations.o_year
-ORDER BY all_nations.o_year
-"#,
+        sql: include_str!("../../queries/q08.sql"),
     },
     BenchQuery {
         id: "q09",
         title: "Product Type Profit Measure",
-        sql: r#"
-SELECT
-    profit.nation,
-    profit.o_year,
-    sum(profit.amount) AS sum_profit
-FROM (
-    SELECT
-        n.n_name AS nation,
-        extract(year FROM o.o_orderdate) AS o_year,
-        l.l_extendedprice * (1 - l.l_discount) - ps.ps_supplycost * l.l_quantity AS amount
-    FROM part p
-    JOIN lineitem l ON p.p_partkey = l.l_partkey
-    JOIN partsupp ps ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey
-    JOIN orders o ON o.o_orderkey = l.l_orderkey
-    JOIN supplier s ON s.s_suppkey = l.l_suppkey
-    JOIN nation n ON s.s_nationkey = n.n_nationkey
-    WHERE p.p_name LIKE '%green%'
-) profit
-GROUP BY profit.nation, profit.o_year
-ORDER BY profit.nation, profit.o_year DESC
-"#,
+        sql: include_str!("../../queries/q09.sql"),
     },
     BenchQuery {
         id: "q10",
         title: "Returned Item Reporting",
-        sql: r#"
-SELECT
-    c.c_custkey,
-    c.c_name,
-    sum(l.l_extendedprice * (1 - l.l_discount)) AS revenue,
-    c.c_acctbal,
-    n.n_name,
-    c.c_address,
-    c.c_phone,
-    c.c_comment
-FROM customer c
-JOIN orders o ON c.c_custkey = o.o_custkey
-JOIN lineitem l ON l.l_orderkey = o.o_orderkey
-JOIN nation n ON c.c_nationkey = n.n_nationkey
-WHERE o.o_orderdate >= DATE '1993-10-01'
-  AND o.o_orderdate < DATE '1993-10-01' + INTERVAL '3 months'
-  AND l.l_returnflag = 'R'
-GROUP BY c.c_custkey, c.c_name, c.c_acctbal, c.c_phone, n.n_name, c.c_address, c.c_comment
-ORDER BY revenue DESC
-LIMIT 20
-"#,
+        sql: include_str!("../../queries/q10.sql"),
     },
     BenchQuery {
         id: "q11",
         title: "Important Stock Identification",
-        sql: r#"
-SELECT
-    ps.ps_partkey,
-    sum(ps.ps_supplycost * ps.ps_availqty) AS value
-FROM partsupp ps
-JOIN supplier s ON ps.ps_suppkey = s.s_suppkey
-JOIN nation n ON s.s_nationkey = n.n_nationkey
-WHERE n.n_name = 'GERMANY'
-GROUP BY ps.ps_partkey
-HAVING sum(ps.ps_supplycost * ps.ps_availqty) > (
-    SELECT sum(ps2.ps_supplycost * ps2.ps_availqty) * 0.0001
-    FROM partsupp ps2
-    JOIN supplier s2 ON ps2.ps_suppkey = s2.s_suppkey
-    JOIN nation n2 ON s2.s_nationkey = n2.n_nationkey
-    WHERE n2.n_name = 'GERMANY'
-)
-ORDER BY value DESC
-"#,
+        sql: include_str!("../../queries/q11.sql"),
     },
     BenchQuery {
         id: "q12",
         title: "Shipping Modes and Order Priority",
-        sql: r#"
-SELECT
-    l.l_shipmode,
-    sum(CASE WHEN o.o_orderpriority = '1-URGENT'
-               OR o.o_orderpriority = '2-HIGH'
-             THEN 1 ELSE 0 END) AS high_line_count,
-    sum(CASE WHEN o.o_orderpriority <> '1-URGENT'
-               AND o.o_orderpriority <> '2-HIGH'
-             THEN 1 ELSE 0 END) AS low_line_count
-FROM orders o
-JOIN lineitem l ON o.o_orderkey = l.l_orderkey
-WHERE l.l_shipmode IN ('MAIL', 'SHIP')
-  AND l.l_commitdate < l.l_receiptdate
-  AND l.l_shipdate < l.l_commitdate
-  AND l.l_receiptdate >= DATE '1994-01-01'
-  AND l.l_receiptdate < DATE '1994-01-01' + INTERVAL '1 year'
-GROUP BY l.l_shipmode
-ORDER BY l.l_shipmode
-"#,
+        sql: include_str!("../../queries/q12.sql"),
     },
     BenchQuery {
         id: "q13",
         title: "Customer Distribution",
-        sql: r#"
-SELECT
-    c_orders.c_count,
-    count(*) AS custdist
-FROM (
-    SELECT
-        c.c_custkey,
-        count(o.o_orderkey) AS c_count
-    FROM customer c
-    LEFT JOIN orders o
-      ON c.c_custkey = o.o_custkey
-     AND o.o_comment NOT LIKE '%special%requests%'
-    GROUP BY c.c_custkey
-) c_orders
-GROUP BY c_orders.c_count
-ORDER BY custdist DESC, c_orders.c_count DESC
-"#,
+        sql: include_str!("../../queries/q13.sql"),
     },
     BenchQuery {
         id: "q14",
         title: "Promotion Effect",
-        sql: r#"
-SELECT
-    100.00 * sum(CASE WHEN p.p_type LIKE 'PROMO%'
-                      THEN l.l_extendedprice * (1 - l.l_discount)
-                      ELSE 0 END)
-        / sum(l.l_extendedprice * (1 - l.l_discount)) AS promo_revenue
-FROM lineitem l
-JOIN part p ON l.l_partkey = p.p_partkey
-WHERE l.l_shipdate >= DATE '1995-09-01'
-  AND l.l_shipdate < DATE '1995-09-01' + INTERVAL '1 month'
-"#,
+        sql: include_str!("../../queries/q14.sql"),
     },
     BenchQuery {
         id: "q15",
         title: "Top Supplier",
-        sql: r#"
-WITH revenue AS (
-    SELECT
-        l.l_suppkey AS supplier_no,
-        sum(l.l_extendedprice * (1 - l.l_discount)) AS total_revenue
-    FROM lineitem l
-    WHERE l.l_shipdate >= DATE '1996-01-01'
-      AND l.l_shipdate < DATE '1996-01-01' + INTERVAL '3 months'
-    GROUP BY l.l_suppkey
-)
-SELECT
-    s.s_suppkey,
-    s.s_name,
-    s.s_address,
-    s.s_phone,
-    r.total_revenue
-FROM supplier s
-JOIN revenue r ON s.s_suppkey = r.supplier_no
-WHERE r.total_revenue = (
-    SELECT max(total_revenue)
-    FROM revenue
-)
-ORDER BY s.s_suppkey
-"#,
+        sql: include_str!("../../queries/q15.sql"),
     },
     BenchQuery {
         id: "q16",
         title: "Parts/Supplier Relationship",
-        sql: r#"
-SELECT
-    p.p_brand,
-    p.p_type,
-    p.p_size,
-    count(DISTINCT ps.ps_suppkey) AS supplier_cnt
-FROM partsupp ps
-JOIN part p ON p.p_partkey = ps.ps_partkey
-WHERE p.p_brand <> 'Brand#45'
-  AND p.p_type NOT LIKE 'MEDIUM POLISHED%'
-  AND p.p_size IN (49, 14, 23, 45, 19, 3, 36, 9)
-  AND ps.ps_suppkey NOT IN (
-      SELECT s.s_suppkey
-      FROM supplier s
-      WHERE s.s_comment LIKE '%Customer%Complaints%'
-  )
-GROUP BY p.p_brand, p.p_type, p.p_size
-ORDER BY supplier_cnt DESC, p.p_brand, p.p_type, p.p_size
-"#,
+        sql: include_str!("../../queries/q16.sql"),
     },
     BenchQuery {
         id: "q17",
         title: "Small-Quantity-Order Revenue",
-        sql: r#"
-SELECT
-    sum(l.l_extendedprice) / 7.0 AS avg_yearly
-FROM lineitem l
-JOIN part p ON p.p_partkey = l.l_partkey
-WHERE p.p_brand = 'Brand#23'
-  AND p.p_container = 'MED BOX'
-  AND l.l_quantity < (
-      SELECT 0.2 * avg(l2.l_quantity)
-      FROM lineitem l2
-      WHERE l2.l_partkey = p.p_partkey
-  )
-"#,
+        sql: include_str!("../../queries/q17.sql"),
     },
     BenchQuery {
         id: "q18",
         title: "Large Volume Customer",
-        sql: r#"
-SELECT
-    c.c_name,
-    c.c_custkey,
-    o.o_orderkey,
-    o.o_orderdate,
-    o.o_totalprice,
-    sum(l.l_quantity) AS quantity
-FROM customer c
-JOIN orders o ON c.c_custkey = o.o_custkey
-JOIN lineitem l ON o.o_orderkey = l.l_orderkey
-WHERE o.o_orderkey IN (
-    SELECT l2.l_orderkey
-    FROM lineitem l2
-    GROUP BY l2.l_orderkey
-    HAVING sum(l2.l_quantity) > 300
-)
-GROUP BY c.c_name, c.c_custkey, o.o_orderkey, o.o_orderdate, o.o_totalprice
-ORDER BY o.o_totalprice DESC, o.o_orderdate
-LIMIT 100
-"#,
+        sql: include_str!("../../queries/q18.sql"),
     },
     BenchQuery {
         id: "q19",
         title: "Discounted Revenue",
-        sql: r#"
-SELECT
-    sum(l.l_extendedprice * (1 - l.l_discount)) AS revenue
-FROM lineitem l
-JOIN part p ON p.p_partkey = l.l_partkey
-WHERE (
-        p.p_brand = 'Brand#12'
-    AND p.p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
-    AND l.l_quantity >= 1 AND l.l_quantity <= 1 + 10
-    AND p.p_size BETWEEN 1 AND 5
-    AND l.l_shipmode IN ('AIR', 'AIR REG')
-    AND l.l_shipinstruct = 'DELIVER IN PERSON'
-)
-OR (
-        p.p_brand = 'Brand#23'
-    AND p.p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')
-    AND l.l_quantity >= 10 AND l.l_quantity <= 10 + 10
-    AND p.p_size BETWEEN 1 AND 10
-    AND l.l_shipmode IN ('AIR', 'AIR REG')
-    AND l.l_shipinstruct = 'DELIVER IN PERSON'
-)
-OR (
-        p.p_brand = 'Brand#34'
-    AND p.p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')
-    AND l.l_quantity >= 20 AND l.l_quantity <= 20 + 10
-    AND p.p_size BETWEEN 1 AND 15
-    AND l.l_shipmode IN ('AIR', 'AIR REG')
-    AND l.l_shipinstruct = 'DELIVER IN PERSON'
-)
-"#,
+        sql: include_str!("../../queries/q19.sql"),
     },
     BenchQuery {
         id: "q20",
         title: "Potential Part Promotion",
-        sql: r#"
-SELECT
-    s.s_name,
-    s.s_address
-FROM supplier s
-JOIN nation n ON s.s_nationkey = n.n_nationkey
-WHERE s.s_suppkey IN (
-    SELECT ps.ps_suppkey
-    FROM partsupp ps
-    WHERE ps.ps_partkey IN (
-        SELECT p.p_partkey
-        FROM part p
-        WHERE p.p_name LIKE 'forest%'
-    )
-      AND ps.ps_availqty > (
-          SELECT 0.5 * sum(l.l_quantity)
-          FROM lineitem l
-          WHERE l.l_partkey = ps.ps_partkey
-            AND l.l_suppkey = ps.ps_suppkey
-            AND l.l_shipdate >= DATE '1994-01-01'
-            AND l.l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
-      )
-)
-  AND n.n_name = 'CANADA'
-ORDER BY s.s_name
-"#,
+        sql: include_str!("../../queries/q20.sql"),
     },
     BenchQuery {
         id: "q21",
         title: "Suppliers Who Kept Orders Waiting",
-        sql: r#"
-SELECT
-    s.s_name,
-    count(*) AS numwait
-FROM supplier s
-JOIN lineitem l1 ON s.s_suppkey = l1.l_suppkey
-JOIN orders o ON o.o_orderkey = l1.l_orderkey
-JOIN nation n ON s.s_nationkey = n.n_nationkey
-WHERE o.o_orderstatus = 'F'
-  AND l1.l_receiptdate > l1.l_commitdate
-  AND EXISTS (
-      SELECT 1
-      FROM lineitem l2
-      WHERE l2.l_orderkey = l1.l_orderkey
-        AND l2.l_suppkey <> l1.l_suppkey
-  )
-  AND NOT EXISTS (
-      SELECT 1
-      FROM lineitem l3
-      WHERE l3.l_orderkey = l1.l_orderkey
-        AND l3.l_suppkey <> l1.l_suppkey
-        AND l3.l_receiptdate > l3.l_commitdate
-  )
-  AND n.n_name = 'SAUDI ARABIA'
-GROUP BY s.s_name
-ORDER BY numwait DESC, s.s_name
-"#,
+        sql: include_str!("../../queries/q21.sql"),
     },
     BenchQuery {
         id: "q22",
         title: "Global Sales Opportunity",
-        sql: r#"
-SELECT
-    custsale.cntrycode,
-    count(*) AS numcust,
-    sum(custsale.c_acctbal) AS totacctbal
-FROM (
-    SELECT
-        substring(c.c_phone FROM 1 FOR 2) AS cntrycode,
-        c.c_acctbal
-    FROM customer c
-    WHERE substring(c.c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')
-      AND c.c_acctbal > (
-          SELECT avg(c2.c_acctbal)
-          FROM customer c2
-          WHERE c2.c_acctbal > 0.00
-            AND substring(c2.c_phone FROM 1 FOR 2) IN ('13', '31', '23', '29', '30', '18', '17')
-      )
-      AND NOT EXISTS (
-          SELECT 1
-          FROM orders o
-          WHERE o.o_custkey = c.c_custkey
-      )
-) custsale
-GROUP BY custsale.cntrycode
-ORDER BY custsale.cntrycode
-"#,
+        sql: include_str!("../../queries/q22.sql"),
     },
 ];
 
@@ -1813,6 +1385,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn query_sql(id: &str) -> &'static str {
+        all_queries()
+            .iter()
+            .find(|query| query.id == id)
+            .map(|query| query.sql)
+            .unwrap()
     }
 
     #[test]
@@ -2004,19 +1584,31 @@ mod tests {
     }
 
     #[test]
-    fn top_n_queries_keep_canonical_limits() {
-        fn query_sql(id: &str) -> &'static str {
-            all_queries()
-                .iter()
-                .find(|query| query.id == id)
-                .map(|query| query.sql)
-                .unwrap()
+    fn query_templates_are_standalone_sql_files() {
+        assert_eq!(all_queries().len(), 22);
+        for query in all_queries() {
+            assert!(
+                query.sql.trim_end().ends_with(';'),
+                "{} should be usable directly from psql",
+                query.id
+            );
         }
+    }
 
+    #[test]
+    fn top_n_queries_keep_canonical_limits() {
         assert!(query_sql("q02").contains("LIMIT 100"));
         assert!(query_sql("q03").contains("LIMIT 10"));
         assert!(query_sql("q10").contains("LIMIT 20"));
         assert!(query_sql("q18").contains("LIMIT 100"));
+    }
+
+    #[test]
+    fn q02_keeps_canonical_minimum_cost_subquery() {
+        let q02 = query_sql("q02");
+        assert!(q02.contains("AND ps.ps_supplycost = ("));
+        assert!(q02.contains("SELECT min(ps2.ps_supplycost)"));
+        assert!(q02.contains("WHERE ps2.ps_partkey = p.p_partkey"));
     }
 
     #[test]
