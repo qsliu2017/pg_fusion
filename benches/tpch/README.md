@@ -42,7 +42,9 @@ shared_preload_libraries = 'pg_fusion'
 
 `shared_preload_libraries` is only the required loading hook. For stable TPC-H
 runs, configure the worker, shared-memory transport, page pool, scan streaming,
-and runtime filter pool before starting PostgreSQL. A practical profile for a
+and runtime filter pool before starting PostgreSQL.
+
+A practical bounded-memory profile for SF1 and smaller diagnostic runs on a
 16 GiB development machine is:
 
 ```conf
@@ -81,18 +83,42 @@ profile above reserves about 256 MiB for pages. Runtime filters reserve roughly
 the DataFusion worker memory pool; it is separate from PostgreSQL
 `shared_buffers`.
 
+For SF10 full-query runs, use the same transport and runtime-filter sizing but
+leave the DataFusion worker memory pool unbounded:
+
+```conf
+pg_fusion.worker_memory_limit_mb = 0
+
+pg_fusion.page_size = 262144
+pg_fusion.page_count = 1024
+
+pg_fusion.runtime_filter_count = 128
+pg_fusion.runtime_filter_bits = 4194304
+pg_fusion.scan_batch_channel_capacity = 128
+```
+
+This avoids finite-pool failures in join-heavy TPC-H queries. In the current
+DataFusion 53 path, worker spill covers sort and row-hash aggregate spill
+paths, but ordinary `HashJoinExec` does not spill. An error containing
+`Resources exhausted` and `HashJoinInput` means a non-spilling hash join
+exhausted the finite worker pool. Worker spill directories can still be created
+for the execution, but `worker_spill_count_total = 0` is expected for this
+failure mode.
+
 For smaller machines, reduce `pg_fusion.page_count` first, then
 `pg_fusion.runtime_filter_count` or `pg_fusion.runtime_filter_bits`, then
 `pg_fusion.worker_memory_limit_mb`. Defaults may be enough for SF0.01 smoke
-runs, but use this profile or
-[Quick Start](../../docs/quickstart.md#configure-postgresql) for SF1 and larger
-comparisons. The full GUC reference is in
+runs, but use the bounded profile above or
+[Quick Start](../../docs/quickstart.md#configure-postgresql) for SF1
+comparisons. Use the SF10 profile for full SF10 runs until hash joins can spill
+or execute in multiple passes. The full GUC reference is in
 [Configuration](../../docs/configuration.md).
 
 Restart PostgreSQL after changing preload or postmaster-level `pg_fusion`
-settings. For a pgrx-managed cluster, start PostgreSQL and open `psql` with:
+settings. For a pgrx-managed cluster, restart PostgreSQL and open `psql` with:
 
 ```sh
+cargo pgrx stop pg17 -p pg_fusion
 cargo pgrx start pg17 -p pg_fusion
 cargo pgrx run --release pg17 -p pg_fusion
 ```
@@ -109,6 +135,21 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_fusion';
 The runner toggles `pg_fusion.enable` for vanilla and Fusion measurements. It
 also sets `max_parallel_workers_per_gather` from `--parallel-workers` for each
 session.
+
+For spill and runtime diagnostics after a failed run:
+
+```sql
+SELECT component, metric, value, unit
+FROM pg_fusion_metrics()
+WHERE metric LIKE 'worker_spill%'
+   OR metric IN (
+        'query_total_ns',
+        'worker_total_ns',
+        'scan_rows_encoded_total',
+        'scan_bytes_sent_total'
+      )
+ORDER BY component, metric;
+```
 
 ## PostgreSQL Connection
 

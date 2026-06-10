@@ -79,6 +79,20 @@ PostgreSQL 18 support is a roadmap item. It should include:
 
 Until that work is done, treat PG17 as the documented development target.
 
+## Hash Join Scalability
+
+Large TPC-H-style join chains can exhaust the finite DataFusion worker memory
+pool because ordinary `HashJoinExec` does not spill today. The near-term
+benchmark workaround is to run SF10 with an unbounded worker pool, but the
+engine direction is to make large hash joins bounded and more selective.
+
+Important directions include:
+
+- add spilling and multi-pass execution for large hash joins;
+- investigate parallel hash-table build for large build sides;
+- derive and publish filters across adjacent joins in join chains so later
+  hash-table builds receive fewer rows.
+
 ## Compatibility
 
 Compatibility work is broader than type conversion.

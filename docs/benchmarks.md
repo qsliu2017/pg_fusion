@@ -43,9 +43,11 @@ Set `shared_preload_libraries = 'pg_fusion'` before PostgreSQL starts. For
 stable TPC-H runs, also size the page pool, scan slots, control rings,
 DataFusion worker memory, and runtime filter pool. One useful 16 GiB
 development profile is in [Quick Start](quickstart.md#configure-postgresql);
-all GUCs and sizing tradeoffs are listed in [Configuration](configuration.md).
-After changing preload or postmaster-level `pg_fusion` settings, restart
-PostgreSQL, then run `cargo pgrx start pg17 -p pg_fusion` and
+the [TPC-H README](../benches/tpch/README.md) has the SF10 profile and
+hash-join memory notes. All GUCs and sizing tradeoffs are listed in
+[Configuration](configuration.md). After changing preload or postmaster-level
+`pg_fusion` settings, restart PostgreSQL, then run
+`cargo pgrx start pg17 -p pg_fusion` and
 `cargo pgrx run --release pg17 -p pg_fusion` for a pgrx-managed cluster. Run
 `CREATE EXTENSION IF NOT EXISTS pg_fusion;` in the benchmark database. The TPC-H
 runner toggles `pg_fusion.enable` itself and sets
