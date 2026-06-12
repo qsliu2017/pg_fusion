@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn records_datafusion_sort_spill_metrics() -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_root("df_sort_metrics");
-        let config = WorkerSpillConfig::new(Some(1024 * 1024), Some(root.clone()));
+        let config = WorkerSpillConfig::new(Some(2 * 1024 * 1024), Some(root.clone()));
         let mut spill_runtime = WorkerSpillRuntime::new(config, 10, 20)?;
         let peer = BackendLeaseSlot::new(1, BackendLeaseId::new(2, 3));
         let spill_dir = spill_runtime.execution_dir(peer, 4)?;

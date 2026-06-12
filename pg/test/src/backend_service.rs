@@ -698,6 +698,39 @@ fn step_scan_and_drain_page(driver: &mut ActiveScanDriver, scan_rx: &IssuedRx) -
     }
 }
 
+fn complete_single_scan_execution(
+    begin: &BeginExecutionOutput,
+    query: &str,
+    config: &BackendServiceConfig,
+    scan_transport: &IssuedTransportHarness,
+) {
+    let built = build_test_hybrid(query);
+    assert_eq!(
+        built.scan_plan.scans.len(),
+        1,
+        "expected exactly one leaf scan"
+    );
+    let spec = &built.scan_plan.scans[0];
+    let scan_peer = peer_from_scan_channels(begin, spec.scan_id.get());
+
+    let scan_rx = scan_transport.rx();
+    let mut driver = open_scan_with_runtime_protocol(
+        scan_peer,
+        begin.key.session_epoch,
+        spec.scan_id.get(),
+        config,
+        scan_transport.tx(),
+    );
+
+    while !step_scan_and_drain_page(&mut driver, &scan_rx) {}
+
+    scan_transport.assert_drained();
+    assert!(
+        driver.complete_execution().expect("complete execution"),
+        "fresh complete message must be accepted"
+    );
+}
+
 fn peer_from_scan_channels(begin: &BeginExecutionOutput, scan_id: u64) -> BackendLeaseSlot {
     let descriptor = begin
         .scan_channels
@@ -1221,19 +1254,18 @@ pub fn backend_service_wait_interrupt_cleans_up_active_execution() {
 
 pub fn backend_service_stale_cancel_is_ignored_after_new_execution() {
     reset_backend_service_table();
-    let query = "SELECT 1".to_string();
+    let query = test_query();
     let config = BackendServiceConfig::default();
     let _snapshot = unsafe { LatestSnapshotGuard::acquire() };
     let scan_slots = ControlTransportHarness::new(8);
 
+    let first_scan_transport = IssuedTransportHarness::new();
     let first = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut first_guard = ActiveExecutionGuard::new(first.key);
-    assert!(
-        BackendService::accept_complete_execution(TEST_SLOT_ID, first.key.session_epoch)
-            .expect("complete first execution")
-    );
+    complete_single_scan_execution(&first, &query, &config, &first_scan_transport);
     first_guard.disarm();
 
+    let second_scan_transport = IssuedTransportHarness::new();
     let second = begin_and_finalize_execution(TEST_SLOT_ID, &query, &config, scan_slots.region());
     let mut second_guard = ActiveExecutionGuard::new(second.key);
 
@@ -1241,11 +1273,7 @@ pub fn backend_service_stale_cancel_is_ignored_after_new_execution() {
         !BackendService::accept_cancel_execution(TEST_SLOT_ID, first.key.session_epoch)
             .expect("stale cancel should be ignored")
     );
-    assert!(
-        BackendService::accept_complete_execution(TEST_SLOT_ID, second.key.session_epoch)
-            .expect("complete second execution"),
-        "fresh execution must remain active after stale cancel"
-    );
+    complete_single_scan_execution(&second, &query, &config, &second_scan_transport);
     second_guard.disarm();
 }
 

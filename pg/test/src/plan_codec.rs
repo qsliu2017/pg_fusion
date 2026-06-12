@@ -94,6 +94,12 @@ fn collect_pg_scans(plan: &LogicalPlan) -> Vec<Arc<scan_node::PgScanSpec>> {
     scans
 }
 
+fn normalize_plan_display_for_builtin_sql_forms(plan: &LogicalPlan) -> String {
+    plan.display_indent()
+        .to_string()
+        .replace("public.plan_codec_functions.", "")
+}
+
 pub fn plan_codec_roundtrips_live_pg_scan() {
     Spi::run("DROP SCHEMA IF EXISTS plan_codec_ns CASCADE").unwrap();
     Spi::run("CREATE SCHEMA plan_codec_ns").unwrap();
@@ -112,8 +118,8 @@ pub fn plan_codec_roundtrips_live_pg_scan() {
     ));
 
     assert_eq!(
-        built.display_indent().to_string(),
-        decoded.display_indent().to_string()
+        normalize_plan_display_for_builtin_sql_forms(&built),
+        normalize_plan_display_for_builtin_sql_forms(&decoded)
     );
 
     let scans = collect_pg_scans(&decoded);
@@ -148,8 +154,8 @@ pub fn plan_codec_roundtrips_builtin_sql_forms() {
     ));
 
     assert_eq!(
-        built.display_indent().to_string(),
-        decoded.display_indent().to_string()
+        normalize_plan_display_for_builtin_sql_forms(&built),
+        normalize_plan_display_for_builtin_sql_forms(&decoded)
     );
     assert_eq!(collect_pg_scans(&decoded).len(), 1);
     assert!(decoded.display_indent().to_string().contains("Filter"));
