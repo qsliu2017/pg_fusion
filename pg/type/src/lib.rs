@@ -50,8 +50,6 @@ pub const NUMERIC_FALLBACK_SCALE: i8 = 16;
 pub const PG_TYPE_OID_METADATA_KEY: &str = "pg_fusion.pg_type_oid";
 pub const PG_TYPE_TYPMOD_METADATA_KEY: &str = "pg_fusion.pg_type_typmod";
 pub const PG_TYPE_COLLATION_METADATA_KEY: &str = "pg_fusion.pg_type_collation";
-pub const PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY: &str =
-    "pg_fusion.numeric_trim_trailing_zeros";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PgTypeRef {

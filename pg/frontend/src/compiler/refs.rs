@@ -84,12 +84,8 @@ pub(super) fn resolved_table_for_relation(
                 column.name, column.pg_type.oid
             ))
         })?;
-        fields.push(pg_output_field(
-            &column.name,
-            data_type,
-            column.nullable,
-            column.pg_type,
-        ));
+        let field = pg_output_field(&column.name, data_type, column.nullable, column.pg_type);
+        fields.push(field);
         column_attnums.push(column.attnum);
         columns.push(ResolvedColumn {
             attnum: column.attnum,
@@ -113,14 +109,34 @@ pub(super) fn pg_output_field(
     name: impl Into<String>,
     data_type: DataType,
     nullable: bool,
-    pg_type: pg_type::PgTypeRef,
+    _pg_type: pg_type::PgTypeRef,
 ) -> Field {
-    let field = Field::new(name, data_type, nullable);
-    if pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID) && pg_type.typmod < 0 {
-        return field.with_metadata(HashMap::from([(
-            PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY.to_owned(),
-            "true".to_owned(),
-        )]));
+    Field::new(name, data_type, nullable)
+}
+
+pub(super) fn field_metadata(field: &Field) -> Option<FieldMetadata> {
+    if field.metadata().is_empty() {
+        return None;
     }
-    field
+    Some(FieldMetadata::new(
+        field
+            .metadata()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    ))
+}
+
+pub(super) fn alias_with_field_metadata(
+    expr: Expr,
+    name: impl Into<String>,
+    field: &Field,
+) -> Expr {
+    let name = name.into();
+    match field_metadata(field) {
+        Some(metadata) => Expr::Alias(
+            Alias::new(expr, None::<TableReference>, name).with_metadata(Some(metadata)),
+        ),
+        None => expr.alias(name),
+    }
 }

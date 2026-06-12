@@ -8,10 +8,7 @@ use arrow_array::{
 use arrow_layout::TypeTag;
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use import::{ArrowPageDecoder, OwnedPage};
-use pg_type::{
-    oid as pg_oid, pg_date_from_date32, type_tag_for_pg_type, PgTypeRef, NUMERIC_FALLBACK_SCALE,
-    PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY,
-};
+use pg_type::{oid as pg_oid, pg_date_from_date32, type_tag_for_pg_type, PgTypeRef};
 use pgrx::fcinfo::direct_function_call_as_datum;
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::CaughtError;
@@ -591,11 +588,7 @@ fn projector_for_attr(
             };
             ColumnProjector::Numeric {
                 scale: *scale,
-                trim_trailing_zeros: (atttypmod < 0 && *scale != NUMERIC_FALLBACK_SCALE)
-                    || field
-                        .metadata()
-                        .get(PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY)
-                        .is_some_and(|value| value == "true"),
+                trim_trailing_zeros: atttypmod < 0,
             }
         }
         pg_oid::INTERVALOID => ColumnProjector::Interval,
@@ -875,7 +868,7 @@ pub(crate) fn set_test_database_encoding(encoding: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::format_decimal128;
+    use super::*;
 
     #[test]
     fn format_decimal128_renders_scaled_values_for_numeric_in() {
@@ -890,5 +883,36 @@ mod tests {
         assert_eq!(format_decimal128(1230000, 6, true), "1.23");
         assert_eq!(format_decimal128(1000000, 6, true), "1");
         assert_eq!(format_decimal128(-500000, 6, true), "-0.5");
+    }
+
+    #[test]
+    fn numeric_projector_trims_only_for_bare_numeric_typmod() {
+        let field = Field::new("n", DataType::Decimal128(38, 2), true);
+        let numeric_10_2_typmod = ((10 << 16) | 2) + pg_type::VARHDRSZ;
+        let projector = projector_for_attr(
+            0,
+            pg_sys::NUMERICOID,
+            numeric_10_2_typmod,
+            TypeTag::Decimal128,
+            &field,
+        )
+        .expect("numeric projector with typmod");
+        assert!(matches!(
+            projector,
+            ColumnProjector::Numeric {
+                scale: 2,
+                trim_trailing_zeros: false,
+            }
+        ));
+
+        let projector = projector_for_attr(0, pg_sys::NUMERICOID, -1, TypeTag::Decimal128, &field)
+            .expect("bare numeric projector");
+        assert!(matches!(
+            projector,
+            ColumnProjector::Numeric {
+                scale: 2,
+                trim_trailing_zeros: true,
+            }
+        ));
     }
 }

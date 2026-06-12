@@ -135,12 +135,31 @@ pub(super) fn compile_binary_expr(
     right_expr: Expr,
     left_source: &QueryExpr,
     right_source: &QueryExpr,
-) -> Expr {
+) -> Result<Expr, PgFrontendError> {
     if matches!(
         op,
         QueryOperator::BitwiseShiftLeft | QueryOperator::BitwiseShiftRight
     ) {
-        return compile_bitwise_shift_expr(op, result_pg_type, left_expr, right_expr);
+        return Ok(compile_bitwise_shift_expr(
+            op,
+            result_pg_type,
+            left_expr,
+            right_expr,
+        ));
+    }
+
+    if let Some(policy) =
+        numeric_decimal_arithmetic_policy(op, result_pg_type, left_source, right_source)?
+    {
+        let left_expr =
+            cast_expr_if_pg_arrow_type_differs(left_expr, policy.left_pg_type, &policy.left_type);
+        let right_expr = cast_expr_if_pg_arrow_type_differs(
+            right_expr,
+            policy.right_pg_type,
+            &policy.right_type,
+        );
+        let expr = binary_expr(left_expr, operator(op), right_expr);
+        return Ok(Expr::Cast(Cast::new(Box::new(expr), policy.result_type)));
     }
 
     let (left_expr, right_expr) = coerce_binary_operands(
@@ -151,13 +170,20 @@ pub(super) fn compile_binary_expr(
         left_source,
         right_source,
     );
-    if let Some(udf) = checked_integer_arithmetic_udf(op, result_pg_type) {
-        udf.call(vec![left_expr, right_expr])
-    } else {
-        let (left_expr, right_expr) =
-            compile_bpchar_equality_operands(op, left_expr, right_expr, left_source, right_source);
-        binary_expr(left_expr, operator(op), right_expr)
-    }
+    Ok(
+        if let Some(udf) = checked_integer_arithmetic_udf(op, result_pg_type) {
+            udf.call(vec![left_expr, right_expr])
+        } else {
+            let (left_expr, right_expr) = compile_bpchar_equality_operands(
+                op,
+                left_expr,
+                right_expr,
+                left_source,
+                right_source,
+            );
+            binary_expr(left_expr, operator(op), right_expr)
+        },
+    )
 }
 
 fn compile_bpchar_equality_operands(

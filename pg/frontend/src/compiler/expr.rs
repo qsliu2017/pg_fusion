@@ -220,9 +220,7 @@ pub(super) fn compile_expr_with_windows(
                 scalar_bindings,
                 aggregate_bindings,
             )?;
-            Ok(compile_binary_expr(
-                *op, *pg_type, left_expr, right_expr, left, right,
-            ))
+            compile_binary_expr(*op, *pg_type, left_expr, right_expr, left, right)
         }
         QueryExpr::UnaryOp { op, arg, .. } => {
             let arg = compile_expr_with_windows(

@@ -36,7 +36,7 @@ resolved PostgreSQL signature.
 | `boolean` | `Boolean` | Supported | Boolean columns, typed NULLs, and boolean predicates are supported. |
 | `int2`, `int4`, `int8` | `Int16`, `Int32`, `Int64` | Supported | `+`, `-`, and `*` use checked pg_fusion UDFs for PostgreSQL overflow errors. |
 | `float4`, `float8` | `Float32`, `Float64` | Supported | Non-finite constants are allowed so PostgreSQL float aggregate behavior can be preserved. |
-| `numeric` | `Decimal128` | Restricted | Finite values only. `NaN`, `Infinity`, and values outside the selected Decimal128 shape fail closed. |
+| `numeric` | `Decimal128` | Restricted | Finite values only. `NaN`, `Infinity`, and values outside the selected Decimal128 shape fail closed. Bare `numeric` output is canonicalized by trimming trailing fractional zeros; use `numeric(p,s)` when fixed display scale matters. |
 | `text` | `Utf8View` | Restricted | Default collation only for DataFusion-side comparison/order semantics. |
 | `varchar` | `Utf8View` | Restricted | Typmod casts need PostgreSQL truncation semantics. |
 | `bpchar` | `Utf8View` | Restricted | Typmod casts need padding semantics; equality ignores trailing spaces through pg_fusion lowering. |

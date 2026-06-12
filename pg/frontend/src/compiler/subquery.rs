@@ -457,9 +457,7 @@ pub(super) fn compile_correlated_join_filter(
         } => {
             let left_expr = compile_correlated_join_filter(left, inner_query, inner_ctx)?;
             let right_expr = compile_correlated_join_filter(right, inner_query, inner_ctx)?;
-            Ok(compile_binary_expr(
-                *op, *pg_type, left_expr, right_expr, left, right,
-            ))
+            compile_binary_expr(*op, *pg_type, left_expr, right_expr, left, right)
         }
         QueryExpr::Bool { op, args } => match op {
             BoolOp::And | BoolOp::Or => {

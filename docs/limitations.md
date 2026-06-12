@@ -47,6 +47,19 @@ The current supported and restricted type list lives in
 function, aggregate, and window mappings are listed in
 [Compatibility Matrix](compatibility-matrix.md).
 
+## Bare Numeric Display Scale
+
+pg_fusion preserves finite `numeric` values within its Decimal128 subset, but it
+does not preserve PostgreSQL's per-value display scale for bare `numeric`.
+Typmodless numeric results are returned in a canonical form with trailing
+fractional zeros removed.
+
+Examples such as `1.20::numeric`, `1.20::numeric + 3.00::numeric`, or mixed-scale
+`VALUES (1.2::numeric), (1.20::numeric)` may therefore display fewer fractional
+zeros under pg_fusion than under PostgreSQL native execution. The same applies
+to typmodless numeric aggregate outputs such as `avg(int)`. Cast to
+`numeric(p,s)` when the output scale itself is part of the expected result.
+
 ## Spill
 
 Worker spill is owned by the pg_fusion worker runtime and uses OS temporary
@@ -76,4 +89,5 @@ EXPLAIN ANALYZE
 SELECT ...;
 ```
 
-If results differ, treat it as a bug or unsupported case.
+If results differ outside the documented limitations above, treat it as a bug
+or unsupported case.

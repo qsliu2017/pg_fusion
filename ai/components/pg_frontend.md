@@ -3,7 +3,7 @@ id: component-pg-frontend-0001
 type: fact
 scope: component
 tags: ["postgres", "datafusion", "planning", "query-tree"]
-updated_at: "2026-06-05"
+updated_at: "2026-06-12"
 importance: 0.7
 ---
 
@@ -110,6 +110,26 @@ typed numeric constants and known text/VALUES sources cast to `numeric` fail in
 frontend planning before worker execution. Finite `numeric` comparisons across
 different typmods are cast to a common Decimal128 shape before DataFusion sees
 the predicate.
+Finite `numeric` arithmetic that PostgreSQL analyzes as a `numeric` result is
+lowered with bounded Decimal128 operand/result scales before DataFusion sees the
+binary operator. Integer exact operands use scale 0, typmodded numeric operands
+use their typmod scale, bare numeric columns fall back to `Decimal128(38,16)`,
+and bare numeric literals use their literal fractional scale including trailing
+fractional zeros. `+`, `-`, and `%` use the maximum operand scale, while `*`
+uses the sum of operand scales. `/` uses the fallback result scale unless
+PostgreSQL supplied an explicit numeric typmod, and raises the left operand
+work scale before the binary operation so DataFusion computes the quotient at
+the target scale instead of padding a lower-scale quotient after the fact.
+Scale overflow beyond Decimal128's maximum fails closed during frontend
+planning.
+Bare numeric `VALUES` column inference uses the same finite expression scale
+policy, so literal display scales and arithmetic result scales do not diverge
+before DataFusion sees row values.
+Final display of bare numeric results is owned by `slot_import`, which trims
+trailing fractional zeros whenever the PostgreSQL result typmod is bare
+`numeric`. pg_fusion preserves numeric values within the supported Decimal128
+subset, but does not preserve PostgreSQL's per-value display scale for bare
+`numeric`; use `numeric(p,s)` when fixed output scale matters.
 `TIME '24:00:00'` constants fail closed because scan SQL renders time literals
 through interval arithmetic that PostgreSQL normalizes modulo one day.
 Operator compilation reads the resolved `OpExpr.opno` from PostgreSQL's syscache

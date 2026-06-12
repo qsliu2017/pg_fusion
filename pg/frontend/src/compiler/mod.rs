@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -19,10 +19,7 @@ use datafusion_expr::{
     WindowFunctionDefinition,
 };
 use df_catalog::{PgPlanningTableSource, ResolvedColumn, ResolvedTable};
-use pg_type::{
-    arrow_type_for_pg_type, is_text_like_type, scalar_for_pg_const, PgConstValue,
-    PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY,
-};
+use pg_type::{arrow_type_for_pg_type, is_text_like_type, scalar_for_pg_const, PgConstValue};
 use scan_sql::pg_type_metadata;
 
 use crate::error::PgFrontendError;
@@ -438,6 +435,7 @@ mod const_expr;
 mod expr;
 mod from;
 mod join;
+mod numeric_arithmetic;
 mod projection;
 mod refs;
 mod sort;
@@ -449,6 +447,7 @@ use const_expr::*;
 use expr::*;
 use from::*;
 use join::*;
+use numeric_arithmetic::*;
 use projection::*;
 use refs::*;
 use sort::*;

@@ -191,70 +191,10 @@ pub(super) fn compile_target_expr_with_bindings(
         scalar_bindings,
         aggregate_bindings,
     )?;
-    let metadata = target_numeric_trim_metadata(target, query);
-    Ok(match (&target.name, metadata) {
-        (Some(name), Some(metadata)) => Expr::Alias(
-            Alias::new(expr, None::<TableReference>, name.clone()).with_metadata(Some(metadata)),
-        ),
-        (Some(name), None) => expr.alias(name.clone()),
-        (None, Some(metadata)) => {
-            let name = expr.schema_name().to_string();
-            Expr::Alias(
-                Alias::new(expr, None::<TableReference>, name).with_metadata(Some(metadata)),
-            )
-        }
-        (None, None) => expr,
+    Ok(match &target.name {
+        Some(name) => expr.alias(name.clone()),
+        None => expr,
     })
-}
-
-pub(super) fn target_numeric_trim_metadata(
-    target: &Target,
-    query: &TypedQuery,
-) -> Option<FieldMetadata> {
-    if target.pg_type.oid != u32::from(pgrx::pg_sys::NUMERICOID) || target.pg_type.typmod >= 0 {
-        return None;
-    }
-    (expr_is_bare_numeric_source(&target.expr, query) || expr_is_numeric_round_trunc(&target.expr))
-        .then(numeric_trim_metadata)
-}
-
-pub(super) fn expr_is_numeric_round_trunc(expr: &QueryExpr) -> bool {
-    match expr {
-        QueryExpr::FunctionCall { func, pg_type, .. } => {
-            pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID)
-                && matches!(func, ScalarFunction::Round | ScalarFunction::Trunc)
-        }
-        QueryExpr::RelabelType(inner) | QueryExpr::Cast { arg: inner, .. } => {
-            expr_is_numeric_round_trunc(inner)
-        }
-        _ => false,
-    }
-}
-
-fn numeric_trim_metadata() -> FieldMetadata {
-    FieldMetadata::new(BTreeMap::from([(
-        PG_NUMERIC_TRIM_TRAILING_ZEROS_METADATA_KEY.to_owned(),
-        "true".to_owned(),
-    )]))
-}
-
-pub(super) fn expr_is_bare_numeric_source(expr: &QueryExpr, query: &TypedQuery) -> bool {
-    match expr {
-        QueryExpr::Var(var) => {
-            query
-                .values
-                .iter()
-                .any(|values| values.rtindex == var.rtindex)
-                || query
-                    .relations
-                    .iter()
-                    .any(|relation| relation.rtindex == var.rtindex)
-        }
-        QueryExpr::RelabelType(inner) | QueryExpr::Cast { arg: inner, .. } => {
-            expr_is_bare_numeric_source(inner, query)
-        }
-        _ => false,
-    }
 }
 
 pub(super) fn validate_target_expr(expr: &QueryExpr) -> Result<(), PgFrontendError> {

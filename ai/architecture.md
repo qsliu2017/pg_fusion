@@ -188,9 +188,13 @@ page-backed Arrow batches.
    Backend heap scans encode the finite PostgreSQL `numeric` subset as
    Decimal128: `numeric(p,s)` uses `Decimal128(p,s)` when `p <= 38` and
    `0 <= s <= p`, while bare `numeric` uses the fixed
-   `Decimal128(38,16)` fallback and marks PostgreSQL-facing output fields so
-   `slot_import` trims fallback fractional zero padding. PostgreSQL `numeric`
-   `NaN`/`Infinity` and values outside the selected Decimal128 shape fail
+   `Decimal128(38,16)` fallback. On result import, typmodless PostgreSQL
+   `numeric` outputs use canonical trailing-zero trim; `numeric(p,s)` outputs
+   keep their fixed typmod scale. pg_fusion preserves numeric values inside the
+   Decimal128 subset, but does not preserve PostgreSQL's original per-value
+   bare numeric dscale.
+   PostgreSQL `numeric` `NaN`/`Infinity` and values outside the selected
+   Decimal128 shape fail
    during scan encoding.
 
 Page-backed scan batches stay zero-copy through streaming DataFusion operators.

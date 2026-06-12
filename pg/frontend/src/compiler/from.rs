@@ -500,7 +500,11 @@ pub(super) fn build_subquery_scan(
         .enumerate()
         .map(|(index, column)| {
             let (qualifier, field) = input.schema().qualified_field(index);
-            Expr::Column(Column::from((qualifier, field))).alias(column.name.clone())
+            alias_with_field_metadata(
+                Expr::Column(Column::from((qualifier, field))),
+                column.name.clone(),
+                field,
+            )
         })
         .collect::<Vec<_>>();
     let projected = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(input))?);
@@ -541,26 +545,30 @@ pub(super) fn build_cte_scan(
         .enumerate()
         .map(|(index, column)| {
             let (qualifier, field) = input.schema().qualified_field(index);
-            Expr::Column(Column::from((qualifier, field))).alias(column.name.clone())
+            alias_with_field_metadata(
+                Expr::Column(Column::from((qualifier, field))),
+                column.name.clone(),
+                field,
+            )
         })
         .collect::<Vec<_>>();
     let input = LogicalPlan::Projection(Projection::try_new(projection, Arc::new(input))?);
     let fields = cte_ref
         .columns
         .iter()
-        .map(|column| {
-            let data_type = arrow_type_for_pg_type(column.pg_type).ok_or_else(|| {
-                PgFrontendError::unsupported(format!(
-                    "CTE column {} has unsupported PostgreSQL type oid {}",
-                    column.name, column.pg_type.oid
-                ))
-            })?;
-            Ok(pg_output_field(
+        .enumerate()
+        .map(|(index, column)| {
+            let field = input.schema().field(index);
+            let mut output_field = pg_output_field(
                 &column.name,
-                data_type,
+                field.data_type().clone(),
                 column.nullable,
                 column.pg_type,
-            ))
+            );
+            if !field.metadata().is_empty() {
+                output_field = output_field.with_metadata(field.metadata().clone());
+            }
+            Ok(output_field)
         })
         .collect::<Result<Vec<_>, PgFrontendError>>()?;
     let schema = Schema::new(fields);
@@ -591,7 +599,7 @@ pub(super) fn build_values_scan(
         .enumerate()
         .map(|(index, column)| {
             let data_type =
-                values_column_data_type(values, index, column.pg_type).ok_or_else(|| {
+                values_column_data_type(values, index, column.pg_type)?.ok_or_else(|| {
                     PgFrontendError::unsupported(format!(
                         "VALUES column {} has unsupported PostgreSQL type oid {}",
                         column.name, column.pg_type.oid
@@ -642,76 +650,30 @@ pub(super) fn values_column_data_type(
     values: &ValuesRef,
     index: usize,
     pg_type: pg_type::PgTypeRef,
-) -> Option<DataType> {
+) -> Result<Option<DataType>, PgFrontendError> {
     if pg_type.oid == u32::from(pgrx::pg_sys::NUMERICOID) && pg_type.typmod < 0 {
-        if let Some(scale) = values_numeric_column_scale(values, index) {
-            return Some(DataType::Decimal128(38, scale));
+        if let Some(scale) = values_numeric_column_scale(values, index)? {
+            return Ok(Some(DataType::Decimal128(38, scale)));
         }
     }
-    arrow_type_for_pg_type(pg_type)
+    Ok(arrow_type_for_pg_type(pg_type))
 }
 
-pub(super) fn values_numeric_column_scale(values: &ValuesRef, index: usize) -> Option<i8> {
-    values
-        .rows
-        .iter()
-        .map(|row| numeric_expr_scale(row.get(index)?))
-        .try_fold(0_i8, |max_scale, scale| {
-            scale.map(|scale| max_scale.max(scale))
-        })
-}
-
-pub(super) fn numeric_expr_scale(expr: &QueryExpr) -> Option<i8> {
-    match expr {
-        QueryExpr::Const(constant) => numeric_const_scale(constant),
-        QueryExpr::RelabelType(inner) | QueryExpr::Cast { arg: inner, .. } => {
-            numeric_expr_scale(inner)
-        }
-        QueryExpr::UnaryOp { arg, .. } => numeric_expr_scale(arg),
-        QueryExpr::BinaryOp {
-            op: QueryOperator::Plus | QueryOperator::Minus | QueryOperator::Multiply,
-            left,
-            right,
-            ..
-        } => Some(numeric_expr_scale(left)?.max(numeric_expr_scale(right)?)),
-        QueryExpr::BinaryOp {
-            op:
-                QueryOperator::Divide
-                | QueryOperator::Modulo
-                | QueryOperator::Eq
-                | QueryOperator::NotEq
-                | QueryOperator::IsDistinctFrom
-                | QueryOperator::IsNotDistinctFrom
-                | QueryOperator::Lt
-                | QueryOperator::LtEq
-                | QueryOperator::Gt
-                | QueryOperator::GtEq
-                | QueryOperator::BitwiseShiftLeft
-                | QueryOperator::BitwiseShiftRight
-                | QueryOperator::StringConcat
-                | QueryOperator::LikeMatch
-                | QueryOperator::NotLikeMatch
-                | QueryOperator::ILikeMatch
-                | QueryOperator::NotILikeMatch
-                | QueryOperator::RegexMatch
-                | QueryOperator::RegexNotMatch,
-            ..
-        } => None,
-        _ => None,
+pub(super) fn values_numeric_column_scale(
+    values: &ValuesRef,
+    index: usize,
+) -> Result<Option<i8>, PgFrontendError> {
+    let mut max_scale = 0_i8;
+    for row in &values.rows {
+        let Some(expr) = row.get(index) else {
+            return Ok(None);
+        };
+        let Some(scale) = numeric_arithmetic_expr_scale(expr)? else {
+            return Ok(None);
+        };
+        max_scale = max_scale.max(scale);
     }
-}
-
-pub(super) fn numeric_const_scale(constant: &Const) -> Option<i8> {
-    match constant.value.as_ref()? {
-        pg_type::PgConstValue::Int16(_)
-        | pg_type::PgConstValue::Int32(_)
-        | pg_type::PgConstValue::Int64(_) => Some(0),
-        pg_type::PgConstValue::Numeric(value) => value
-            .split_once('.')
-            .map(|(_, fraction)| i8::try_from(fraction.trim_end_matches('0').len()).ok())
-            .unwrap_or(Some(0)),
-        _ => None,
-    }
+    Ok(Some(max_scale))
 }
 
 pub(super) fn empty_plan(

@@ -688,6 +688,490 @@ mod tests {
     }
 
     #[test]
+    fn numeric_arithmetic_policy_bounds_tpch_q01_scales() {
+        let extended_price = var_attnum(1, 1, numeric_typmod_type(15, 2));
+        let discount = var_attnum(1, 2, numeric_typmod_type(15, 2));
+        let tax = var_attnum(1, 3, numeric_typmod_type(15, 2));
+        let discounted = numeric_op_expr(
+            QueryOperator::Multiply,
+            extended_price,
+            numeric_op_expr(QueryOperator::Minus, numeric_const("1"), discount),
+        );
+        let charge = numeric_op_expr(
+            QueryOperator::Multiply,
+            discounted.clone(),
+            numeric_op_expr(QueryOperator::Plus, numeric_const("1"), tax),
+        );
+
+        assert_eq!(numeric_arithmetic_expr_scale(&discounted).unwrap(), Some(4));
+        assert_eq!(numeric_arithmetic_expr_scale(&charge).unwrap(), Some(6));
+
+        let QueryExpr::BinaryOp { left, right, .. } = &charge else {
+            panic!("charge expression should be a binary op");
+        };
+        let policy =
+            numeric_decimal_arithmetic_policy(QueryOperator::Multiply, numeric_type(), left, right)
+                .unwrap()
+                .expect("numeric multiplication should use decimal policy");
+        assert_eq!(policy.left_type, DataType::Decimal128(38, 4));
+        assert_eq!(policy.right_type, DataType::Decimal128(38, 2));
+        assert_eq!(policy.result_type, DataType::Decimal128(38, 6));
+    }
+
+    #[test]
+    fn numeric_arithmetic_policy_preserves_literal_trailing_zero_scale() {
+        assert_eq!(
+            numeric_arithmetic_expr_scale(&numeric_const("1.20")).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            numeric_arithmetic_expr_scale(&numeric_const("1.2000")).unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            numeric_arithmetic_expr_scale(&numeric_const("1.0000")).unwrap(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn compile_query_executes_numeric_addition_with_literal_display_scale() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![Target {
+            expr: numeric_op_expr(
+                QueryOperator::Plus,
+                numeric_const("1.20"),
+                numeric_const("3"),
+            ),
+            name: Some("sum".into()),
+            pg_type: numeric_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("numeric addition should compile");
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, 2)
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(output.logical_plan).await?;
+            dataframe.collect().await
+        })
+        .expect("numeric addition should execute in DataFusion");
+        let values = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("numeric addition should produce Decimal128Array");
+        assert_eq!(values.value(0), 420);
+    }
+
+    #[test]
+    fn compile_query_executes_numeric_multiplication_with_literal_display_scale() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![Target {
+            expr: numeric_op_expr(
+                QueryOperator::Multiply,
+                numeric_const("1.20"),
+                numeric_const("3"),
+            ),
+            name: Some("product".into()),
+            pg_type: numeric_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("numeric multiplication should compile");
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, 2)
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(output.logical_plan).await?;
+            dataframe.collect().await
+        })
+        .expect("numeric multiplication should execute in DataFusion");
+        let values = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("numeric multiplication should produce Decimal128Array");
+        assert_eq!(values.value(0), 360);
+    }
+
+    #[test]
+    fn numeric_values_target_uses_literal_display_scale() {
+        let mut query = base_query();
+        query.from = FromItem::Values { rtindex: 1 };
+        query.values = vec![ValuesRef {
+            rtindex: 1,
+            alias: Some("v".into()),
+            columns: vec![ColumnRef {
+                attnum: 1,
+                name: "n".into(),
+                pg_type: numeric_type(),
+                nullable: false,
+            }],
+            rows: vec![vec![numeric_const("1.20")]],
+        }];
+        query.targets = vec![numeric_target("n", var_attnum(1, 1, numeric_type()))];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("bare numeric VALUES source should compile");
+
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, 2)
+        );
+    }
+
+    #[test]
+    fn numeric_values_mixed_scales_use_column_scale() {
+        let mut query = base_query();
+        query.from = FromItem::Values { rtindex: 1 };
+        query.values = vec![ValuesRef {
+            rtindex: 1,
+            alias: Some("v".into()),
+            columns: vec![ColumnRef {
+                attnum: 1,
+                name: "n".into(),
+                pg_type: numeric_type(),
+                nullable: false,
+            }],
+            rows: vec![vec![numeric_const("1.2")], vec![numeric_const("1.20")]],
+        }];
+        query.targets = vec![numeric_target("n", var_attnum(1, 1, numeric_type()))];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("mixed-scale bare numeric VALUES source should compile");
+
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, 2)
+        );
+    }
+
+    #[test]
+    fn numeric_typmod_target_uses_typmod_scale() {
+        let numeric_10_2 = numeric_typmod_type(10, 2);
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![Target {
+            expr: QueryExpr::Cast {
+                arg: Box::new(numeric_const("1.20")),
+                pg_type: numeric_10_2,
+            },
+            name: Some("n".into()),
+            pg_type: numeric_10_2,
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("typmodded numeric target should compile");
+
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(10, 2)
+        );
+    }
+
+    #[test]
+    fn values_numeric_column_scale_preserves_literal_trailing_zeros() {
+        let values = ValuesRef {
+            rtindex: 1,
+            alias: Some("v".into()),
+            columns: vec![ColumnRef {
+                attnum: 1,
+                name: "column1".into(),
+                pg_type: numeric_type(),
+                nullable: false,
+            }],
+            rows: vec![vec![numeric_const("1.20")]],
+        };
+
+        assert_eq!(
+            values_column_data_type(&values, 0, numeric_type()).unwrap(),
+            Some(DataType::Decimal128(38, 2))
+        );
+    }
+
+    #[test]
+    fn values_numeric_column_scale_uses_arithmetic_policy_for_multiply() {
+        let values = ValuesRef {
+            rtindex: 1,
+            alias: Some("v".into()),
+            columns: vec![ColumnRef {
+                attnum: 1,
+                name: "column1".into(),
+                pg_type: numeric_type(),
+                nullable: false,
+            }],
+            rows: vec![vec![numeric_op_expr(
+                QueryOperator::Multiply,
+                numeric_const("1.20"),
+                numeric_const("3.40"),
+            )]],
+        };
+
+        assert_eq!(
+            values_column_data_type(&values, 0, numeric_type()).unwrap(),
+            Some(DataType::Decimal128(38, 4))
+        );
+    }
+
+    #[test]
+    fn values_numeric_column_scale_uses_arithmetic_policy_for_division() {
+        let values = ValuesRef {
+            rtindex: 1,
+            alias: Some("v".into()),
+            columns: vec![ColumnRef {
+                attnum: 1,
+                name: "column1".into(),
+                pg_type: numeric_type(),
+                nullable: false,
+            }],
+            rows: vec![vec![numeric_op_expr(
+                QueryOperator::Divide,
+                numeric_const("1"),
+                numeric_const("3"),
+            )]],
+        };
+
+        assert_eq!(
+            values_column_data_type(&values, 0, numeric_type()).unwrap(),
+            Some(DataType::Decimal128(38, pg_type::NUMERIC_FALLBACK_SCALE))
+        );
+    }
+
+    #[test]
+    fn compile_query_executes_tpch_q01_numeric_sum_charge_expression() {
+        let mut query = base_query();
+        query.from = FromItem::Values { rtindex: 1 };
+        query.has_aggregates = true;
+        query.values = vec![ValuesRef {
+            rtindex: 1,
+            alias: Some("lineitem".into()),
+            columns: vec![
+                ColumnRef {
+                    attnum: 1,
+                    name: "l_extendedprice".into(),
+                    pg_type: numeric_typmod_type(15, 2),
+                    nullable: false,
+                },
+                ColumnRef {
+                    attnum: 2,
+                    name: "l_discount".into(),
+                    pg_type: numeric_typmod_type(15, 2),
+                    nullable: false,
+                },
+                ColumnRef {
+                    attnum: 3,
+                    name: "l_tax".into(),
+                    pg_type: numeric_typmod_type(15, 2),
+                    nullable: false,
+                },
+            ],
+            rows: vec![vec![
+                numeric_const("10.00"),
+                numeric_const("0.10"),
+                numeric_const("0.05"),
+            ]],
+        }];
+        query.targets = vec![Target {
+            expr: QueryExpr::AggregateCall {
+                func: AggregateFunction::Sum,
+                args: vec![numeric_op_expr(
+                    QueryOperator::Multiply,
+                    numeric_op_expr(
+                        QueryOperator::Multiply,
+                        var_attnum(1, 1, numeric_typmod_type(15, 2)),
+                        numeric_op_expr(
+                            QueryOperator::Minus,
+                            numeric_const("1"),
+                            var_attnum(1, 2, numeric_typmod_type(15, 2)),
+                        ),
+                    ),
+                    numeric_op_expr(
+                        QueryOperator::Plus,
+                        numeric_const("1"),
+                        var_attnum(1, 3, numeric_typmod_type(15, 2)),
+                    ),
+                )],
+                distinct: false,
+                filter: None,
+                pg_type: numeric_type(),
+            },
+            name: Some("sum_charge".into()),
+            pg_type: numeric_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("q01 numeric charge expression should compile");
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, 6)
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(output.logical_plan).await?;
+            dataframe.collect().await
+        })
+        .expect("q01 numeric charge expression should execute in DataFusion");
+        let values = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("sum(charge expression) should produce Decimal128Array");
+        assert_eq!(values.value(0), 9_450_000);
+    }
+
+    #[test]
+    fn numeric_arithmetic_policy_uses_fallback_scale_for_division() {
+        let policy = numeric_decimal_arithmetic_policy(
+            QueryOperator::Divide,
+            numeric_type(),
+            &var_attnum(1, 1, numeric_typmod_type(15, 4)),
+            &var_attnum(1, 2, numeric_typmod_type(15, 2)),
+        )
+        .unwrap()
+        .expect("numeric division should use decimal policy");
+
+        assert_eq!(policy.left_type, DataType::Decimal128(38, 12));
+        assert_eq!(policy.right_type, DataType::Decimal128(38, 2));
+        assert_eq!(
+            policy.result_type,
+            DataType::Decimal128(38, pg_type::NUMERIC_FALLBACK_SCALE)
+        );
+    }
+
+    #[test]
+    fn compile_query_executes_numeric_division_at_fallback_scale() {
+        let mut query = base_query();
+        query.from = FromItem::Empty;
+        query.targets = vec![Target {
+            expr: numeric_op_expr(
+                QueryOperator::Divide,
+                numeric_const("1"),
+                numeric_const("3"),
+            ),
+            name: Some("quotient".into()),
+            pg_type: numeric_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }];
+
+        let output = compile_typed_query(
+            &query,
+            CompileConfig {
+                identifier_max_bytes: 63,
+            },
+        )
+        .expect("numeric division should compile");
+        assert_eq!(
+            output.logical_plan.schema().field(0).data_type(),
+            &DataType::Decimal128(38, pg_type::NUMERIC_FALLBACK_SCALE)
+        );
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = futures::executor::block_on(async {
+            let dataframe = ctx.execute_logical_plan(output.logical_plan).await?;
+            dataframe.collect().await
+        })
+        .expect("numeric division should execute in DataFusion");
+        let values = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Decimal128Array>()
+            .expect("numeric division should produce Decimal128Array");
+        assert_eq!(values.value(0), 3_333_333_333_333_333);
+    }
+
+    #[test]
+    fn numeric_arithmetic_policy_uses_integer_cast_scale_zero() {
+        let int_cast = QueryExpr::Cast {
+            arg: Box::new(var_attnum(1, 1, numeric_typmod_type(15, 2))),
+            pg_type: int4_type(),
+        };
+        assert_eq!(numeric_arithmetic_expr_scale(&int_cast).unwrap(), Some(0));
+
+        let policy = numeric_decimal_arithmetic_policy(
+            QueryOperator::Multiply,
+            numeric_type(),
+            &int_cast,
+            &var_attnum(1, 2, numeric_typmod_type(15, 2)),
+        )
+        .unwrap()
+        .expect("numeric multiplication with integer cast should use decimal policy");
+        assert_eq!(policy.left_type, DataType::Decimal128(38, 0));
+        assert_eq!(policy.right_type, DataType::Decimal128(38, 2));
+        assert_eq!(policy.result_type, DataType::Decimal128(38, 2));
+    }
+
+    #[test]
+    fn numeric_arithmetic_policy_rejects_scale_overflow() {
+        let err = numeric_decimal_arithmetic_policy(
+            QueryOperator::Multiply,
+            numeric_type(),
+            &var_attnum(1, 1, numeric_typmod_type(38, 30)),
+            &var_attnum(1, 2, numeric_typmod_type(38, 9)),
+        )
+        .expect_err("numeric multiplication scale above 38 should fail before DataFusion");
+
+        assert!(
+            err.to_string().contains("exceeds Decimal128 max scale 38"),
+            "error should explain Decimal128 scale overflow: {err}"
+        );
+    }
+
+    #[test]
     fn relation_projection_keeps_join_and_post_join_filter_columns() {
         let resolved = resolved_table();
         let mut query = query_for_resolved_table();
@@ -2151,6 +2635,26 @@ mod tests {
         })
     }
 
+    fn numeric_op_expr(op: QueryOperator, left: QueryExpr, right: QueryExpr) -> QueryExpr {
+        QueryExpr::BinaryOp {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+            pg_type: numeric_type(),
+        }
+    }
+
+    fn numeric_target(name: &str, expr: QueryExpr) -> Target {
+        Target {
+            expr,
+            name: Some(name.into()),
+            pg_type: numeric_type(),
+            resno: 1,
+            ressortgroupref: 0,
+            resjunk: false,
+        }
+    }
+
     fn int4_null() -> QueryExpr {
         QueryExpr::Const(Const {
             pg_type: int4_type(),
@@ -2287,6 +2791,14 @@ mod tests {
 
     fn numeric_type() -> PgTypeRef {
         type_ref(pgrx::pg_sys::NUMERICOID)
+    }
+
+    fn numeric_typmod_type(precision: i32, scale: i32) -> PgTypeRef {
+        PgTypeRef {
+            oid: oid_u32(pgrx::pg_sys::NUMERICOID),
+            typmod: ((precision << 16) | (scale & 0x7ff)) + pgrx::pg_sys::VARHDRSZ as i32,
+            collation: 0,
+        }
     }
 
     fn varchar_type(length: i32) -> PgTypeRef {
