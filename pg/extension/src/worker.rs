@@ -208,7 +208,15 @@ fn run_worker_main() -> Result<(), WorkerRuntimeError> {
             )?);
             let mut runtime = WorkerRuntimeCore::new(worker_config, scan_source);
             let mut plan_rx: Option<IssuedRx> = None;
-            let df_runtime = build_datafusion_runtime()?;
+            let df_runtime_plan = resolve_datafusion_runtime_plan(config.worker_threads);
+            let df_runtime = build_datafusion_runtime(df_runtime_plan)?;
+            info!(
+                component = "worker",
+                requested_worker_threads = ?df_runtime_plan.requested_worker_threads,
+                datafusion_worker_threads = df_runtime_plan.worker_threads,
+                datafusion_runtime = df_runtime_plan.mode.as_str(),
+                "configured DataFusion Tokio runtime"
+            );
             debug!(component = "worker", "worker entering main poll loop");
 
             while BackgroundWorker::wait_latch(Some(POLL_INTERVAL)) {
@@ -411,6 +419,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn datafusion_runtime_plan_uses_explicit_current_thread() {
+        let plan = resolve_datafusion_runtime_plan_with(Some(1), || 8);
+
+        assert_eq!(plan.requested_worker_threads, Some(1));
+        assert_eq!(plan.worker_threads, 1);
+        assert_eq!(plan.mode, DataFusionRuntimeMode::CurrentThread);
+        assert_eq!(plan.mode.as_str(), "current-thread");
+    }
+
+    #[test]
+    fn datafusion_runtime_plan_uses_explicit_multi_thread() {
+        let plan = resolve_datafusion_runtime_plan_with(Some(4), || 1);
+
+        assert_eq!(plan.requested_worker_threads, Some(4));
+        assert_eq!(plan.worker_threads, 4);
+        assert_eq!(plan.mode, DataFusionRuntimeMode::MultiThread);
+        assert_eq!(plan.mode.as_str(), "multi-thread");
+    }
+
+    #[test]
+    fn datafusion_runtime_plan_uses_auto_thread_count() {
+        let plan = resolve_datafusion_runtime_plan_with(None, || 6);
+
+        assert_eq!(plan.requested_worker_threads, None);
+        assert_eq!(plan.worker_threads, 6);
+        assert_eq!(plan.mode, DataFusionRuntimeMode::MultiThread);
+    }
+
+    #[test]
+    fn datafusion_runtime_plan_clamps_auto_to_one_thread() {
+        let plan = resolve_datafusion_runtime_plan_with(None, || 0);
+
+        assert_eq!(plan.worker_threads, 1);
+        assert_eq!(plan.mode, DataFusionRuntimeMode::CurrentThread);
+    }
+
     fn protocol_error(message: &str) -> WorkerRuntimeError {
         WorkerRuntimeError::ProtocolViolation(message.into())
     }
@@ -594,14 +639,74 @@ fn handle_steps(
     Ok(())
 }
 
-fn build_datafusion_runtime() -> Result<tokio::runtime::Runtime, WorkerRuntimeError> {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .map_err(|err| {
-            WorkerRuntimeError::ProtocolViolation(format!(
-                "failed to build DataFusion Tokio runtime: {err}"
-            ))
-        })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DataFusionRuntimePlan {
+    requested_worker_threads: Option<usize>,
+    worker_threads: usize,
+    mode: DataFusionRuntimeMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataFusionRuntimeMode {
+    CurrentThread,
+    MultiThread,
+}
+
+impl DataFusionRuntimeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentThread => "current-thread",
+            Self::MultiThread => "multi-thread",
+        }
+    }
+}
+
+fn resolve_datafusion_runtime_plan(worker_threads: Option<usize>) -> DataFusionRuntimePlan {
+    resolve_datafusion_runtime_plan_with(worker_threads, default_datafusion_worker_threads)
+}
+
+fn resolve_datafusion_runtime_plan_with(
+    worker_threads: Option<usize>,
+    default_worker_threads: impl FnOnce() -> usize,
+) -> DataFusionRuntimePlan {
+    let effective_worker_threads = worker_threads.unwrap_or_else(default_worker_threads).max(1);
+    let mode = if effective_worker_threads == 1 {
+        DataFusionRuntimeMode::CurrentThread
+    } else {
+        DataFusionRuntimeMode::MultiThread
+    };
+
+    DataFusionRuntimePlan {
+        requested_worker_threads: worker_threads,
+        worker_threads: effective_worker_threads,
+        mode,
+    }
+}
+
+fn default_datafusion_worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(1)
+}
+
+fn build_datafusion_runtime(
+    plan: DataFusionRuntimePlan,
+) -> Result<tokio::runtime::Runtime, WorkerRuntimeError> {
+    let result = match plan.mode {
+        DataFusionRuntimeMode::CurrentThread => tokio::runtime::Builder::new_current_thread()
+            .thread_name("pg_fusion-df")
+            .build(),
+        DataFusionRuntimeMode::MultiThread => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(plan.worker_threads)
+            .thread_name("pg_fusion-df")
+            .build(),
+    };
+
+    result.map_err(|err| {
+        WorkerRuntimeError::ProtocolViolation(format!(
+            "failed to build DataFusion Tokio runtime: {err}"
+        ))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

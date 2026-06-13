@@ -751,9 +751,10 @@ fn backend_lease_slot_from_wire(peer: protocol::BackendLeaseSlotWire) -> Backend
 }
 
 fn build_worker_planning_session_state() -> SessionState {
-    // Match the repo-wide planning contract: worker-side lowering must stay in
-    // one DataFusion partition so a single PostgreSQL scan id never turns into
-    // a repartitioned or multi-partition physical pipeline.
+    // Match the repo-wide planning contract: worker-side lowering currently
+    // stays in one DataFusion partition so a single PostgreSQL scan id never
+    // turns into a repartitioned or multi-partition physical pipeline. This is
+    // independent of the Tokio worker thread count used to run the plan.
     let mut options = ConfigOptions::default();
     options.execution.target_partitions = 1;
     let mut state = SessionStateBuilder::new()

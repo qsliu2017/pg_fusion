@@ -74,6 +74,10 @@ importance: 0.7
   `execute_stream` inside its Tokio runtime. Calling `ExecutionPlan::execute(0,
   ...)` directly only drains partition `0` and breaks multi-partition roots
   such as `UNION`.
+- `pg_fusion.worker_threads` controls the worker's Tokio runtime thread count.
+  It does not make `WorkerPgScanExec` multi-partition and does not change the
+  current worker planning contract of `target_partitions = 1`; scan/physical
+  partitioning changes must be designed separately.
 - Worker DataFusion spill is OS-path spill owned by pg_fusion. It is enabled
   only when `pg_fusion.worker_memory_limit_mb > 0`, creates per-execution
   directories below a cluster-scoped worker spill root, and relies on worker

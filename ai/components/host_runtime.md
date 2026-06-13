@@ -29,13 +29,15 @@ importance: 0.8
   workers. Dynamic worker capacity failures clean up partial launches and
   continue leader-only for the current and remaining scans; readiness/protocol
   failures still fail the query.
-- The primary worker owns a current-thread Tokio runtime for DataFusion
-  physical planning and result-stream execution. Root physical plans are driven
-  through DataFusion `execute_stream`, so multi-partition roots such as `UNION`
-  are collected by DataFusion rather than by manually executing only partition
-  `0`. PostgreSQL scan producers remain ordinary backend/scan-worker threads:
-  they communicate through shared-memory scan transport and never call
-  PostgreSQL APIs from Tokio tasks.
+- The primary worker owns a Tokio runtime for DataFusion physical planning and
+  result-stream execution. `pg_fusion.worker_threads` controls that runtime's
+  thread count (`0` chooses from available CPU parallelism), while worker
+  physical planning still fixes DataFusion `target_partitions` at `1`. Root
+  physical plans are driven through DataFusion `execute_stream`, so
+  multi-partition roots such as `UNION` are collected by DataFusion rather than
+  by manually executing only partition `0`. PostgreSQL scan producers remain
+  ordinary backend/scan-worker threads: they communicate through shared-memory
+  scan transport and never call PostgreSQL APIs from Tokio tasks.
 - Worker-side DataFusion spill is opt-in through Postmaster GUC
   `pg_fusion.worker_memory_limit_mb`. `0` preserves the default unbounded
   DataFusion runtime; positive values use a finite `FairSpillPool` and

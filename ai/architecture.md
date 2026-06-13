@@ -164,8 +164,11 @@ page-backed Arrow batches.
    each producer owns a dedicated scan control slot and writes its own Arrow
    pages into shared memory.
 5. Worker imports scan pages as Arrow `RecordBatch` values, runs DataFusion
-   operators under its current-thread Tokio runtime, writes Arrow result pages,
-   and sends issued frames back. Zero-row plans whose DataFusion stream has an
+   operators under its Tokio runtime, writes Arrow result pages, and sends
+   issued frames back. `pg_fusion.worker_threads` controls the Tokio runtime
+   thread count, but worker physical planning still sets DataFusion
+   `target_partitions = 1`; changing scan/physical partitioning is a separate
+   execution-model change. Zero-row plans whose DataFusion stream has an
    empty schema, such as `EmptyExec`, use a close-only result path with no Arrow
    pages. Row-count-only PostgreSQL scans use dummy SQL projection in
    PostgreSQL but transfer non-empty empty-schema Arrow pages; these scans stay

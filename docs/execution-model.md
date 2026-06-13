@@ -104,7 +104,9 @@ The worker imports scan pages, runs DataFusion physical operators, and writes
 result pages back to shared memory. Tokio drives DataFusion execution inside the
 worker process. DataFusion may split physical operators into partitions and
 tasks; those tasks are scheduled inside the worker's Tokio runtime and run on
-the configured worker thread pool.
+the configured worker thread pool. The current worker planning contract still
+sets DataFusion `target_partitions` to `1`, so thread count and physical plan
+partition count are separate controls.
 
 PostgreSQL scan producers are not Tokio tasks. They remain PostgreSQL backend or
 background-worker execution paths because they call PostgreSQL APIs. Scan

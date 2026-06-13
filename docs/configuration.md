@@ -43,7 +43,7 @@ The worker is the DataFusion resource box. These settings are postmaster-level.
 
 | Setting | Default | Description |
 | --- | ---: | --- |
-| `pg_fusion.worker_threads` | `0` | DataFusion worker thread count. `0` lets the worker choose automatically. |
+| `pg_fusion.worker_threads` | `0` | DataFusion Tokio runtime thread count. `0` chooses automatically from available CPU parallelism. |
 | `pg_fusion.worker_memory_limit_mb` | `0` | DataFusion worker memory limit. `0` uses the default unbounded runtime and disables worker spill. |
 | `pg_fusion.worker_spill_directory` | `''` | Base directory for worker-owned spill files. Empty uses OS temporary storage. |
 | `pg_fusion.worker_log_filter` | `warn` | Worker tracing filter. |
@@ -52,6 +52,11 @@ The worker is the DataFusion resource box. These settings are postmaster-level.
 Set `pg_fusion.worker_memory_limit_mb` above `0` only when you want a finite
 DataFusion memory pool and worker-owned spill. Spill files are not PostgreSQL
 temporary files.
+
+`pg_fusion.worker_threads` controls the Tokio runtime threads inside the
+pg_fusion worker process. It does not control PostgreSQL dynamic scan workers,
+and it does not by itself change DataFusion physical plan partitioning. Set it
+to `1` to force the previous single-thread runtime shape.
 
 ## Size Shared Memory
 
