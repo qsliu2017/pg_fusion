@@ -331,4 +331,3 @@ fn varlena_4b_total_len(header: u32) -> usize {
 fn varlena_4b_total_len(header: u32) -> usize {
     (header & 0x3FFF_FFFF) as usize
 }
-
